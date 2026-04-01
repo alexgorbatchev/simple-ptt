@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish macOS arm64 release
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      BINARY_NAME: simple-ptt
+      CARGO_TERM_COLOR: always
+      TARGET_TRIPLE: aarch64-apple-darwin
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Install stable Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "$TARGET_TRIPLE"
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET_TRIPLE"
+
+      - name: Package release archive
+        id: package
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          asset_basename="${BINARY_NAME}-${TAG}-macos-arm64"
+          package_dir="${RUNNER_TEMP}/${asset_basename}"
+          archive_path="${RUNNER_TEMP}/${asset_basename}.zip"
+          checksum_path="${RUNNER_TEMP}/${asset_basename}.sha256"
+
+          mkdir -p "$package_dir"
+          cp "target/${TARGET_TRIPLE}/release/${BINARY_NAME}" "$package_dir/"
+          cp "config.example.yaml" "$package_dir/"
+
+          cat > "${package_dir}/README.txt" <<'EOF'
+          simple-ptt macOS arm64 release
+
+          Contents:
+          - simple-ptt
+          - config.example.yaml
+
+          Quick start:
+          1. Copy simple-ptt somewhere on your PATH, or run it directly.
+          2. Create ~/.config/simple-ptt/config.yaml from config.example.yaml
+             or set SIMPLE_PTT_CONFIG to point to your config file.
+          3. Make sure DEEPGRAM_API_KEY is configured if it is not set in the config.
+          EOF
+
+          (
+            cd "$RUNNER_TEMP"
+            /usr/bin/zip -r -X "$(basename "$archive_path")" "$(basename "$package_dir")" >/dev/null
+            shasum -a 256 "$(basename "$archive_path")" > "$checksum_path"
+          )
+
+          echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          ARCHIVE_PATH: ${{ steps.package.outputs.archive_path }}
+          CHECKSUM_PATH: ${{ steps.package.outputs.checksum_path }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" --clobber
+          else
+            gh release create "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
+              --title "$TAG" \
+              --generate-notes
+          fi
