@@ -1,5 +1,7 @@
 # simple-ptt
 
+![simple-ptt demo](./screen.gif)
+
 A very basic push-to-talk utility for macOS.
 
 The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking.
