@@ -1,7 +1,7 @@
 [ui]
 hotkey = "F5"
 # font_name = "Menlo"
-font_size = 18.0
+font_size = 12.0
 footer_font_size = 10.0
 
 [mic]

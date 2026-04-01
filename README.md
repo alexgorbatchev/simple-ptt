@@ -90,7 +90,7 @@ cp config.example.toml ~/.config/simple-ptt/config.toml
 [ui]
 hotkey = "F5"
 # font_name = "Menlo"
-font_size = 18.0
+font_size = 12.0
 footer_font_size = 10.0
 
 [mic]
@@ -116,7 +116,7 @@ utterance_end_ms = 1000
 | --- | --- | --- | --- |
 | `hotkey` | No | `F5` | Global push-to-talk key. |
 | `font_name` | No | system default | Overlay font family name. |
-| `font_size` | No | `18.0` | Main overlay font size. |
+| `font_size` | No | `12.0` | Main overlay font size. |
 | `footer_font_size` | No | derived from `font_size` | Footer text font size. |
 
 #### `[mic]`

@@ -85,10 +85,10 @@ fn main() {
         config.ui.font_size
     } else {
         log::warn!(
-            "ui.font_size {} is invalid; falling back to 18.0",
+            "ui.font_size {} is invalid; falling back to 12.0",
             config.ui.font_size
         );
-        18.0
+        12.0
     };
     let overlay_footer_font_size = match config.ui.footer_font_size {
         Some(footer_font_size) if footer_font_size.is_finite() && footer_font_size > 0.0 => {

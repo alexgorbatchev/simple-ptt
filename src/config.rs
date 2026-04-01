@@ -126,7 +126,7 @@ fn default_hold_ms() -> u64 {
 }
 
 fn default_overlay_font_size() -> f64 {
-    18.0
+    12.0
 }
 
 fn default_endpointing_ms() -> u16 {
