@@ -1,0 +1,56 @@
+[package]
+name = "jarvis-native"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "jarvis-native"
+path = "src/main.rs"
+
+[dependencies]
+# macOS AppKit bindings (objc2 family)
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSNotification",
+    "NSString",
+    "NSObject",
+    "NSThread",
+    "NSRunLoop",
+    "NSDate",
+    "NSTimer",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSRunningApplication",
+    "NSMenu",
+    "NSMenuItem",
+    "NSPasteboard",
+    "NSStatusBar",
+    "NSStatusItem",
+    "NSStatusBarButton",
+    "NSButton",
+    "NSControl",
+    "NSImage",
+    "NSResponder",
+    "NSView",
+] }
+
+# Global hotkey capture and synthetic paste shortcut on macOS
+rdev = { version = "0.5", features = ["unstable_grab"] }
+
+# Audio capture (CoreAudio on macOS)
+cpal = "0.15"
+
+# Deepgram streaming
+bytes = "1"
+deepgram = "0.9.2"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# Configuration
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"

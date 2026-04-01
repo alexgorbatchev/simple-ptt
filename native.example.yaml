@@ -1,0 +1,15 @@
+hotkey: F5
+
+deepgram_api_key: YOUR_DEEPGRAM_API_KEY
+
+deepgram_language: en-US
+deepgram_model: nova-3
+
+# Optional: exact input device name or numeric index from the host input device list.
+# audio_device: "MacBook Pro Microphone"
+
+sample_rate: 16000
+gain: 4.0
+hold_ms: 300
+endpointing_ms: 300
+utterance_end_ms: 1000
