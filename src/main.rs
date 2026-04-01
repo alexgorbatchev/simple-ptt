@@ -3,6 +3,7 @@ mod audio;
 mod billing;
 mod config;
 mod hotkey;
+mod icon;
 mod overlay;
 mod state;
 mod transcription;

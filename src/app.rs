@@ -4,11 +4,12 @@ use std::sync::Arc;
 use objc2::rc::Retained;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSMenu, NSMenuItem,
-    NSStatusBar, NSStatusItem,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu,
+    NSMenuItem, NSStatusBar, NSStatusItem,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
+use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
 
@@ -16,6 +17,8 @@ const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
     overlay_style: OverlayStyle,
+    active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
+    idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     overlay_window: OnceCell<OverlayWindow>,
     status_item: OnceCell<Retained<NSStatusItem>>,
     status_menu_item: OnceCell<Retained<NSMenuItem>>,
@@ -40,8 +43,16 @@ define_class!(
             let status_bar = NSStatusBar::systemStatusBar();
             let status_item = status_bar.statusItemWithLength(NS_VARIABLE_STATUS_ITEM_LENGTH);
 
+            let application_icon = make_application_icon(mtm);
+            unsafe {
+                app.setApplicationIconImage(Some(&application_icon));
+            }
+
             if let Some(button) = status_item.button(mtm) {
-                button.setTitle(ns_string!("🎤"));
+                button.setImage(Some(&self.ivars().idle_status_bar_icon));
+                button.setImageScaling(NSImageScaling::ScaleProportionallyDown);
+                button.setTitle(ns_string!(""));
+                button.setContentTintColor(None);
             }
 
             let menu = NSMenu::new(mtm);
@@ -93,6 +104,8 @@ impl AppDelegate {
     pub fn new(mtm: MainThreadMarker, overlay_style: OverlayStyle) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
             overlay_style,
+            active_status_bar_icon: make_status_bar_active_icon(mtm),
+            idle_status_bar_icon: make_status_bar_icon(mtm),
             overlay_window: OnceCell::new(),
             status_item: OnceCell::new(),
             status_menu_item: OnceCell::new(),
@@ -125,13 +138,14 @@ fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) 
 
     if let Some(status_item) = delegate.ivars().status_item.get() {
         if let Some(button) = status_item.button(mtm) {
-            let icon = match state {
-                STATE_RECORDING => ns_string!("🔴"),
-                STATE_PROCESSING => ns_string!("⏳"),
-                STATE_ERROR => ns_string!("⚠️"),
-                _ => ns_string!("🎤"),
+            let is_active = matches!(state, STATE_RECORDING | STATE_PROCESSING);
+            let icon = if is_active {
+                &delegate.ivars().active_status_bar_icon
+            } else {
+                &delegate.ivars().idle_status_bar_icon
             };
-            button.setTitle(icon);
+            button.setImage(Some(icon));
+            button.setContentTintColor(None);
         }
     }
 }
