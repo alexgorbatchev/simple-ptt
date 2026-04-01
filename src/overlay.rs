@@ -31,6 +31,7 @@ pub struct OverlayStyle {
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
     scroll_view: Retained<NSScrollView>,
+    separator_view: Retained<NSView>,
     text_field: Retained<NSTextField>,
     footer_text_field: Retained<NSTextField>,
     is_visible: Cell<bool>,
@@ -83,10 +84,7 @@ impl OverlayWindow {
 
         let scroll_view = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(0.0, footer_total_height()),
-                NSSize::new(OVERLAY_WIDTH, text_area_height()),
-            ),
+            scroll_view_frame(true),
         );
         scroll_view.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
@@ -109,7 +107,10 @@ impl OverlayWindow {
         text_field.setPreferredMaxLayoutWidth(usable_text_width());
         text_field.setFrame(NSRect::new(
             NSPoint::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING),
-            NSSize::new(usable_text_width(), text_content_min_height()),
+            NSSize::new(
+                usable_text_width(),
+                text_area_height(true) - (TEXT_VERTICAL_PADDING * 2.0),
+            ),
         ));
         text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
 
@@ -165,6 +166,7 @@ impl OverlayWindow {
         Self {
             panel,
             scroll_view,
+            separator_view,
             text_field,
             footer_text_field,
             is_visible: Cell::new(false),
@@ -189,6 +191,7 @@ impl OverlayWindow {
         } else {
             overlay_text
         };
+        self.update_footer_visibility(!overlay_footer_text.trim().is_empty());
         self.set_text(display_text);
         self.set_footer_text(overlay_footer_text);
 
@@ -238,7 +241,7 @@ impl OverlayWindow {
                 NSPoint::new(0.0, 0.0),
                 NSSize::new(usable_text_width(), f64::MAX),
             ));
-            let field_height = measured_size.height.max(text_content_min_height());
+            let field_height = measured_size.height.max(self.text_content_min_height());
             self.text_field.setFrame(NSRect::new(
                 NSPoint::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING),
                 NSSize::new(usable_text_width(), field_height),
@@ -259,6 +262,16 @@ impl OverlayWindow {
         self.footer_text_field
             .setStringValue(&NSString::from_str(footer_text));
         NSView::setNeedsDisplay(&self.footer_text_field, true);
+    }
+
+    fn update_footer_visibility(&self, footer_is_visible: bool) {
+        self.separator_view.setHidden(!footer_is_visible);
+        self.footer_text_field.setHidden(!footer_is_visible);
+        self.scroll_view.setFrame(scroll_view_frame(footer_is_visible));
+    }
+
+    fn text_content_min_height(&self) -> f64 {
+        self.scroll_view.contentSize().height - (TEXT_VERTICAL_PADDING * 2.0)
     }
 }
 
@@ -307,12 +320,25 @@ fn footer_total_height() -> f64 {
     FOOTER_HEIGHT + SEPARATOR_HEIGHT
 }
 
-fn text_area_height() -> f64 {
-    OVERLAY_HEIGHT - footer_total_height()
+fn text_area_height(footer_is_visible: bool) -> f64 {
+    if footer_is_visible {
+        OVERLAY_HEIGHT - footer_total_height()
+    } else {
+        OVERLAY_HEIGHT
+    }
 }
 
-fn text_content_min_height() -> f64 {
-    text_area_height() - (TEXT_VERTICAL_PADDING * 2.0)
+fn scroll_view_frame(footer_is_visible: bool) -> NSRect {
+    let origin_y = if footer_is_visible {
+        footer_total_height()
+    } else {
+        0.0
+    };
+
+    NSRect::new(
+        NSPoint::new(0.0, origin_y),
+        NSSize::new(OVERLAY_WIDTH, text_area_height(footer_is_visible)),
+    )
 }
 
 fn usable_text_width() -> f64 {

@@ -65,10 +65,7 @@ impl BillingController {
         let month_start = month_start_for(today);
 
         let Some(project_id) = self.config.project_id.clone() else {
-            self.state.set_overlay_footer_text(format!(
-                "{}: unavailable (set deepgram_project_id)",
-                footer_label
-            ));
+            self.state.set_overlay_footer_text("");
             return;
         };
 
