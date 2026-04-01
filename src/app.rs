@@ -105,7 +105,7 @@ define_class!(
             let quit_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    &objc2_foundation::NSString::from_str(&format!("Quit {}", APP_DISPLAY_NAME)),
+                    ns_string!("Close"),
                     Some(sel!(terminate:)),
                     ns_string!("q"),
                 )
