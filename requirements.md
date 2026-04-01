@@ -18,8 +18,10 @@ A minimal Rust-based macOS menu bar application that provides push-to-talk and h
 - Appears as an `NSStatusItem` in the macOS menu bar
 - Displays a small icon (microphone or similar) and/or text indicator
 - `LSUIElement = true` in Info.plist (no Dock icon, no main window)
-- Menu items:
-  - Status indicator (listening / transcribing / idle / error)
+- Menu items, in order:
+  - disabled title row with the app name and version
+  - GitHub repository link
+  - current billing amount when available
   - Quit
 
 ### 1.1 Live Transcription Overlay
@@ -109,28 +111,28 @@ cargo build --release
 
 # Ad-hoc code sign for local use
 codesign --force --sign - --entitlements entitlements.plist \
-  target/release/bundle/JarvisMenuBar.app
+  target/release/bundle/simple-ptt.app
 ```
 
 ### .app Bundle Structure
 
 ```
-JarvisMenuBar.app/
+simple-ptt.app/
   Contents/
     Info.plist
     MacOS/
-      jarvis-native       # compiled binary
+      simple-ptt       # compiled binary
     Resources/
-      icon.png            # menu bar icon
+      icon.png         # menu bar icon
 ```
 
 ### Info.plist Keys
 
-- `CFBundleIdentifier`: `com.jarvis.native`
-- `CFBundleName`: `Jarvis`
-- `CFBundleExecutable`: `jarvis-native`
+- `CFBundleIdentifier`: `com.alexgorbatchev.simpleptt`
+- `CFBundleName`: `simple-ptt`
+- `CFBundleExecutable`: `simple-ptt`
 - `LSUIElement`: `true`
-- `NSMicrophoneUsageDescription`: `"Jarvis needs microphone access for voice commands"`
+- `NSMicrophoneUsageDescription`: `"simple-ptt needs microphone access for dictation"`
 
 ### Entitlements
 

@@ -2,26 +2,31 @@ use std::cell::OnceCell;
 use std::sync::Arc;
 
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu,
-    NSMenuItem, NSStatusBar, NSStatusItem,
+    NSMenuItem, NSStatusBar, NSStatusItem, NSWorkspace,
 };
-use objc2_foundation::{ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
+use objc2_foundation::{
+    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
+};
 
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
 
+const APP_DISPLAY_NAME: &str = "simple-ptt";
+const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
 const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
+    billing_menu_item: OnceCell<Retained<NSMenuItem>>,
     overlay_style: OverlayStyle,
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     overlay_window: OnceCell<OverlayWindow>,
     status_item: OnceCell<Retained<NSStatusItem>>,
-    status_menu_item: OnceCell<Retained<NSMenuItem>>,
 }
 
 define_class!(
@@ -57,23 +62,50 @@ define_class!(
 
             let menu = NSMenu::new(mtm);
 
-            let status_line = unsafe {
+            let title_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    ns_string!("Status: Idle"),
+                    &objc2_foundation::NSString::from_str(&format!(
+                        "{} — Version {}",
+                        APP_DISPLAY_NAME,
+                        env!("CARGO_PKG_VERSION")
+                    )),
                     None,
                     ns_string!(""),
                 )
             };
-            status_line.setEnabled(false);
-            menu.addItem(&status_line);
+            title_item.setEnabled(false);
+            menu.addItem(&title_item);
 
-            menu.addItem(&NSMenuItem::separatorItem(mtm));
+            let github_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("GitHub Repo"),
+                    Some(sel!(openGitHubRepo:)),
+                    ns_string!(""),
+                )
+            };
+            unsafe {
+                github_item.setTarget(Some(self));
+            }
+            menu.addItem(&github_item);
+
+            let billing_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!(""),
+                    None,
+                    ns_string!(""),
+                )
+            };
+            billing_item.setEnabled(false);
+            billing_item.setHidden(true);
+            menu.addItem(&billing_item);
 
             let quit_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    ns_string!("Quit Jarvis"),
+                    &objc2_foundation::NSString::from_str(&format!("Quit {}", APP_DISPLAY_NAME)),
                     Some(sel!(terminate:)),
                     ns_string!("q"),
                 )
@@ -91,11 +123,27 @@ define_class!(
                 .set(status_item)
                 .expect("status item must only be set once");
             self.ivars()
-                .status_menu_item
-                .set(status_line)
-                .expect("status line must only be set once");
+                .billing_menu_item
+                .set(billing_item)
+                .expect("billing item must only be set once");
 
             log::info!("menu bar initialized");
+        }
+    }
+
+    impl AppDelegate {
+        #[unsafe(method(openGitHubRepo:))]
+        fn open_github_repo(&self, _sender: Option<&AnyObject>) {
+            let github_url = NSString::from_str(GITHUB_REPO_URL);
+            let Some(url) = NSURL::URLWithString(&github_url) else {
+                log::error!("invalid GitHub URL configured: {}", GITHUB_REPO_URL);
+                return;
+            };
+
+            let opened = NSWorkspace::sharedWorkspace().openURL(&url);
+            if !opened {
+                log::error!("failed to open GitHub URL: {}", GITHUB_REPO_URL);
+            }
         }
     }
 );
@@ -103,12 +151,12 @@ define_class!(
 impl AppDelegate {
     pub fn new(mtm: MainThreadMarker, overlay_style: OverlayStyle) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
+            billing_menu_item: OnceCell::new(),
             overlay_style,
             active_status_bar_icon: make_status_bar_active_icon(mtm),
             idle_status_bar_icon: make_status_bar_icon(mtm),
             overlay_window: OnceCell::new(),
             status_item: OnceCell::new(),
-            status_menu_item: OnceCell::new(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -121,21 +169,37 @@ impl AppDelegate {
         overlay_footer_text: &str,
     ) {
         update_status_item(self, mtm, state);
+        update_billing_menu_item(self, overlay_footer_text);
         update_overlay_window(self, mtm, state, overlay_text, overlay_footer_text);
     }
 }
 
-fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
-    if let Some(item) = delegate.ivars().status_menu_item.get() {
-        let text = match state {
-            STATE_RECORDING => ns_string!("Status: Listening..."),
-            STATE_PROCESSING => ns_string!("Status: Transcribing..."),
-            STATE_ERROR => ns_string!("Status: Error"),
-            _ => ns_string!("Status: Idle"),
-        };
-        item.setTitle(text);
-    }
+fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
+    let Some(billing_menu_item) = delegate.ivars().billing_menu_item.get() else {
+        return;
+    };
 
+    match billing_menu_text(overlay_footer_text) {
+        Some(billing_text) => {
+            billing_menu_item.setTitle(&objc2_foundation::NSString::from_str(billing_text));
+            billing_menu_item.setHidden(false);
+        }
+        None => billing_menu_item.setHidden(true),
+    }
+}
+
+fn billing_menu_text(overlay_footer_text: &str) -> Option<&str> {
+    let trimmed_overlay_footer_text = overlay_footer_text.trim();
+    if trimmed_overlay_footer_text.starts_with("Billing (")
+        && trimmed_overlay_footer_text.contains(": $")
+    {
+        Some(trimmed_overlay_footer_text)
+    } else {
+        None
+    }
+}
+
+fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
     if let Some(status_item) = delegate.ivars().status_item.get() {
         if let Some(button) = status_item.button(mtm) {
             let is_active = matches!(state, STATE_RECORDING | STATE_PROCESSING);

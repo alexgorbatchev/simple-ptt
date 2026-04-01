@@ -1035,29 +1035,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
-name = "jarvis-native"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "cpal",
- "deepgram",
- "env_logger",
- "log",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
- "objc2-quartz-core",
- "rdev",
- "reqwest",
- "serde",
- "serde_json",
- "serde_yaml",
- "time",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
 name = "jiff"
 version = "0.2.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2122,6 +2099,29 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "simple-ptt"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "cpal",
+ "deepgram",
+ "env_logger",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-quartz-core",
+ "rdev",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "time",
+ "tokio",
+ "tokio-stream",
 ]
 
 [[package]]

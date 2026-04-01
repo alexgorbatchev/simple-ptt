@@ -14,7 +14,7 @@ use objc2_foundation::MainThreadMarker;
 
 fn main() {
     env_logger::init();
-    log::info!("jarvis-native starting");
+    log::info!("simple-ptt starting");
 
     let config = config::load_config();
     log::info!(

@@ -1,10 +1,10 @@
 [package]
-name = "jarvis-native"
+name = "simple-ptt"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "jarvis-native"
+name = "simple-ptt"
 path = "src/main.rs"
 
 [dependencies]
@@ -21,6 +21,7 @@ objc2-foundation = { version = "0.3", features = [
     "NSRunLoop",
     "NSDate",
     "NSTimer",
+    "NSURL",
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
@@ -51,6 +52,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSTextField",
     "NSView",
     "NSWindow",
+    "NSWorkspace",
 ] }
 objc2-quartz-core = { version = "0.3", features = ["objc2-core-foundation", "objc2-core-graphics"] }
 
