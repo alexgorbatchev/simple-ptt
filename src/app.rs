@@ -9,12 +9,14 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol};
 
+use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
 
-/// NSVariableStatusItemLength = -1.0
 const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
+    overlay_style: OverlayStyle,
+    overlay_window: OnceCell<OverlayWindow>,
     status_item: OnceCell<Retained<NSStatusItem>>,
     status_menu_item: OnceCell<Retained<NSMenuItem>>,
 }
@@ -70,6 +72,10 @@ define_class!(
             status_item.setMenu(Some(&menu));
 
             self.ivars()
+                .overlay_window
+                .set(OverlayWindow::new(mtm, &self.ivars().overlay_style))
+                .expect("overlay window must only be set once");
+            self.ivars()
                 .status_item
                 .set(status_item)
                 .expect("status item must only be set once");
@@ -84,35 +90,61 @@ define_class!(
 );
 
 impl AppDelegate {
-    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, overlay_style: OverlayStyle) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
+            overlay_style,
+            overlay_window: OnceCell::new(),
             status_item: OnceCell::new(),
             status_menu_item: OnceCell::new(),
         });
         unsafe { msg_send![super(this), init] }
     }
 
-    pub fn update_status(&self, mtm: MainThreadMarker, state: u8) {
-        if let Some(item) = self.ivars().status_menu_item.get() {
-            let text = match state {
-                STATE_RECORDING => ns_string!("Status: Listening..."),
-                STATE_PROCESSING => ns_string!("Status: Transcribing..."),
-                STATE_ERROR => ns_string!("Status: Error"),
-                _ => ns_string!("Status: Idle"),
+    pub fn update_ui(
+        &self,
+        mtm: MainThreadMarker,
+        state: u8,
+        overlay_text: &str,
+        overlay_footer_text: &str,
+    ) {
+        update_status_item(self, mtm, state);
+        update_overlay_window(self, mtm, state, overlay_text, overlay_footer_text);
+    }
+}
+
+fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
+    if let Some(item) = delegate.ivars().status_menu_item.get() {
+        let text = match state {
+            STATE_RECORDING => ns_string!("Status: Listening..."),
+            STATE_PROCESSING => ns_string!("Status: Transcribing..."),
+            STATE_ERROR => ns_string!("Status: Error"),
+            _ => ns_string!("Status: Idle"),
+        };
+        item.setTitle(text);
+    }
+
+    if let Some(status_item) = delegate.ivars().status_item.get() {
+        if let Some(button) = status_item.button(mtm) {
+            let icon = match state {
+                STATE_RECORDING => ns_string!("🔴"),
+                STATE_PROCESSING => ns_string!("⏳"),
+                STATE_ERROR => ns_string!("⚠️"),
+                _ => ns_string!("🎤"),
             };
-            item.setTitle(text);
+            button.setTitle(icon);
         }
-        if let Some(status_item) = self.ivars().status_item.get() {
-            if let Some(button) = status_item.button(mtm) {
-                let icon = match state {
-                    STATE_RECORDING => ns_string!("🔴"),
-                    STATE_PROCESSING => ns_string!("⏳"),
-                    STATE_ERROR => ns_string!("⚠️"),
-                    _ => ns_string!("🎤"),
-                };
-                button.setTitle(icon);
-            }
-        }
+    }
+}
+
+fn update_overlay_window(
+    delegate: &AppDelegate,
+    mtm: MainThreadMarker,
+    state: u8,
+    overlay_text: &str,
+    overlay_footer_text: &str,
+) {
+    if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
+        overlay_window.update(mtm, state, overlay_text, overlay_footer_text);
     }
 }
 
@@ -127,6 +159,8 @@ extern "C" {
 
 struct UiUpdate {
     delegate_addr: usize,
+    overlay_footer_text: String,
+    overlay_text: String,
     state: u8,
 }
 
@@ -134,7 +168,12 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
     let update = unsafe { Box::from_raw(ctx as *mut UiUpdate) };
     let mtm = MainThreadMarker::new().expect("perform_ui_update must run on main thread");
     let delegate = unsafe { &*(update.delegate_addr as *const AppDelegate) };
-    delegate.update_status(mtm, update.state);
+    delegate.update_ui(
+        mtm,
+        update.state,
+        &update.overlay_text,
+        &update.overlay_footer_text,
+    );
 }
 
 pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState>) {
@@ -144,31 +183,49 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
     std::thread::Builder::new()
         .name("ui-poller".into())
         .spawn(move || {
+            let mut last_overlay_footer_text = String::new();
+            let mut last_overlay_text = String::new();
             let mut last_state = STATE_IDLE;
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                let current = state.get_state();
-                if current != last_state {
-                    last_state = current;
-                    let label = match current {
-                        STATE_RECORDING => "recording",
-                        STATE_PROCESSING => "processing",
-                        STATE_ERROR => "error",
-                        _ => "idle",
-                    };
-                    log::info!("state changed: {}", label);
+                std::thread::sleep(std::time::Duration::from_millis(75));
+                let current_state = state.get_state();
+                let current_overlay_footer_text = state.overlay_footer_text();
+                let current_overlay_text = state.overlay_text();
+                if current_state == last_state
+                    && current_overlay_footer_text == last_overlay_footer_text
+                    && current_overlay_text == last_overlay_text
+                {
+                    continue;
+                }
 
-                    let update = Box::new(UiUpdate {
-                        delegate_addr,
-                        state: current,
-                    });
-                    unsafe {
-                        dispatch_async_f(
-                            &_dispatch_main_q,
-                            Box::into_raw(update) as *mut std::ffi::c_void,
-                            perform_ui_update,
-                        );
-                    }
+                last_state = current_state;
+                last_overlay_footer_text = current_overlay_footer_text.clone();
+                last_overlay_text = current_overlay_text.clone();
+
+                let label = match current_state {
+                    STATE_RECORDING => "recording",
+                    STATE_PROCESSING => "processing",
+                    STATE_ERROR => "error",
+                    _ => "idle",
+                };
+                log::info!(
+                    "ui update: state={}, transcript_len={}",
+                    label,
+                    current_overlay_text.len()
+                );
+
+                let update = Box::new(UiUpdate {
+                    delegate_addr,
+                    overlay_footer_text: current_overlay_footer_text,
+                    overlay_text: current_overlay_text,
+                    state: current_state,
+                });
+                unsafe {
+                    dispatch_async_f(
+                        &_dispatch_main_q,
+                        Box::into_raw(update) as *mut std::ffi::c_void,
+                        perform_ui_update,
+                    );
                 }
             }
         })

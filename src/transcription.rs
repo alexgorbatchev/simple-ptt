@@ -114,7 +114,8 @@ pub fn spawn_transcription_thread(
                         }
 
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
-                        match start_session(&runtime, &config, current_sample_rate) {
+                        state.clear_overlay_text();
+                        match start_session(&runtime, state.clone(), &config, current_sample_rate) {
                             Ok(session) => {
                                 active_session = Some(session);
                             }
@@ -154,21 +155,27 @@ pub fn spawn_transcription_thread(
                             Ok(transcript) => {
                                 if transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
+                                    state.clear_overlay_text();
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
                                 log::info!("final transcript: {}", transcript);
                                 match write_clipboard_and_paste(&transcript) {
-                                    Ok(()) => state.set_state(STATE_IDLE),
+                                    Ok(()) => {
+                                        state.clear_overlay_text();
+                                        state.set_state(STATE_IDLE);
+                                    }
                                     Err(error) => {
                                         log::error!("failed to copy/paste transcript: {}", error);
+                                        state.clear_overlay_text();
                                         state.set_state(STATE_ERROR);
                                     }
                                 }
                             }
                             Err(error) => {
                                 log::error!("Deepgram session failed: {}", error);
+                                state.clear_overlay_text();
                                 state.set_state(STATE_ERROR);
                             }
                         }
@@ -186,6 +193,7 @@ pub fn spawn_transcription_thread(
 
 fn start_session(
     runtime: &Runtime,
+    state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
 ) -> Result<ActiveSession, String> {
@@ -230,8 +238,8 @@ fn start_session(
         config.language
     );
 
-    let task =
-        runtime.spawn(async move { run_transcription_stream(&mut transcription_stream).await });
+    let task = runtime
+        .spawn(async move { run_transcription_stream(&mut transcription_stream, state).await });
 
     Ok(ActiveSession { audio_tx, task })
 }
@@ -247,7 +255,11 @@ fn finish_session(runtime: &Runtime, session: ActiveSession) -> Result<String, S
     })
 }
 
-async fn run_transcription_stream(stream: &mut TranscriptionStream) -> Result<String, String> {
+async fn run_transcription_stream(
+    stream: &mut TranscriptionStream,
+    state: Arc<AppState>,
+) -> Result<String, String> {
+    let mut interim_transcript = String::new();
     let mut transcript_parts: Vec<String> = Vec::new();
     let mut last_final_transcript = String::new();
 
@@ -276,12 +288,19 @@ async fn run_transcription_stream(stream: &mut TranscriptionStream) -> Result<St
                             transcript
                         );
                         last_final_transcript = transcript.clone();
+                        interim_transcript.clear();
                         transcript_parts.push(transcript);
+                        state.set_overlay_text(build_overlay_text(&transcript_parts, None));
                     }
                     continue;
                 }
 
                 log::debug!("Deepgram interim: {}", transcript);
+                interim_transcript = transcript;
+                state.set_overlay_text(build_overlay_text(
+                    &transcript_parts,
+                    Some(interim_transcript.as_str()),
+                ));
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
                 log::info!("Deepgram stream closed after {:.2}s", duration);
@@ -301,7 +320,9 @@ async fn run_transcription_stream(stream: &mut TranscriptionStream) -> Result<St
         }
     }
 
-    Ok(join_transcript_parts(&transcript_parts))
+    let final_transcript = join_transcript_parts(&transcript_parts);
+    state.set_overlay_text(final_transcript.clone());
+    Ok(final_transcript)
 }
 
 fn extract_transcript(channel: &Channel) -> String {
@@ -312,13 +333,25 @@ fn extract_transcript(channel: &Channel) -> String {
         .unwrap_or_default()
 }
 
-fn join_transcript_parts(transcript_parts: &[String]) -> String {
-    transcript_parts
+fn build_overlay_text(transcript_parts: &[String], interim_transcript: Option<&str>) -> String {
+    let mut segments: Vec<&str> = transcript_parts
         .iter()
         .map(|transcript| transcript.trim())
         .filter(|transcript| !transcript.is_empty())
-        .collect::<Vec<&str>>()
-        .join(" ")
+        .collect();
+
+    if let Some(interim_transcript) = interim_transcript {
+        let trimmed_interim_transcript = interim_transcript.trim();
+        if !trimmed_interim_transcript.is_empty() {
+            segments.push(trimmed_interim_transcript);
+        }
+    }
+
+    segments.join(" ")
+}
+
+fn join_transcript_parts(transcript_parts: &[String]) -> String {
+    build_overlay_text(transcript_parts, None)
 }
 
 fn write_clipboard_and_paste(transcript: &str) -> Result<(), String> {

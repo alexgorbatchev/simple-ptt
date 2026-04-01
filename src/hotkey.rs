@@ -3,11 +3,13 @@ use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::billing::BillingController;
 use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
 use crate::transcription::TranscriptionController;
 
 pub fn spawn_hotkey_thread(
     state: Arc<AppState>,
+    billing_controller: BillingController,
     controller: TranscriptionController,
     hotkey_name: &str,
     hold_ms: u64,
@@ -49,6 +51,7 @@ pub fn spawn_hotkey_thread(
                         if should_start_recording {
                             match controller.start_session() {
                                 Ok(()) => {
+                                    billing_controller.refresh_month_to_date_spend();
                                     state.set_state(STATE_RECORDING);
                                     log::info!("recording started");
                                 }

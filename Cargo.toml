@@ -11,9 +11,12 @@ path = "src/main.rs"
 # macOS AppKit bindings (objc2 family)
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSGeometry",
     "NSNotification",
     "NSString",
     "NSObject",
+    "NSRange",
     "NSThread",
     "NSRunLoop",
     "NSDate",
@@ -21,19 +24,34 @@ objc2-foundation = { version = "0.3", features = [
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
-    "NSRunningApplication",
+    "NSButton",
+    "NSCell",
+    "NSClipView",
+    "NSColor",
+    "NSControl",
+    "NSEvent",
+    "NSFont",
+    "NSGraphics",
+    "objc2-core-graphics",
+    "objc2-quartz-core",
+    "NSImage",
     "NSMenu",
     "NSMenuItem",
+    "NSPanel",
+    "NSParagraphStyle",
     "NSPasteboard",
-    "NSStatusBar",
-    "NSStatusItem",
-    "NSStatusBarButton",
-    "NSButton",
-    "NSControl",
-    "NSImage",
     "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSScrollView",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSTextField",
     "NSView",
+    "NSWindow",
 ] }
+objc2-quartz-core = { version = "0.3", features = ["objc2-core-foundation", "objc2-core-graphics"] }
 
 # Global hotkey capture and synthetic paste shortcut on macOS
 rdev = { version = "0.5", features = ["unstable_grab"] }
@@ -41,14 +59,17 @@ rdev = { version = "0.5", features = ["unstable_grab"] }
 # Audio capture (CoreAudio on macOS)
 cpal = "0.15"
 
-# Deepgram streaming
+# Deepgram streaming and management
 bytes = "1"
 deepgram = "0.9.2"
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
+time = { version = "0.3", features = ["formatting", "local-offset"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 
 # Configuration
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 
 # Logging
