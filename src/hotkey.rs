@@ -30,6 +30,27 @@ pub fn spawn_hotkey_thread(
 
             if let Err(error) = grab(move |event: Event| -> Option<Event> {
                 match event.event_type {
+                    EventType::KeyPress(Key::Escape) if hotkey != Some(Key::Escape) => {
+                        let current_state = state.get_state();
+                        if !matches!(current_state, STATE_RECORDING | STATE_PROCESSING) {
+                            return Some(event);
+                        }
+
+                        state.request_abort();
+                        state.set_overlay_text("Canceling…");
+
+                        if current_state == STATE_RECORDING {
+                            press_time.set(None);
+                            was_idle_on_press.set(false);
+                            stop_recording(&state, &controller, "escape abort");
+                        } else {
+                            log::info!(
+                                "abort requested while transcript finalization is in progress"
+                            );
+                        }
+
+                        None
+                    }
                     EventType::KeyPress(key) if hotkey == Some(key) => {
                         if press_time.get().is_some() {
                             return None;

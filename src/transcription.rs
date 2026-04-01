@@ -114,6 +114,7 @@ pub fn spawn_transcription_thread(
                         }
 
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
+                        state.clear_abort_request();
                         state.clear_overlay_text();
                         match start_session(&runtime, state.clone(), &config, current_sample_rate) {
                             Ok(session) => {
@@ -153,6 +154,13 @@ pub fn spawn_transcription_thread(
 
                         match finish_session(&runtime, session) {
                             Ok(transcript) => {
+                                if state.consume_abort_request() {
+                                    log::info!("discarding transcript because the session was aborted");
+                                    state.clear_overlay_text();
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
                                 if transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
                                     state.clear_overlay_text();
@@ -174,6 +182,16 @@ pub fn spawn_transcription_thread(
                                 }
                             }
                             Err(error) => {
+                                if state.consume_abort_request() {
+                                    log::info!(
+                                        "ignoring Deepgram session error after abort request: {}",
+                                        error
+                                    );
+                                    state.clear_overlay_text();
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_state(STATE_ERROR);
@@ -290,17 +308,21 @@ async fn run_transcription_stream(
                         last_final_transcript = transcript.clone();
                         interim_transcript.clear();
                         transcript_parts.push(transcript);
-                        state.set_overlay_text(build_overlay_text(&transcript_parts, None));
+                        if !state.is_abort_requested() {
+                            state.set_overlay_text(build_overlay_text(&transcript_parts, None));
+                        }
                     }
                     continue;
                 }
 
                 log::debug!("Deepgram interim: {}", transcript);
                 interim_transcript = transcript;
-                state.set_overlay_text(build_overlay_text(
-                    &transcript_parts,
-                    Some(interim_transcript.as_str()),
-                ));
+                if !state.is_abort_requested() {
+                    state.set_overlay_text(build_overlay_text(
+                        &transcript_parts,
+                        Some(interim_transcript.as_str()),
+                    ));
+                }
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
                 log::info!("Deepgram stream closed after {:.2}s", duration);
@@ -321,7 +343,9 @@ async fn run_transcription_stream(
     }
 
     let final_transcript = join_transcript_parts(&transcript_parts);
-    state.set_overlay_text(final_transcript.clone());
+    if !state.is_abort_requested() {
+        state.set_overlay_text(final_transcript.clone());
+    }
     Ok(final_transcript)
 }
 

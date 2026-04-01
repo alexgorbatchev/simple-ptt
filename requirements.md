@@ -35,6 +35,7 @@ A minimal Rust-based macOS menu bar application that provides push-to-talk and h
 
 - **Push-to-talk (toggle)**: Press a key once to start recording, press again to stop
 - **Hold-to-talk**: Hold a key to record, release to stop
+- **Abort**: Press `Escape` during recording or transcription finalization to discard the current utterance and prevent paste
 - Both modes use `CGEventTap` (via `rdev` crate with `unstable_grab` feature) for:
   - keyDown / keyUp detection
   - Ability to swallow key events so they don't leak to other apps

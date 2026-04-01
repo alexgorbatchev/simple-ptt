@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const STATE_IDLE: u8 = 0;
@@ -7,6 +7,7 @@ pub const STATE_PROCESSING: u8 = 2;
 pub const STATE_ERROR: u8 = 3;
 
 pub struct AppState {
+    abort_requested: AtomicBool,
     overlay_footer_text: Mutex<String>,
     overlay_text: Mutex<String>,
     state: AtomicU8,
@@ -15,6 +16,7 @@ pub struct AppState {
 impl AppState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
+            abort_requested: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(String::new()),
             overlay_text: Mutex::new(String::new()),
             state: AtomicU8::new(STATE_IDLE),
@@ -31,6 +33,22 @@ impl AppState {
 
     pub fn get_state(&self) -> u8 {
         self.state.load(Ordering::Relaxed)
+    }
+
+    pub fn request_abort(&self) {
+        self.abort_requested.store(true, Ordering::Relaxed);
+    }
+
+    pub fn clear_abort_request(&self) {
+        self.abort_requested.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_abort_requested(&self) -> bool {
+        self.abort_requested.load(Ordering::Relaxed)
+    }
+
+    pub fn consume_abort_request(&self) -> bool {
+        self.abort_requested.swap(false, Ordering::Relaxed)
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {
