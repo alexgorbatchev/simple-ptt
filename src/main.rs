@@ -14,6 +14,16 @@ use objc2_foundation::MainThreadMarker;
 
 fn main() {
     env_logger::init();
+
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments.len() == 1 && arguments[0] == "--list-devices" {
+        audio::print_input_devices().unwrap_or_else(|error| {
+            eprintln!("{}", error);
+            std::process::exit(1);
+        });
+        return;
+    }
+
     log::info!("simple-ptt starting");
 
     let config = config::load_config();

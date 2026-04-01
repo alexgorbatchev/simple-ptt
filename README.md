@@ -123,7 +123,7 @@ utterance_end_ms = 1000
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
-| `audio_device` | No | default input device | Exact input device name or numeric index. |
+| `audio_device` | No | default input device | Exact input device name or numeric index. Use `simple-ptt --list-devices` to print the available inputs and their indices. |
 | `sample_rate` | No | `16000` | Requested audio sample rate in Hz. |
 | `gain` | No | `4.0` | Input gain multiplier. |
 | `hold_ms` | No | `300` | Minimum hold duration for the push-to-talk hotkey in milliseconds. |
@@ -159,6 +159,12 @@ If you prefer environment variables for secrets:
 
 ```bash
 DEEPGRAM_API_KEY=your_key_here simple-ptt
+```
+
+To print the available audio input devices and their numeric indices:
+
+```bash
+simple-ptt --list-devices
 ```
 
 ## Development

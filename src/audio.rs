@@ -5,6 +5,33 @@ use std::sync::Arc;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
 
+pub fn print_input_devices() -> Result<(), String> {
+    let host = cpal::default_host();
+    let default_device_name = host.default_input_device().and_then(|device| device.name().ok());
+    let input_devices = host
+        .input_devices()
+        .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?;
+    let devices: Vec<cpal::Device> = input_devices.collect();
+
+    match default_device_name {
+        Some(default_device_name) => println!("Default input device: {}", default_device_name),
+        None => println!("Default input device: <none>"),
+    }
+
+    if devices.is_empty() {
+        println!("Available input devices: <none>");
+        return Ok(());
+    }
+
+    println!("Available input devices:");
+    for (index, device) in devices.iter().enumerate() {
+        let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
+        println!("{}: {}", index, device_name);
+    }
+
+    Ok(())
+}
+
 pub fn build_input_stream(
     state: Arc<AppState>,
     controller: TranscriptionController,
