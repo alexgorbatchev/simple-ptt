@@ -1,0 +1,20 @@
+[ui]
+hotkey = "F5"
+# font_name = "Menlo"
+font_size = 18.0
+footer_font_size = 10.0
+
+[mic]
+# Optional: exact input device name or numeric index from the host input device list.
+# audio_device = "MacBook Pro Microphone"
+sample_rate = 16000
+gain = 4.0
+hold_ms = 300
+
+[deepgram]
+api_key = "YOUR_DEEPGRAM_API_KEY"
+# project_id = "98bf0e8b-23f6-4c01-b672-604008a47504"
+language = "en-US"
+model = "nova-3"
+endpointing_ms = 300
+utterance_end_ms = 1000

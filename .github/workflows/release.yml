@@ -54,18 +54,18 @@ jobs:
 
           mkdir -p "$package_dir"
           cp "target/${TARGET_TRIPLE}/release/${BINARY_NAME}" "$package_dir/"
-          cp "config.example.yaml" "$package_dir/"
+          cp "config.example.toml" "$package_dir/"
 
           cat > "${package_dir}/README.txt" <<'EOF'
           simple-ptt macOS arm64 release
 
           Contents:
           - simple-ptt
-          - config.example.yaml
+          - config.example.toml
 
           Quick start:
           1. Copy simple-ptt somewhere on your PATH, or run it directly.
-          2. Create ~/.config/simple-ptt/config.yaml from config.example.yaml
+          2. Create ~/.config/simple-ptt/config.toml from config.example.toml
              or set SIMPLE_PTT_CONFIG to point to your config file.
           3. Make sure DEEPGRAM_API_KEY is configured if it is not set in the config.
           EOF

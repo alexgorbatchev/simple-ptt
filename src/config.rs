@@ -4,24 +4,48 @@ use std::path::PathBuf;
 use crate::billing::deepgram_project_id_env_var;
 
 const CONFIG_OVERRIDE_ENV_VAR: &str = "SIMPLE_PTT_CONFIG";
-const DEFAULT_CONFIG_FILE_NAME: &str = "config.yaml";
+const DEFAULT_CONFIG_FILE_NAME: &str = "config.toml";
 const XDG_APP_NAME: &str = "simple-ptt";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Config {
+    #[serde(default)]
+    pub ui: UiConfig,
+
+    #[serde(default)]
+    pub mic: MicConfig,
+
+    #[serde(default)]
+    pub deepgram: DeepgramConfig,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UiConfig {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
-    pub deepgram_api_key: Option<String>,
+    #[serde(alias = "overlay_font_family")]
+    pub font_name: Option<String>,
 
-    pub deepgram_project_id: Option<String>,
+    #[serde(default = "default_overlay_font_size")]
+    pub font_size: f64,
 
-    #[serde(default = "default_deepgram_language")]
-    pub deepgram_language: String,
+    pub footer_font_size: Option<f64>,
+}
 
-    #[serde(default = "default_deepgram_model")]
-    pub deepgram_model: String,
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            hotkey: default_hotkey(),
+            font_name: None,
+            font_size: default_overlay_font_size(),
+            footer_font_size: None,
+        }
+    }
+}
 
+#[derive(Debug, Deserialize)]
+pub struct MicConfig {
     pub audio_device: Option<String>,
 
     #[serde(default = "default_sample_rate")]
@@ -32,20 +56,49 @@ pub struct Config {
 
     #[serde(default = "default_hold_ms")]
     pub hold_ms: u64,
+}
 
-    #[serde(alias = "overlay_font_family")]
-    pub overlay_font_name: Option<String>,
+impl Default for MicConfig {
+    fn default() -> Self {
+        Self {
+            audio_device: None,
+            sample_rate: default_sample_rate(),
+            gain: default_gain(),
+            hold_ms: default_hold_ms(),
+        }
+    }
+}
 
-    #[serde(default = "default_overlay_font_size")]
-    pub overlay_font_size: f64,
+#[derive(Debug, Deserialize)]
+pub struct DeepgramConfig {
+    pub api_key: Option<String>,
 
-    pub overlay_footer_font_size: Option<f64>,
+    pub project_id: Option<String>,
+
+    #[serde(default = "default_deepgram_language")]
+    pub language: String,
+
+    #[serde(default = "default_deepgram_model")]
+    pub model: String,
 
     #[serde(default = "default_endpointing_ms")]
     pub endpointing_ms: u16,
 
     #[serde(default = "default_utterance_end_ms")]
     pub utterance_end_ms: u16,
+}
+
+impl Default for DeepgramConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            project_id: None,
+            language: default_deepgram_language(),
+            model: default_deepgram_model(),
+            endpointing_ms: default_endpointing_ms(),
+            utterance_end_ms: default_utterance_end_ms(),
+        }
+    }
 }
 
 fn default_hotkey() -> String {
@@ -111,7 +164,8 @@ pub fn config_path() -> Result<PathBuf, String> {
 impl Config {
     pub fn resolve_deepgram_api_key(&self) -> Result<String, String> {
         if let Some(api_key) = self
-            .deepgram_api_key
+            .deepgram
+            .api_key
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -132,14 +186,15 @@ impl Config {
         };
 
         Err(format!(
-            "Deepgram API key is missing. Set deepgram_api_key in {} or export DEEPGRAM_API_KEY.",
+            "Deepgram API key is missing. Set deepgram.api_key in {} or export DEEPGRAM_API_KEY.",
             config_location_hint
         ))
     }
 
     pub fn resolve_deepgram_project_id(&self) -> Option<String> {
         if let Some(project_id) = self
-            .deepgram_project_id
+            .deepgram
+            .project_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -173,7 +228,7 @@ pub fn load_config() -> Config {
             )
         });
 
-        return serde_yaml::from_str(&contents).unwrap_or_else(|error| {
+        return toml::from_str(&contents).unwrap_or_else(|error| {
             panic!(
                 "{} is set but {} could not be parsed: {}",
                 CONFIG_OVERRIDE_ENV_VAR,
@@ -184,7 +239,7 @@ pub fn load_config() -> Config {
     }
 
     match std::fs::read_to_string(&path) {
-        Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_else(|error| {
+        Ok(contents) => toml::from_str(&contents).unwrap_or_else(|error| {
             log::warn!(
                 "failed to parse {}: {}, using defaults",
                 path.display(),
@@ -208,7 +263,7 @@ pub fn load_config() -> Config {
 }
 
 fn default_config() -> Config {
-    serde_yaml::from_str("{}").expect("default config YAML must parse")
+    Config::default()
 }
 
 fn non_empty_env_path(variable_name: &str) -> Option<PathBuf> {

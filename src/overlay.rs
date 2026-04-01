@@ -82,10 +82,8 @@ impl OverlayWindow {
             layer.setMasksToBounds(true);
         }
 
-        let scroll_view = NSScrollView::initWithFrame(
-            NSScrollView::alloc(mtm),
-            scroll_view_frame(true),
-        );
+        let scroll_view =
+            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), scroll_view_frame(true));
         scroll_view.setAutoresizingMask(
             NSAutoresizingMaskOptions::ViewWidthSizable
                 | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -267,7 +265,8 @@ impl OverlayWindow {
     fn update_footer_visibility(&self, footer_is_visible: bool) {
         self.separator_view.setHidden(!footer_is_visible);
         self.footer_text_field.setHidden(!footer_is_visible);
-        self.scroll_view.setFrame(scroll_view_frame(footer_is_visible));
+        self.scroll_view
+            .setFrame(scroll_view_frame(footer_is_visible));
     }
 
     fn text_content_min_height(&self) -> f64 {
@@ -292,7 +291,7 @@ fn resolve_overlay_font(style: &OverlayStyle, font_size: f64) -> Retained<objc2_
         Some(font) => font,
         None => {
             log::warn!(
-                "overlay_font_name '{}' was not found; falling back to the system font",
+                "ui.font_name '{}' was not found; falling back to the system font",
                 font_name
             );
             objc2_app_kit::NSFont::systemFontOfSize(normalized_font_size)

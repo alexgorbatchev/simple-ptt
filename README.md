@@ -72,8 +72,8 @@ xattr -d com.apple.quarantine /path/to/simple-ptt
 `simple-ptt` looks for configuration in this order:
 
 1. `SIMPLE_PTT_CONFIG`
-2. `$XDG_CONFIG_HOME/simple-ptt/config.yaml`
-3. `~/.config/simple-ptt/config.yaml`
+2. `$XDG_CONFIG_HOME/simple-ptt/config.toml`
+3. `~/.config/simple-ptt/config.toml`
 
 If no config file is found, defaults are used where possible. However, you still need to provide a Deepgram API key either in the config file or through the `DEEPGRAM_API_KEY` environment variable.
 
@@ -81,52 +81,61 @@ Start from the example file in this repository:
 
 ```bash
 mkdir -p ~/.config/simple-ptt
-cp config.example.yaml ~/.config/simple-ptt/config.yaml
+cp config.example.toml ~/.config/simple-ptt/config.toml
 ```
 
 ### Example config
 
-```yaml
-hotkey: F5
+```toml
+[ui]
+hotkey = "F5"
+# font_name = "Menlo"
+font_size = 18.0
+footer_font_size = 10.0
 
-deepgram_api_key: YOUR_DEEPGRAM_API_KEY
-# deepgram_project_id: 98bf0e8b-23f6-4c01-b672-604008a47504
+[mic]
+# audio_device = "MacBook Pro Microphone"
+sample_rate = 16000
+gain = 4.0
+hold_ms = 300
 
-deepgram_language: en-US
-deepgram_model: nova-3
-
-# Optional: exact input device name or numeric index from the host input device list.
-#audio_device: "MacBook Pro Microphone"
-
-sample_rate: 16000
-gain: 4.0
-hold_ms: 300
-
-# Optional overlay typography. AppKit expects a concrete font name.
-#overlay_font_name: "Menlo"
-overlay_font_size: 18.0
-overlay_footer_font_size: 10.0
-
-endpointing_ms: 300
-utterance_end_ms: 1000
+[deepgram]
+api_key = "YOUR_DEEPGRAM_API_KEY"
+# project_id = "98bf0e8b-23f6-4c01-b672-604008a47504"
+language = "en-US"
+model = "nova-3"
+endpointing_ms = 300
+utterance_end_ms = 1000
 ```
 
 ### Config values
 
+#### `[ui]`
+
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
 | `hotkey` | No | `F5` | Global push-to-talk key. |
-| `deepgram_api_key` | Yes* | none | Deepgram API key. Can also be provided via `DEEPGRAM_API_KEY`. |
-| `deepgram_project_id` | No | none | Optional Deepgram project ID. Can also be provided via `DEEPGRAM_PROJECT_ID`. |
-| `deepgram_language` | No | `en-US` | Deepgram language code. |
-| `deepgram_model` | No | `nova-3` | Deepgram transcription model. |
+| `font_name` | No | system default | Overlay font family name. |
+| `font_size` | No | `18.0` | Main overlay font size. |
+| `footer_font_size` | No | derived from `font_size` | Footer text font size. |
+
+#### `[mic]`
+
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
 | `audio_device` | No | default input device | Exact input device name or numeric index. |
 | `sample_rate` | No | `16000` | Requested audio sample rate in Hz. |
 | `gain` | No | `4.0` | Input gain multiplier. |
 | `hold_ms` | No | `300` | Minimum hold duration for the push-to-talk hotkey in milliseconds. |
-| `overlay_font_name` | No | system default | Overlay font family name. |
-| `overlay_font_size` | No | `18.0` | Main overlay font size. |
-| `overlay_footer_font_size` | No | `10.0` / derived from main size | Footer text font size. |
+
+#### `[deepgram]`
+
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `api_key` | Yes* | none | Deepgram API key. Can also be provided via `DEEPGRAM_API_KEY`. |
+| `project_id` | No | none | Optional Deepgram project ID. Can also be provided via `DEEPGRAM_PROJECT_ID`. |
+| `language` | No | `en-US` | Deepgram language code. |
+| `model` | No | `nova-3` | Deepgram transcription model. |
 | `endpointing_ms` | No | `300` | Endpointing delay for transcription finalization. |
 | `utterance_end_ms` | No | `1000` | Utterance end timeout in milliseconds. |
 
@@ -143,7 +152,7 @@ simple-ptt
 If you want to point at a custom config file:
 
 ```bash
-SIMPLE_PTT_CONFIG=/path/to/config.yaml simple-ptt
+SIMPLE_PTT_CONFIG=/path/to/config.toml simple-ptt
 ```
 
 If you prefer environment variables for secrets:
