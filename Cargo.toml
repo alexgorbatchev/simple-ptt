@@ -69,6 +69,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
+rig-core = "0.34"
 
 # Configuration
 serde = { version = "1", features = ["derive"] }

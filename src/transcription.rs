@@ -19,7 +19,10 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
-use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING};
+use crate::state::{
+    AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_TRANSFORMING,
+};
+use crate::transformation::{transform_text, TransformationRuntimeConfig};
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
 const COMMAND_QUEUE_CAPACITY: usize = 256;
@@ -44,7 +47,11 @@ pub struct TranscriptionController {
 enum Command {
     StartSession,
     AudioChunk(Vec<u8>),
-    StopSession,
+    StopSessionAndPaste,
+    StopSessionAndTransform,
+    PasteBuffer,
+    TransformBuffer,
+    DiscardBuffer,
 }
 
 struct ActiveSession {
@@ -63,9 +70,33 @@ impl TranscriptionController {
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
-    pub fn stop_session(&self) -> Result<(), String> {
+    pub fn stop_session_and_paste(&self) -> Result<(), String> {
         self.command_tx
-            .send(Command::StopSession)
+            .send(Command::StopSessionAndPaste)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn stop_session_and_transform(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::StopSessionAndTransform)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn paste_buffer(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::PasteBuffer)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn transform_buffer(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::TransformBuffer)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn discard_buffer(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::DiscardBuffer)
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
@@ -89,6 +120,7 @@ impl TranscriptionController {
 pub fn spawn_transcription_thread(
     state: Arc<AppState>,
     config: DeepgramConfig,
+    transformation_config: Option<TransformationRuntimeConfig>,
 ) -> TranscriptionController {
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let sample_rate = Arc::new(AtomicU32::new(16000));
@@ -104,6 +136,7 @@ pub fn spawn_transcription_thread(
                 .expect("failed to build tokio runtime for Deepgram");
 
             let mut active_session: Option<ActiveSession> = None;
+            let mut buffered_text = String::new();
 
             while let Ok(command) = command_rx.recv() {
                 match command {
@@ -113,9 +146,17 @@ pub fn spawn_transcription_thread(
                             continue;
                         }
 
+                        if !buffered_text.is_empty() {
+                            log::warn!(
+                                "ignoring start request because buffered text must be pasted or discarded first"
+                            );
+                            continue;
+                        }
+
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
                         state.clear_abort_request();
                         state.clear_overlay_text();
+                        state.set_overlay_text_opacity(1.0);
                         match start_session(&runtime, state.clone(), &config, current_sample_rate) {
                             Ok(session) => {
                                 active_session = Some(session);
@@ -143,11 +184,11 @@ pub fn spawn_transcription_thread(
                             }
                         }
                     }
-                    Command::StopSession => {
+                    Command::StopSessionAndPaste => {
                         state.set_state(STATE_PROCESSING);
 
                         let Some(session) = active_session.take() else {
-                            log::warn!("received stop request without an active Deepgram session");
+                            log::warn!("received paste-stop request without an active Deepgram session");
                             state.set_state(STATE_IDLE);
                             continue;
                         };
@@ -157,6 +198,7 @@ pub fn spawn_transcription_thread(
                                 if state.consume_abort_request() {
                                     log::info!("discarding transcript because the session was aborted");
                                     state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
@@ -164,22 +206,13 @@ pub fn spawn_transcription_thread(
                                 if transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
                                     state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
-                                log::info!("final transcript: {}", transcript);
-                                match write_clipboard_and_paste(&transcript) {
-                                    Ok(()) => {
-                                        state.clear_overlay_text();
-                                        state.set_state(STATE_IDLE);
-                                    }
-                                    Err(error) => {
-                                        log::error!("failed to copy/paste transcript: {}", error);
-                                        state.clear_overlay_text();
-                                        state.set_state(STATE_ERROR);
-                                    }
-                                }
+                                buffered_text = transcript;
+                                paste_buffered_text(&state, &mut buffered_text);
                             }
                             Err(error) => {
                                 if state.consume_abort_request() {
@@ -188,15 +221,91 @@ pub fn spawn_transcription_thread(
                                         error
                                     );
                                     state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
                                 state.set_state(STATE_ERROR);
                             }
                         }
+                    }
+                    Command::StopSessionAndTransform => {
+                        state.set_state(STATE_PROCESSING);
+
+                        let Some(session) = active_session.take() else {
+                            log::warn!(
+                                "received transform-stop request without an active Deepgram session"
+                            );
+                            state.set_state(STATE_IDLE);
+                            continue;
+                        };
+
+                        match finish_session(&runtime, session) {
+                            Ok(transcript) => {
+                                if state.consume_abort_request() {
+                                    log::info!("discarding transcript because the session was aborted");
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                if transcript.is_empty() {
+                                    log::info!("Deepgram session completed without a final transcript");
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                buffered_text = transcript;
+                                transform_buffered_text(
+                                    &runtime,
+                                    state.clone(),
+                                    &transformation_config,
+                                    &mut buffered_text,
+                                );
+                            }
+                            Err(error) => {
+                                if state.consume_abort_request() {
+                                    log::info!(
+                                        "ignoring Deepgram session error after abort request: {}",
+                                        error
+                                    );
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                log::error!("Deepgram session failed: {}", error);
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                                state.set_state(STATE_ERROR);
+                            }
+                        }
+                    }
+                    Command::PasteBuffer => {
+                        paste_buffered_text(&state, &mut buffered_text);
+                    }
+                    Command::TransformBuffer => {
+                        transform_buffered_text(
+                            &runtime,
+                            state.clone(),
+                            &transformation_config,
+                            &mut buffered_text,
+                        );
+                    }
+                    Command::DiscardBuffer => {
+                        buffered_text.clear();
+                        state.clear_abort_request();
+                        state.clear_overlay_text();
+                        state.set_overlay_text_opacity(1.0);
+                        state.set_state(STATE_IDLE);
                     }
                 }
             }
@@ -271,6 +380,95 @@ fn finish_session(runtime: &Runtime, session: ActiveSession) -> Result<String, S
             Err(error) => Err(format!("transcription task join error: {}", error)),
         }
     })
+}
+
+fn paste_buffered_text(state: &AppState, buffered_text: &mut String) {
+    if buffered_text.trim().is_empty() {
+        log::warn!("ignoring paste request because no buffered text is available");
+        state.clear_overlay_text();
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_IDLE);
+        return;
+    }
+
+    state.set_state(STATE_PROCESSING);
+    match write_clipboard_and_paste(buffered_text.as_str()) {
+        Ok(()) => {
+            buffered_text.clear();
+            state.clear_overlay_text();
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_IDLE);
+            log::info!("buffer pasted successfully");
+        }
+        Err(error) => {
+            log::error!("failed to copy/paste buffered text: {}", error);
+            state.set_overlay_text(buffered_text.clone());
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_BUFFER_READY);
+        }
+    }
+}
+
+fn transform_buffered_text(
+    runtime: &Runtime,
+    state: Arc<AppState>,
+    transformation_config: &Option<TransformationRuntimeConfig>,
+    buffered_text: &mut String,
+) {
+    if buffered_text.trim().is_empty() {
+        log::warn!("ignoring transformation request because no buffered text is available");
+        state.clear_overlay_text();
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_IDLE);
+        return;
+    }
+
+    let Some(transform_config) = transformation_config.clone() else {
+        log::warn!("ignoring transformation request because transformation config is incomplete");
+        state.set_overlay_text(buffered_text.clone());
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_BUFFER_READY);
+        return;
+    };
+
+    let original_buffer = buffered_text.clone();
+    state.clear_abort_request();
+    state.set_overlay_text(original_buffer.clone());
+    state.set_overlay_text_opacity(0.02);
+    state.set_state(STATE_TRANSFORMING);
+
+    match runtime.block_on(transform_text(
+        state.clone(),
+        &transform_config,
+        original_buffer.as_str(),
+    )) {
+        Ok(transformed_text) => {
+            if state.consume_abort_request() {
+                log::info!("discarding transformed text because abort was requested");
+                state.set_overlay_text(original_buffer.clone());
+                state.set_overlay_text_opacity(1.0);
+                state.set_state(STATE_BUFFER_READY);
+                return;
+            }
+
+            *buffered_text = transformed_text;
+            state.set_overlay_text(buffered_text.clone());
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_BUFFER_READY);
+            log::info!("buffer transformed successfully");
+        }
+        Err(error) => {
+            if state.consume_abort_request() {
+                log::info!("transformation aborted");
+            } else {
+                log::error!("transformation failed: {}", error);
+            }
+
+            state.set_overlay_text(original_buffer.clone());
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_BUFFER_READY);
+        }
+    }
 }
 
 async fn run_transcription_stream(
@@ -378,8 +576,8 @@ fn join_transcript_parts(transcript_parts: &[String]) -> String {
     build_overlay_text(transcript_parts, None)
 }
 
-fn write_clipboard_and_paste(transcript: &str) -> Result<(), String> {
-    write_clipboard_text(transcript)?;
+fn write_clipboard_and_paste(text: &str) -> Result<(), String> {
+    write_clipboard_text(text)?;
     thread::sleep(Duration::from_millis(PASTEBOARD_SETTLE_DELAY_MS));
     send_paste_shortcut()
 }
@@ -422,9 +620,9 @@ extern "C" fn perform_clipboard_write(context: *mut c_void) {
     request.success = pasteboard.setString_forType(&ns_text, unsafe { NSPasteboardTypeString });
 }
 
-fn write_clipboard_text(transcript: &str) -> Result<(), String> {
+fn write_clipboard_text(text: &str) -> Result<(), String> {
     let mut request = Box::new(ClipboardWriteRequest {
-        text: transcript.to_owned(),
+        text: text.to_owned(),
         success: false,
     });
 

@@ -13,6 +13,7 @@ I built this because I did not like the existing push-to-talk implementations. T
 - Global push-to-talk hotkey
 - Real-time transcription with Deepgram
 - On-screen overlay that updates while you speak
+- Optional LLM cleanup pass before pasting buffered text
 - Paste-oriented workflow for dropping transcribed text into whatever app you are using
 - Minimal configuration, minimal runtime footprint
 
@@ -88,6 +89,15 @@ cp config.example.toml ~/.config/simple-ptt/config.toml
 
 ### Example config
 
+Typical flow:
+
+1. Press `F5` to start dictation.
+2. Optionally press `F6` to stop dictation and run the current transcript through the configured LLM transformation.
+3. Press `F5` to close and paste the current text.
+
+If you skip `F6`, that final `F5` stops dictation and pastes the raw transcript directly.
+
+
 ```toml
 [ui]
 hotkey = "F5"
@@ -108,6 +118,14 @@ language = "en-US"
 model = "nova-3"
 endpointing_ms = 300
 utterance_end_ms = 1000
+
+[transformation]
+hotkey = "F6"
+provider = "openai"
+api_key = "YOUR_LLM_API_KEY"
+model = "gpt-5.4-mini"
+# Optional override; omit to use the built-in prompt.
+# system_prompt = "..."
 ```
 
 ### Config values
@@ -140,6 +158,60 @@ utterance_end_ms = 1000
 | `model` | No | `nova-3` | Deepgram transcription model. |
 | `endpointing_ms` | No | `300` | Endpointing delay for transcription finalization. |
 | `utterance_end_ms` | No | `1000` | Utterance end timeout in milliseconds. |
+
+#### `[transformation]`
+
+| Key | Required | Default | Description |
+| --- | --- | --- | --- |
+| `hotkey` | No | `F6` | Global key used to stop dictation and transform the current transcript before the final paste step. |
+| `provider` | No | none | Rig provider name for the transformation request. See the canonical supported values below. |
+| `api_key` | No | none | API key used for the transformation provider. If omitted, the app falls back to the provider-specific environment variables listed below. |
+| `model` | No | `gpt-5.4-mini` | Model name used for the transformation request. |
+| `system_prompt` | No | built-in prompt | Optional override for the built-in transformation prompt. |
+
+Canonical supported values for `transformation.provider`:
+
+- `anthropic`
+- `cohere`
+- `deepseek`
+- `galadriel`
+- `gemini`
+- `groq`
+- `huggingface`
+- `hyperbolic`
+- `mira`
+- `mistral`
+- `moonshot`
+- `ollama`
+- `openai`
+- `openrouter`
+- `perplexity`
+- `together`
+- `xai`
+
+Environment variable fallback for `[transformation]`:
+
+- `anthropic` → `ANTHROPIC_API_KEY`
+- `cohere` → `COHERE_API_KEY`
+- `deepseek` → `DEEPSEEK_API_KEY`
+- `galadriel` → `GALADRIEL_API_KEY`
+- `gemini` → `GEMINI_API_KEY` (also accepts `GOOGLE_API_KEY`)
+- `groq` → `GROQ_API_KEY`
+- `huggingface` → `HUGGINGFACE_API_KEY` (also accepts `HF_TOKEN`)
+- `hyperbolic` → `HYPERBOLIC_API_KEY`
+- `mira` → `MIRA_API_KEY`
+- `mistral` → `MISTRAL_API_KEY`
+- `moonshot` → `MOONSHOT_API_KEY`
+- `openai` → `OPENAI_API_KEY`
+- `openrouter` → `OPENROUTER_API_KEY`
+- `perplexity` → `PERPLEXITY_API_KEY`
+- `together` → `TOGETHER_API_KEY`
+- `xai` → `XAI_API_KEY`
+- `ollama` → no API key, but the current Rig-based client path expects `OLLAMA_API_BASE_URL`
+
+`transformation.api_key` in the TOML takes precedence over the provider-specific API key environment variable.
+There is currently no equivalent environment-variable fallback for `transformation.provider` or `transformation.model`.
+If the `[transformation]` section is omitted or incomplete, the transformation feature is disabled and the transformation hotkey is not registered.
 
 \* Required either in config or via environment.
 

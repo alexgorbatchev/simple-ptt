@@ -9,12 +9,14 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
-use crate::state::{STATE_PROCESSING, STATE_RECORDING};
+use crate::state::{STATE_BUFFER_READY, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING};
 
 const OVERLAY_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const FOOTER_HEIGHT: f64 = 24.0;
+const FOOTER_HINT_GAP: f64 = 12.0;
+const FOOTER_HINT_WIDTH: f64 = 260.0;
 const OVERLAY_CORNER_RADIUS: f64 = 9.0;
 const SEPARATOR_HEIGHT: f64 = 1.0;
 const TEXT_HORIZONTAL_PADDING: f64 = 18.0;
@@ -25,6 +27,7 @@ pub struct OverlayStyle {
     pub font_name: Option<String>,
     pub font_size: f64,
     pub footer_font_size: f64,
+    pub transformation_hint: Option<String>,
 }
 
 #[derive(Debug)]
@@ -34,7 +37,10 @@ pub struct OverlayWindow {
     separator_view: Retained<NSView>,
     text_field: Retained<NSTextField>,
     footer_text_field: Retained<NSTextField>,
+    footer_hint_text_field: Retained<NSTextField>,
+    footer_hint: Option<String>,
     is_visible: Cell<bool>,
+    text_opacity: Cell<f64>,
 }
 
 impl OverlayWindow {
@@ -143,10 +149,7 @@ impl OverlayWindow {
             0.72, 0.72, 0.75, 1.0,
         )));
         footer_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
-        footer_text_field.setFrame(NSRect::new(
-            NSPoint::new(TEXT_HORIZONTAL_PADDING, 6.0),
-            NSSize::new(usable_text_width(), FOOTER_HEIGHT - 8.0),
-        ));
+        footer_text_field.setFrame(footer_text_frame(style.transformation_hint.is_some()));
         footer_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         if let Some(cell) = footer_text_field.cell() {
             cell.setAlignment(NSTextAlignment::Left);
@@ -154,10 +157,35 @@ impl OverlayWindow {
             cell.setUsesSingleLineMode(true);
         }
 
+        let footer_hint_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        footer_hint_text_field.setDrawsBackground(false);
+        footer_hint_text_field.setBordered(false);
+        footer_hint_text_field.setBezeled(false);
+        footer_hint_text_field.setEditable(false);
+        footer_hint_text_field.setSelectable(false);
+        footer_hint_text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+            0.72, 0.72, 0.75, 1.0,
+        )));
+        footer_hint_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
+        footer_hint_text_field.setFrame(footer_hint_frame());
+        footer_hint_text_field.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
+        if let Some(cell) = footer_hint_text_field.cell() {
+            cell.setAlignment(NSTextAlignment::Right);
+            cell.setLineBreakMode(NSLineBreakMode::ByClipping);
+            cell.setUsesSingleLineMode(true);
+        }
+        if let Some(transformation_hint) = style.transformation_hint.as_deref() {
+            footer_hint_text_field.setStringValue(&NSString::from_str(transformation_hint));
+        }
+        footer_hint_text_field.setHidden(style.transformation_hint.is_none());
+
         scroll_view.setDocumentView(Some(&text_field));
         root_view.addSubview(&scroll_view);
         root_view.addSubview(&separator_view);
         root_view.addSubview(&footer_text_field);
+        root_view.addSubview(&footer_hint_text_field);
         panel.setContentView(Some(&root_view));
         panel.orderOut(None);
 
@@ -167,7 +195,10 @@ impl OverlayWindow {
             separator_view,
             text_field,
             footer_text_field,
+            footer_hint_text_field,
+            footer_hint: style.transformation_hint.clone(),
             is_visible: Cell::new(false),
+            text_opacity: Cell::new(1.0),
         }
     }
 
@@ -176,9 +207,13 @@ impl OverlayWindow {
         mtm: MainThreadMarker,
         state: u8,
         overlay_text: &str,
+        overlay_text_opacity: f64,
         overlay_footer_text: &str,
     ) {
-        let should_show = matches!(state, STATE_RECORDING | STATE_PROCESSING);
+        let should_show = matches!(
+            state,
+            STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
+        );
         if !should_show {
             self.hide();
             return;
@@ -189,8 +224,12 @@ impl OverlayWindow {
         } else {
             overlay_text
         };
-        self.update_footer_visibility(!overlay_footer_text.trim().is_empty());
+        let footer_text_is_visible = !overlay_footer_text.trim().is_empty();
+        let footer_hint_is_visible = self.footer_hint.is_some();
+        let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
+        self.update_layout(footer_is_visible, footer_text_is_visible, footer_hint_is_visible);
         self.set_text(display_text);
+        self.set_text_opacity(overlay_text_opacity);
         self.set_footer_text(overlay_footer_text);
 
         if !self.is_visible.get() {
@@ -205,6 +244,7 @@ impl OverlayWindow {
             self.panel.orderOut(None);
         }
         self.set_text("");
+        self.set_text_opacity(1.0);
         self.set_footer_text("");
     }
 
@@ -256,15 +296,38 @@ impl OverlayWindow {
         NSView::setNeedsDisplay(&self.text_field, true);
     }
 
+    fn set_text_opacity(&self, target_text_opacity: f64) {
+        let clamped_target_opacity = target_text_opacity.clamp(0.0, 1.0);
+        let current_text_opacity = self.text_opacity.get();
+        let next_text_opacity = if clamped_target_opacity >= current_text_opacity
+            || (current_text_opacity - clamped_target_opacity).abs() <= 0.03
+        {
+            clamped_target_opacity
+        } else {
+            current_text_opacity + ((clamped_target_opacity - current_text_opacity) * 0.4)
+        };
+
+        self.text_field.setAlphaValue(next_text_opacity);
+        self.text_opacity.set(next_text_opacity);
+        NSView::setNeedsDisplay(&self.text_field, true);
+    }
+
     fn set_footer_text(&self, footer_text: &str) {
         self.footer_text_field
             .setStringValue(&NSString::from_str(footer_text));
         NSView::setNeedsDisplay(&self.footer_text_field, true);
     }
 
-    fn update_footer_visibility(&self, footer_is_visible: bool) {
+    fn update_layout(
+        &self,
+        footer_is_visible: bool,
+        footer_text_is_visible: bool,
+        footer_hint_is_visible: bool,
+    ) {
         self.separator_view.setHidden(!footer_is_visible);
-        self.footer_text_field.setHidden(!footer_is_visible);
+        self.footer_text_field.setHidden(!footer_text_is_visible);
+        self.footer_hint_text_field
+            .setHidden(!footer_hint_is_visible);
         self.scroll_view
             .setFrame(scroll_view_frame(footer_is_visible));
     }
@@ -311,6 +374,8 @@ fn default_overlay_text(state: u8) -> &'static str {
     match state {
         STATE_RECORDING => "Listening…",
         STATE_PROCESSING => "Transcribing…",
+        STATE_BUFFER_READY => "Ready to paste…",
+        STATE_TRANSFORMING => "Transforming…",
         _ => "",
     }
 }
@@ -337,6 +402,29 @@ fn scroll_view_frame(footer_is_visible: bool) -> NSRect {
     NSRect::new(
         NSPoint::new(0.0, origin_y),
         NSSize::new(OVERLAY_WIDTH, text_area_height(footer_is_visible)),
+    )
+}
+
+fn footer_text_frame(has_footer_hint: bool) -> NSRect {
+    let footer_text_width = if has_footer_hint {
+        usable_text_width() - FOOTER_HINT_WIDTH - FOOTER_HINT_GAP
+    } else {
+        usable_text_width()
+    };
+
+    NSRect::new(
+        NSPoint::new(TEXT_HORIZONTAL_PADDING, 6.0),
+        NSSize::new(footer_text_width.max(0.0), FOOTER_HEIGHT - 8.0),
+    )
+}
+
+fn footer_hint_frame() -> NSRect {
+    NSRect::new(
+        NSPoint::new(
+            OVERLAY_WIDTH - TEXT_HORIZONTAL_PADDING - FOOTER_HINT_WIDTH,
+            6.0,
+        ),
+        NSSize::new(FOOTER_HINT_WIDTH, FOOTER_HEIGHT - 8.0),
     )
 }
 

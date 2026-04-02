@@ -14,7 +14,10 @@ use objc2_foundation::{
 
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
-use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
+use crate::state::{
+    AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
+    STATE_TRANSFORMING,
+};
 
 const APP_DISPLAY_NAME: &str = "simple-ptt";
 const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
@@ -65,7 +68,7 @@ define_class!(
             let title_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    &objc2_foundation::NSString::from_str(&format!(
+                    &NSString::from_str(&format!(
                         "{} — Version {}",
                         APP_DISPLAY_NAME,
                         env!("CARGO_PKG_VERSION")
@@ -166,11 +169,19 @@ impl AppDelegate {
         mtm: MainThreadMarker,
         state: u8,
         overlay_text: &str,
+        overlay_text_opacity: f64,
         overlay_footer_text: &str,
     ) {
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
-        update_overlay_window(self, mtm, state, overlay_text, overlay_footer_text);
+        update_overlay_window(
+            self,
+            mtm,
+            state,
+            overlay_text,
+            overlay_text_opacity,
+            overlay_footer_text,
+        );
     }
 }
 
@@ -181,7 +192,7 @@ fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
 
     match billing_menu_text(overlay_footer_text) {
         Some(billing_text) => {
-            billing_menu_item.setTitle(&objc2_foundation::NSString::from_str(billing_text));
+            billing_menu_item.setTitle(&NSString::from_str(billing_text));
             billing_menu_item.setHidden(false);
         }
         None => billing_menu_item.setHidden(true),
@@ -202,7 +213,10 @@ fn billing_menu_text(overlay_footer_text: &str) -> Option<&str> {
 fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
     if let Some(status_item) = delegate.ivars().status_item.get() {
         if let Some(button) = status_item.button(mtm) {
-            let is_active = matches!(state, STATE_RECORDING | STATE_PROCESSING);
+            let is_active = matches!(
+                state,
+                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
+            );
             let icon = if is_active {
                 &delegate.ivars().active_status_bar_icon
             } else {
@@ -219,10 +233,17 @@ fn update_overlay_window(
     mtm: MainThreadMarker,
     state: u8,
     overlay_text: &str,
+    overlay_text_opacity: f64,
     overlay_footer_text: &str,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
-        overlay_window.update(mtm, state, overlay_text, overlay_footer_text);
+        overlay_window.update(
+            mtm,
+            state,
+            overlay_text,
+            overlay_text_opacity,
+            overlay_footer_text,
+        );
     }
 }
 
@@ -239,6 +260,7 @@ struct UiUpdate {
     delegate_addr: usize,
     overlay_footer_text: String,
     overlay_text: String,
+    overlay_text_opacity: f64,
     state: u8,
 }
 
@@ -250,6 +272,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         mtm,
         update.state,
         &update.overlay_text,
+        update.overlay_text_opacity,
         &update.overlay_footer_text,
     );
 }
@@ -263,39 +286,51 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
         .spawn(move || {
             let mut last_overlay_footer_text = String::new();
             let mut last_overlay_text = String::new();
+            let mut last_overlay_text_opacity = 1.0;
             let mut last_state = STATE_IDLE;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
                 let current_state = state.get_state();
                 let current_overlay_footer_text = state.overlay_footer_text();
                 let current_overlay_text = state.overlay_text();
-                if current_state == last_state
-                    && current_overlay_footer_text == last_overlay_footer_text
-                    && current_overlay_text == last_overlay_text
-                {
+                let current_overlay_text_opacity = state.overlay_text_opacity();
+                let ui_changed = current_state != last_state
+                    || current_overlay_footer_text != last_overlay_footer_text
+                    || current_overlay_text != last_overlay_text
+                    || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
+                        > f64::EPSILON;
+                let should_animate_overlay =
+                    matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
+                if !ui_changed && !should_animate_overlay {
                     continue;
                 }
 
                 last_state = current_state;
                 last_overlay_footer_text = current_overlay_footer_text.clone();
                 last_overlay_text = current_overlay_text.clone();
+                last_overlay_text_opacity = current_overlay_text_opacity;
 
-                let label = match current_state {
-                    STATE_RECORDING => "recording",
-                    STATE_PROCESSING => "processing",
-                    STATE_ERROR => "error",
-                    _ => "idle",
-                };
-                log::info!(
-                    "ui update: state={}, transcript_len={}",
-                    label,
-                    current_overlay_text.len()
-                );
+                if ui_changed {
+                    let label = match current_state {
+                        STATE_RECORDING => "recording",
+                        STATE_PROCESSING => "processing",
+                        STATE_BUFFER_READY => "buffer-ready",
+                        STATE_TRANSFORMING => "transforming",
+                        STATE_ERROR => "error",
+                        _ => "idle",
+                    };
+                    log::info!(
+                        "ui update: state={}, transcript_len={}",
+                        label,
+                        current_overlay_text.len()
+                    );
+                }
 
                 let update = Box::new(UiUpdate {
                     delegate_addr,
                     overlay_footer_text: current_overlay_footer_text,
                     overlay_text: current_overlay_text,
+                    overlay_text_opacity: current_overlay_text_opacity,
                     state: current_state,
                 });
                 unsafe {

@@ -7,6 +7,7 @@ mod icon;
 mod overlay;
 mod state;
 mod transcription;
+mod transformation;
 
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSApplication;
@@ -27,8 +28,12 @@ fn main() {
     log::info!("simple-ptt starting");
 
     let config = config::load_config();
+    let transformation_config = config.resolve_transformation_config().ok();
+    let transformation_hotkey = transformation_config
+        .as_ref()
+        .map(|_| config.transformation.hotkey.as_str());
     log::info!(
-        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, api_key_configured={}, project_id_configured={})",
+        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
         config.ui.hotkey,
         config.mic.audio_device,
         config.mic.sample_rate,
@@ -41,10 +46,16 @@ fn main() {
         config.deepgram.utterance_end_ms,
         config.deepgram.model,
         config.deepgram.language,
-        config.deepgram.api_key.as_deref().map(str::is_empty).map(|is_empty| !is_empty).unwrap_or(false)
+        config.deepgram.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false)
             || std::env::var("DEEPGRAM_API_KEY").ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
-        config.deepgram.project_id.as_deref().map(str::is_empty).map(|is_empty| !is_empty).unwrap_or(false)
-            || std::env::var(billing::deepgram_project_id_env_var()).ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false)
+        config.deepgram.project_id.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false)
+            || std::env::var(billing::deepgram_project_id_env_var()).ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
+        transformation_config.is_some(),
+        transformation_hotkey,
+        config.transformation.provider,
+        &config.transformation.model,
+        config.transformation.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
+        !config.transformation.system_prompt.trim().is_empty(),
     );
 
     let deepgram_api_key = config
@@ -72,6 +83,7 @@ fn main() {
             endpointing_ms: config.deepgram.endpointing_ms,
             utterance_end_ms: config.deepgram.utterance_end_ms,
         },
+        transformation_config,
     );
 
     let (_audio_stream, actual_rate) = audio::build_input_stream(
@@ -88,6 +100,7 @@ fn main() {
         billing_controller,
         transcription_controller,
         &config.ui.hotkey,
+        transformation_hotkey,
         config.mic.hold_ms,
     );
 
@@ -124,6 +137,12 @@ fn main() {
             font_name: config.ui.font_name.clone(),
             font_size: overlay_font_size,
             footer_font_size: overlay_footer_font_size,
+            transformation_hint: transformation_hotkey.map(|hotkey| {
+                format!(
+                    "{}: transform {}: paste ESC: close",
+                    hotkey, config.ui.hotkey
+                )
+            }),
         },
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));

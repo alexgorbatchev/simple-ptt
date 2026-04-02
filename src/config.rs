@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 use crate::billing::deepgram_project_id_env_var;
+use crate::transformation::TransformationRuntimeConfig;
 
 const CONFIG_OVERRIDE_ENV_VAR: &str = "SIMPLE_PTT_CONFIG";
 const DEFAULT_CONFIG_FILE_NAME: &str = "config.toml";
@@ -17,6 +18,9 @@ pub struct Config {
 
     #[serde(default)]
     pub deepgram: DeepgramConfig,
+
+    #[serde(default)]
+    pub transformation: TransformationConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -101,6 +105,34 @@ impl Default for DeepgramConfig {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TransformationConfig {
+    #[serde(default = "default_transformation_hotkey")]
+    pub hotkey: String,
+
+    pub provider: Option<String>,
+
+    pub api_key: Option<String>,
+
+    #[serde(default = "default_transformation_model")]
+    pub model: String,
+
+    #[serde(default = "default_transformation_system_prompt")]
+    pub system_prompt: String,
+}
+
+impl Default for TransformationConfig {
+    fn default() -> Self {
+        Self {
+            hotkey: default_transformation_hotkey(),
+            provider: None,
+            api_key: None,
+            model: default_transformation_model(),
+            system_prompt: default_transformation_system_prompt(),
+        }
+    }
+}
+
 fn default_hotkey() -> String {
     "F5".into()
 }
@@ -135,6 +167,37 @@ fn default_endpointing_ms() -> u16 {
 
 fn default_utterance_end_ms() -> u16 {
     1000
+}
+
+fn default_transformation_hotkey() -> String {
+    "F6".into()
+}
+
+fn default_transformation_model() -> String {
+    "gpt-5.4-mini".into()
+}
+
+fn default_transformation_system_prompt() -> String {
+    concat!(
+        "You are editing raw speech-to-text output that was dictated quickly as instructions for ",
+        "an LLM agent. Rewrite the input as clean, direct written instructions while preserving ",
+        "the original meaning and intent. Do not blindly remove words just because they sound ",
+        "like filler. Instead, infer the final intended wording. If the speaker starts a phrase, ",
+        "revises it, or corrects themselves, keep only the semantically final version and omit ",
+        "intermediate wording that was clearly discarded by the correction. Remove hesitations, ",
+        "repair trails, and dictation noise only when they are not part of the intended content. ",
+        "Fix punctuation, capitalization, and obvious transcription mistakes. Preserve technical ",
+        "jargon, product names, API names, CLI flags, file paths, environment variable names, ",
+        "and programmer vocabulary when clearly intended. If the speaker is clearly dictating ",
+        "structure such as bullet points, numbered lists, headings, or short action items, ",
+        "format the output accordingly. When the speaker is clearly dictating symbols or meta ",
+        "words in a technical context, convert them to the intended characters, for example dash ",
+        "to -, underscore to _, slash to /, backslash to \\, colon to :, dot to ., open paren ",
+        "to (, close paren to ), open bracket to [, close bracket to ], open brace to {{, and ",
+        "close brace to }}. Do not add new facts, commentary, or formatting beyond what is ",
+        "implied by the input. Return only the transformed text."
+    )
+    .into()
 }
 
 pub fn config_path() -> Result<PathBuf, String> {
@@ -206,6 +269,126 @@ impl Config {
             .ok()
             .map(|project_id| project_id.trim().to_owned())
             .filter(|project_id| !project_id.is_empty())
+    }
+
+    pub fn resolve_transformation_config(&self) -> Result<TransformationRuntimeConfig, String> {
+        let provider = self
+            .transformation
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                format!(
+                    "transformation.provider is missing. Set it in {}.",
+                    config_location_hint()
+                )
+            })?
+            .to_owned();
+
+        let model = match self.transformation.model.trim() {
+            "" => default_transformation_model(),
+            model => model.to_owned(),
+        };
+
+        if !supported_transformation_providers().contains(&provider.as_str()) {
+            return Err(format!(
+                "unsupported transformation.provider '{}'. Supported values: {}.",
+                provider,
+                supported_transformation_providers().join(", ")
+            ));
+        }
+
+        let api_key = resolve_transformation_api_key(
+            self.transformation.api_key.as_deref(),
+            provider.as_str(),
+        );
+
+        let system_prompt = self.transformation.system_prompt.trim();
+
+        Ok(TransformationRuntimeConfig {
+            provider,
+            api_key,
+            model,
+            system_prompt: if system_prompt.is_empty() {
+                default_transformation_system_prompt()
+            } else {
+                system_prompt.to_owned()
+            },
+        })
+    }
+}
+
+fn resolve_transformation_api_key(
+    configured_api_key: Option<&str>,
+    provider: &str,
+) -> Option<String> {
+    if let Some(api_key) = configured_api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Some(api_key.to_owned());
+    }
+
+    transformation_api_key_env_vars(provider)
+        .into_iter()
+        .find_map(|variable_name| {
+            std::env::var(variable_name)
+                .ok()
+                .map(|api_key| api_key.trim().to_owned())
+                .filter(|api_key| !api_key.is_empty())
+        })
+}
+
+fn transformation_api_key_env_vars(provider: &str) -> &'static [&'static str] {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "cohere" => &["COHERE_API_KEY"],
+        "deepseek" => &["DEEPSEEK_API_KEY"],
+        "galadriel" => &["GALADRIEL_API_KEY"],
+        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        "groq" => &["GROQ_API_KEY"],
+        "huggingface" => &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
+        "hyperbolic" => &["HYPERBOLIC_API_KEY"],
+        "mira" => &["MIRA_API_KEY"],
+        "mistral" => &["MISTRAL_API_KEY"],
+        "moonshot" => &["MOONSHOT_API_KEY"],
+        "ollama" => &[],
+        "openai" => &["OPENAI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "perplexity" => &["PERPLEXITY_API_KEY"],
+        "together" => &["TOGETHER_API_KEY"],
+        "xai" => &["XAI_API_KEY"],
+        _ => &[],
+    }
+}
+
+fn supported_transformation_providers() -> &'static [&'static str] {
+    &[
+        "anthropic",
+        "cohere",
+        "deepseek",
+        "galadriel",
+        "gemini",
+        "groq",
+        "huggingface",
+        "hyperbolic",
+        "mira",
+        "mistral",
+        "moonshot",
+        "ollama",
+        "openai",
+        "openrouter",
+        "perplexity",
+        "together",
+        "xai",
+    ]
+}
+
+fn config_location_hint() -> String {
+    match config_path() {
+        Ok(path) => path.display().to_string(),
+        Err(error) => error,
     }
 }
 
