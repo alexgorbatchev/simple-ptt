@@ -156,7 +156,7 @@ fn main() {
             meter_style: config.ui.meter_style,
             transformation_hint: transformation_hotkey.map(|hotkey| {
                 format!(
-                    "{}: transform {}: paste ESC: close",
+                    "{}: transform {}: paste ESC: cancel",
                     hotkey, config.ui.hotkey
                 )
             }),
