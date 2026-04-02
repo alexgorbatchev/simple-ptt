@@ -9,17 +9,21 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
+use crate::config::UiMeterStyle;
 use crate::state::{MicMeterSnapshot, STATE_PROCESSING, STATE_RECORDING};
 
 const OVERLAY_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const FOOTER_HEIGHT: f64 = 24.0;
-const METER_BAR_COUNT: usize = 32;
-const METER_BAR_SPACING: f64 = 4.0;
-const METER_CONTAINER_CORNER_RADIUS: f64 = 6.0;
-const METER_MIN_BAR_HEIGHT: f64 = 2.0;
-const METER_SECTION_BOTTOM_PADDING: f64 = 8.0;
+const METER_BAR_COUNT: usize = 20;
+const METER_BAR_SPACING: f64 = 3.0;
+const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
+const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
+const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
+const METER_COLOR_ONLY_BAR_HEIGHT: f64 = 4.0;
+const METER_MIN_BAR_HEIGHT: f64 = 0.0;
+const METER_SECTION_BOTTOM_PADDING: f64 = 3.0;
 const METER_SECTION_HEIGHT: f64 = 30.8;
 const METER_VIEW_HEIGHT: f64 = 19.6;
 const OVERLAY_CORNER_RADIUS: f64 = 9.0;
@@ -32,6 +36,7 @@ pub struct OverlayStyle {
     pub font_name: Option<String>,
     pub font_size: f64,
     pub footer_font_size: f64,
+    pub meter_style: UiMeterStyle,
 }
 
 #[derive(Debug)]
@@ -41,7 +46,8 @@ pub struct OverlayWindow {
     separator_view: Retained<NSView>,
     meter_container_view: Retained<NSView>,
     meter_bar_views: Vec<Retained<NSView>>,
-    meter_history: RefCell<Vec<f32>>,
+    meter_bar_levels: RefCell<Vec<f32>>,
+    meter_style: UiMeterStyle,
     text_field: Retained<NSTextField>,
     footer_text_field: Retained<NSTextField>,
     is_visible: Cell<bool>,
@@ -148,14 +154,6 @@ impl OverlayWindow {
         meter_container_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         meter_container_view.setHidden(true);
         meter_container_view.setWantsLayer(true);
-        if let Some(layer) = meter_container_view.layer() {
-            let meter_background_color =
-                NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.04);
-            let meter_background_cg_color = meter_background_color.CGColor();
-            layer.setBackgroundColor(Some(&meter_background_cg_color));
-            layer.setCornerRadius(METER_CONTAINER_CORNER_RADIUS);
-            layer.setMasksToBounds(true);
-        }
 
         let mut meter_bar_views = Vec::with_capacity(METER_BAR_COUNT);
         for _ in 0..METER_BAR_COUNT {
@@ -168,7 +166,7 @@ impl OverlayWindow {
             );
             bar_view.setWantsLayer(true);
             if let Some(layer) = bar_view.layer() {
-                let bar_color = meter_bar_color(0.0);
+                let bar_color = inactive_meter_bar_color();
                 let bar_cg_color = bar_color.CGColor();
                 layer.setBackgroundColor(Some(&bar_cg_color));
                 layer.setCornerRadius(METER_MIN_BAR_HEIGHT);
@@ -213,7 +211,8 @@ impl OverlayWindow {
             separator_view,
             meter_container_view,
             meter_bar_views,
-            meter_history: RefCell::new(Vec::with_capacity(METER_BAR_COUNT)),
+            meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
+            meter_style: style.meter_style,
             text_field,
             footer_text_field,
             is_visible: Cell::new(false),
@@ -336,52 +335,110 @@ impl OverlayWindow {
     fn update_meter(&self, mic_meter: MicMeterSnapshot) {
         self.meter_container_view.setHidden(false);
 
-        let meter_activity = meter_activity_value(mic_meter);
-        let mut meter_history = self.meter_history.borrow_mut();
-        if meter_history.len() == METER_BAR_COUNT {
-            meter_history.remove(0);
+        let level = mic_meter.level as f32 / u8::MAX as f32;
+        let peak = mic_meter.peak as f32 / u8::MAX as f32;
+
+        match self.meter_style {
+            UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
+            UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
         }
-        meter_history.push(meter_activity);
-        drop(meter_history);
 
         self.render_meter_bars();
     }
 
     fn clear_meter(&self) {
         self.meter_container_view.setHidden(true);
-        self.meter_history.borrow_mut().clear();
+        let mut meter_bar_levels = self.meter_bar_levels.borrow_mut();
+        meter_bar_levels.fill(0.0);
+        drop(meter_bar_levels);
         self.render_meter_bars();
     }
 
     fn render_meter_bars(&self) {
-        let meter_history = self.meter_history.borrow();
-        let aligned_history_start = METER_BAR_COUNT.saturating_sub(meter_history.len());
+        match self.meter_style {
+            UiMeterStyle::AnimatedHeight => self.render_meter_bars_animated_height(),
+            UiMeterStyle::AnimatedColor => self.render_meter_bars_animated_color(),
+        }
+
+        NSView::setNeedsDisplay(&self.meter_container_view, true);
+    }
+
+    fn update_meter_animated_height(&self, level: f32, peak: f32) {
+        let mut meter_bar_levels = self.meter_bar_levels.borrow_mut();
+
+        for (index, current_level) in meter_bar_levels.iter_mut().enumerate() {
+            let target_level = animated_height_target_level(index, level, peak);
+            let smoothing = if target_level >= *current_level {
+                animated_height_attack(index)
+            } else {
+                animated_height_release(index)
+            };
+            *current_level += (target_level - *current_level) * smoothing;
+        }
+    }
+
+    fn update_meter_animated_color(&self, level: f32, peak: f32) {
+        let mut meter_bar_levels = self.meter_bar_levels.borrow_mut();
+
+        for (index, current_level) in meter_bar_levels.iter_mut().enumerate() {
+            let target_level = animated_color_target_level(index, level, peak);
+            let smoothing = if target_level >= *current_level {
+                animated_color_attack(index)
+            } else {
+                animated_color_release(index)
+            };
+            *current_level += (target_level - *current_level) * smoothing;
+        }
+    }
+
+    fn render_meter_bars_animated_height(&self) {
+        let meter_bar_levels = self.meter_bar_levels.borrow();
+        let cluster_width = meter_cluster_width();
         let total_spacing = METER_BAR_SPACING * (METER_BAR_COUNT.saturating_sub(1)) as f64;
-        let bar_width = ((usable_text_width() - total_spacing) / METER_BAR_COUNT as f64)
-            .max(METER_MIN_BAR_HEIGHT);
+        let bar_width = ((cluster_width - total_spacing) / METER_BAR_COUNT as f64).max(1.0);
+        let cluster_origin_x = (usable_text_width() - cluster_width) / 2.0;
 
         for (index, meter_bar_view) in self.meter_bar_views.iter().enumerate() {
-            let meter_value = if index >= aligned_history_start {
-                meter_history[index - aligned_history_start]
-            } else {
-                0.0
-            };
+            let meter_value = meter_bar_levels[index];
             let bar_height = meter_bar_height(meter_value);
-            let x = (bar_width + METER_BAR_SPACING) * index as f64;
+            let x = cluster_origin_x + ((bar_width + METER_BAR_SPACING) * index as f64);
             meter_bar_view.setFrame(NSRect::new(
                 NSPoint::new(x, 0.0),
                 NSSize::new(bar_width, bar_height),
             ));
 
             if let Some(layer) = meter_bar_view.layer() {
-                let bar_color = meter_bar_color(meter_value);
+                let bar_color = animated_height_bar_color(meter_value);
                 let bar_cg_color = bar_color.CGColor();
                 layer.setBackgroundColor(Some(&bar_cg_color));
                 layer.setCornerRadius((bar_width.min(bar_height) / 2.0).min(3.0));
             }
         }
+    }
 
-        NSView::setNeedsDisplay(&self.meter_container_view, true);
+    fn render_meter_bars_animated_color(&self) {
+        let meter_bar_levels = self.meter_bar_levels.borrow();
+        let cluster_width = meter_cluster_width();
+        let total_spacing = METER_BAR_SPACING * (METER_BAR_COUNT.saturating_sub(1)) as f64;
+        let bar_width = ((cluster_width - total_spacing) / METER_BAR_COUNT as f64).max(1.0);
+        let cluster_origin_x = (usable_text_width() - cluster_width) / 2.0;
+        let y = (METER_VIEW_HEIGHT - METER_COLOR_ONLY_BAR_HEIGHT) / 2.0;
+
+        for (index, meter_bar_view) in self.meter_bar_views.iter().enumerate() {
+            let meter_value = meter_bar_levels[index];
+            let x = cluster_origin_x + ((bar_width + METER_BAR_SPACING) * index as f64);
+            meter_bar_view.setFrame(NSRect::new(
+                NSPoint::new(x, y),
+                NSSize::new(bar_width, METER_COLOR_ONLY_BAR_HEIGHT),
+            ));
+
+            if let Some(layer) = meter_bar_view.layer() {
+                let bar_color = animated_color_bar_color(index, meter_value);
+                let bar_cg_color = bar_color.CGColor();
+                layer.setBackgroundColor(Some(&bar_cg_color));
+                layer.setCornerRadius((bar_width.min(METER_COLOR_ONLY_BAR_HEIGHT) / 2.0).min(3.0));
+            }
+        }
     }
 
     fn text_content_min_height(&self) -> f64 {
@@ -430,19 +487,69 @@ fn default_overlay_text(state: u8) -> &'static str {
     }
 }
 
-fn meter_activity_value(mic_meter: MicMeterSnapshot) -> f32 {
-    let level = mic_meter.level as f32 / u8::MAX as f32;
-    let peak = mic_meter.peak as f32 / u8::MAX as f32;
-    ((level * 0.8) + (peak * 0.2)).clamp(0.0, 1.0)
+fn animated_height_target_level(index: usize, level: f32, peak: f32) -> f32 {
+    let center_distance = meter_center_distance(index);
+    let edge_attenuation = 1.0 - (center_distance * 0.68);
+    let sustained_energy = level.powf(0.88) * edge_attenuation;
+    let transient_energy = peak.powf(0.72) * (0.14 + (edge_attenuation * 0.18));
+    (sustained_energy + transient_energy).clamp(0.0, 1.0)
 }
 
-fn meter_bar_color(meter_value: f32) -> Retained<NSColor> {
+fn animated_height_attack(index: usize) -> f32 {
+    let center_distance = meter_center_distance(index);
+    (0.44 - (center_distance * 0.07)).clamp(0.24, 0.44)
+}
+
+fn animated_height_release(index: usize) -> f32 {
+    let center_distance = meter_center_distance(index);
+    (0.30 - (center_distance * 0.045)).clamp(0.15, 0.30)
+}
+
+fn animated_color_target_level(index: usize, level: f32, peak: f32) -> f32 {
+    let gain_level = ((level.powf(0.9) * 0.82) + (peak.powf(0.78) * 0.18)).clamp(0.0, 1.0);
+    if gain_level <= 0.02 {
+        return 0.0;
+    }
+
+    let bar_position = animated_color_bar_position(index);
+    let fade_start = (gain_level - 0.08).clamp(0.0, 1.0);
+    let fade_end = (gain_level + 0.08).clamp(0.0, 1.0);
+
+    if bar_position <= fade_start {
+        return 1.0;
+    }
+
+    if bar_position >= fade_end {
+        return 0.0;
+    }
+
+    1.0 - smoothstep(fade_start, fade_end, bar_position)
+}
+
+fn animated_color_attack(_index: usize) -> f32 {
+    0.52
+}
+
+fn animated_color_release(_index: usize) -> f32 {
+    0.68
+}
+
+fn meter_center_distance(index: usize) -> f32 {
+    let center = (METER_BAR_COUNT as f32 - 1.0) / 2.0;
+    ((index as f32 - center).abs() / center).clamp(0.0, 1.0)
+}
+
+fn inactive_meter_bar_color() -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.12)
+}
+
+fn animated_height_bar_color(meter_value: f32) -> Retained<NSColor> {
     if meter_value >= 0.92 {
         return NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, 1.0);
     }
 
     if meter_value >= 0.72 {
-        return NSColor::colorWithSRGBRed_green_blue_alpha(0.96, 0.72, 0.22, 0.98);
+        return NSColor::colorWithSRGBRed_green_blue_alpha(0.82, 0.50, 0.08, 0.98);
     }
 
     if meter_value >= 0.18 {
@@ -456,10 +563,47 @@ fn meter_bar_color(meter_value: f32) -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.14)
 }
 
+fn animated_color_bar_color(index: usize, meter_value: f32) -> Retained<NSColor> {
+    if meter_value <= 0.02 {
+        return inactive_meter_bar_color();
+    }
+
+    let bar_position = animated_color_bar_position(index);
+    let intensity = (0.35 + (meter_value * 0.65)).clamp(0.0, 1.0) as f64;
+
+    if bar_position >= 0.88 {
+        return NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, intensity);
+    }
+
+    if bar_position >= 0.68 {
+        return NSColor::colorWithSRGBRed_green_blue_alpha(0.82, 0.50, 0.08, intensity);
+    }
+
+    NSColor::colorWithSRGBRed_green_blue_alpha(0.26, 0.86, 0.54, intensity)
+}
+
 fn meter_bar_height(meter_value: f32) -> f64 {
     let normalized_meter_value = meter_value.clamp(0.0, 1.0) as f64;
     METER_MIN_BAR_HEIGHT
         + ((METER_VIEW_HEIGHT - METER_MIN_BAR_HEIGHT) * normalized_meter_value.powf(0.9))
+}
+
+fn animated_color_bar_position(index: usize) -> f32 {
+    meter_center_distance(index)
+}
+
+fn smoothstep(start: f32, end: f32, value: f32) -> f32 {
+    if (end - start).abs() <= f32::EPSILON {
+        return if value >= end { 1.0 } else { 0.0 };
+    }
+
+    let t = ((value - start) / (end - start)).clamp(0.0, 1.0);
+    t * t * (3.0 - (2.0 * t))
+}
+
+fn meter_cluster_width() -> f64 {
+    (usable_text_width() * METER_CLUSTER_WIDTH_FACTOR)
+        .clamp(METER_CLUSTER_MIN_WIDTH, METER_CLUSTER_MAX_WIDTH)
 }
 
 fn footer_total_height() -> f64 {

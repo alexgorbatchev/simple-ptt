@@ -19,6 +19,14 @@ pub struct Config {
     pub deepgram: DeepgramConfig,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiMeterStyle {
+    AnimatedHeight,
+    #[default]
+    AnimatedColor,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct UiConfig {
     #[serde(default = "default_hotkey")]
@@ -31,6 +39,9 @@ pub struct UiConfig {
     pub font_size: f64,
 
     pub footer_font_size: Option<f64>,
+
+    #[serde(default = "default_ui_meter_style")]
+    pub meter_style: UiMeterStyle,
 }
 
 impl Default for UiConfig {
@@ -40,6 +51,7 @@ impl Default for UiConfig {
             font_name: None,
             font_size: default_overlay_font_size(),
             footer_font_size: None,
+            meter_style: default_ui_meter_style(),
         }
     }
 }
@@ -127,6 +139,10 @@ fn default_hold_ms() -> u64 {
 
 fn default_overlay_font_size() -> f64 {
     12.0
+}
+
+fn default_ui_meter_style() -> UiMeterStyle {
+    UiMeterStyle::AnimatedColor
 }
 
 fn default_endpointing_ms() -> u16 {

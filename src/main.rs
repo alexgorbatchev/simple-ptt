@@ -40,7 +40,7 @@ fn main() {
 
     let config = config::load_config();
     log::info!(
-        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, api_key_configured={}, project_id_configured={})",
+        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, api_key_configured={}, project_id_configured={})",
         config.ui.hotkey,
         config.mic.audio_device,
         config.mic.sample_rate,
@@ -49,6 +49,7 @@ fn main() {
         config.ui.font_name,
         config.ui.font_size,
         config.ui.footer_font_size,
+        config.ui.meter_style,
         config.deepgram.endpointing_ms,
         config.deepgram.utterance_end_ms,
         config.deepgram.model,
@@ -136,6 +137,7 @@ fn main() {
             font_name: config.ui.font_name.clone(),
             font_size: overlay_font_size,
             footer_font_size: overlay_footer_font_size,
+            meter_style: config.ui.meter_style,
         },
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
