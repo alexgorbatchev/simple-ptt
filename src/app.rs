@@ -73,25 +73,14 @@ define_class!(
                         APP_DISPLAY_NAME,
                         env!("CARGO_PKG_VERSION")
                     )),
-                    None,
-                    ns_string!(""),
-                )
-            };
-            title_item.setEnabled(false);
-            menu.addItem(&title_item);
-
-            let github_item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    ns_string!("GitHub Repo"),
                     Some(sel!(openGitHubRepo:)),
                     ns_string!(""),
                 )
             };
             unsafe {
-                github_item.setTarget(Some(self));
+                title_item.setTarget(Some(self));
             }
-            menu.addItem(&github_item);
+            menu.addItem(&title_item);
 
             let billing_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
