@@ -42,11 +42,22 @@ microphone_usage_description="${APP_MICROPHONE_USAGE_DESCRIPTION:-simple-ptt nee
 
 app_contents_path="${app_bundle_path}/Contents"
 app_macos_path="${app_contents_path}/MacOS"
+app_resources_path="${app_contents_path}/Resources"
+icon_file_name="AppIcon.icns"
+icon_file_base_name="${icon_file_name%.icns}"
+iconset_root_dir="$(mktemp -d)"
+iconset_dir="${iconset_root_dir}/AppIcon.iconset"
+cleanup() {
+  rm -rf "$iconset_root_dir"
+}
+trap cleanup EXIT
 
 rm -rf "$app_bundle_path"
-mkdir -p "$app_macos_path"
+mkdir -p "$app_macos_path" "$app_resources_path" "$iconset_dir"
 cp "$binary_path" "${app_macos_path}/${binary_name}"
 chmod 755 "${app_macos_path}/${binary_name}"
+"${app_macos_path}/${binary_name}" --write-app-iconset "$iconset_dir"
+iconutil -c icns -o "${app_resources_path}/${icon_file_name}" "$iconset_dir"
 
 cat > "${app_contents_path}/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -63,6 +74,8 @@ cat > "${app_contents_path}/Info.plist" <<EOF
   <string>${binary_name}</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
+  <key>CFBundleIconFile</key>
+  <string>${icon_file_base_name}</string>
   <key>CFBundleVersion</key>
   <string>${package_version}</string>
   <key>CFBundleShortVersionString</key>

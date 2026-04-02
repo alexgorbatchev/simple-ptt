@@ -1,11 +1,29 @@
+use std::path::Path;
+
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::AnyThread;
-use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSLineCapStyle, NSLineJoinStyle};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize};
+use objc2_app_kit::{
+    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey,
+    NSColor, NSImage, NSLineCapStyle, NSLineJoinStyle,
+};
+use objc2_foundation::{NSDictionary, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 const STATUS_BAR_ICON_SIZE: f64 = 18.0;
 const APPLICATION_ICON_SIZE: f64 = 256.0;
 const ICON_VIEWBOX_SIZE: f64 = 24.0;
+const APPLICATION_ICONSET_PNGS: [(&str, f64); 10] = [
+    ("icon_16x16.png", 16.0),
+    ("icon_16x16@2x.png", 32.0),
+    ("icon_32x32.png", 32.0),
+    ("icon_32x32@2x.png", 64.0),
+    ("icon_128x128.png", 128.0),
+    ("icon_128x128@2x.png", 256.0),
+    ("icon_256x256.png", 256.0),
+    ("icon_256x256@2x.png", 512.0),
+    ("icon_512x512.png", 512.0),
+    ("icon_512x512@2x.png", 1024.0),
+];
 
 const ACTIVE_BACKGROUND_X: f64 = 0.0;
 const ACTIVE_BACKGROUND_Y: f64 = 0.0;
@@ -29,6 +47,24 @@ pub fn make_status_bar_icon(mtm: MainThreadMarker) -> Retained<NSImage> {
         &NSColor::blackColor(),
         true,
     )
+}
+
+pub fn write_application_iconset(output_dir: &Path) -> Result<(), String> {
+    let mtm = MainThreadMarker::new().expect("must run on main thread");
+    std::fs::create_dir_all(output_dir).map_err(|error| {
+        format!(
+            "failed to create iconset directory {}: {}",
+            output_dir.display(),
+            error
+        )
+    })?;
+
+    for (file_name, icon_size) in APPLICATION_ICONSET_PNGS {
+        let output_path = output_dir.join(file_name);
+        write_png_icon(mtm, icon_size, &output_path)?;
+    }
+
+    Ok(())
 }
 
 #[allow(deprecated)]
@@ -79,6 +115,45 @@ fn make_microphone_icon(
     image.unlockFocus();
     image.setTemplate(template);
     image
+}
+
+fn write_png_icon(mtm: MainThreadMarker, icon_size: f64, output_path: &Path) -> Result<(), String> {
+    let image = make_microphone_icon(
+        mtm,
+        NSSize::new(icon_size, icon_size),
+        &NSColor::blackColor(),
+        false,
+    );
+    let tiff_data = image.TIFFRepresentation().ok_or_else(|| {
+        format!(
+            "failed to produce TIFF representation for {}px application icon",
+            icon_size
+        )
+    })?;
+    let bitmap_image = NSBitmapImageRep::imageRepWithData(&tiff_data)
+        .ok_or_else(|| format!("failed to decode TIFF bitmap for {}", output_path.display()))?;
+    let properties: Retained<NSDictionary<NSBitmapImageRepPropertyKey, AnyObject>> =
+        NSDictionary::new();
+    let png_data = unsafe {
+        bitmap_image.representationUsingType_properties(NSBitmapImageFileType::PNG, &properties)
+    }
+    .ok_or_else(|| format!("failed to encode PNG data for {}", output_path.display()))?;
+    let output_path_string = output_path.to_str().ok_or_else(|| {
+        format!(
+            "application icon path is not valid UTF-8: {}",
+            output_path.display()
+        )
+    })?;
+    let ns_output_path = NSString::from_str(output_path_string);
+
+    if !png_data.writeToFile_atomically(&ns_output_path, true) {
+        return Err(format!(
+            "failed to write application icon PNG {}",
+            output_path.display()
+        ));
+    }
+
+    Ok(())
 }
 
 fn draw_microphone_symbol(size: NSSize) {

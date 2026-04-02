@@ -8,6 +8,8 @@ mod overlay;
 mod state;
 mod transcription;
 
+use std::path::Path;
+
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSApplication;
 use objc2_foundation::MainThreadMarker;
@@ -16,12 +18,22 @@ fn main() {
     env_logger::init();
 
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() == 1 && arguments[0] == "--list-devices" {
-        audio::print_input_devices().unwrap_or_else(|error| {
-            eprintln!("{}", error);
-            std::process::exit(1);
-        });
-        return;
+    match arguments.as_slice() {
+        [flag] if flag == "--list-devices" => {
+            audio::print_input_devices().unwrap_or_else(|error| {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            });
+            return;
+        }
+        [flag, output_dir] if flag == "--write-app-iconset" => {
+            icon::write_application_iconset(Path::new(output_dir)).unwrap_or_else(|error| {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            });
+            return;
+        }
+        _ => {}
     }
 
     log::info!("simple-ptt starting");
