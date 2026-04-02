@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::time::Instant;
 
 use objc2::rc::Retained;
 use objc2::MainThreadOnly;
@@ -16,6 +17,12 @@ const OVERLAY_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const FOOTER_HEIGHT: f64 = 24.0;
+const CLIP_INDICATOR_BORDER_WIDTH: f64 = 1.0;
+const CLIP_INDICATOR_CORNER_RADIUS: f64 = 4.0;
+const CLIP_INDICATOR_FADE_IN_SECONDS: f64 = 0.08;
+const CLIP_INDICATOR_FADE_OUT_SECONDS: f64 = CLIP_INDICATOR_FADE_IN_SECONDS * 2.0;
+const CLIP_INDICATOR_HOLD_SECONDS: f64 = 0.20;
+const METER_BORDER_PADDING: f64 = 3.0;
 const METER_BAR_COUNT: usize = 20;
 const METER_BAR_SPACING: f64 = 3.0;
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
@@ -23,7 +30,7 @@ const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
 const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
 const METER_COLOR_ONLY_BAR_HEIGHT: f64 = 4.0;
 const METER_MIN_BAR_HEIGHT: f64 = 0.0;
-const METER_SECTION_BOTTOM_PADDING: f64 = 3.0;
+const METER_SECTION_BOTTOM_PADDING: f64 = 5.0;
 const METER_SECTION_HEIGHT: f64 = 30.8;
 const METER_VIEW_HEIGHT: f64 = 19.6;
 const OVERLAY_CORNER_RADIUS: f64 = 9.0;
@@ -39,6 +46,14 @@ pub struct OverlayStyle {
     pub meter_style: UiMeterStyle,
 }
 
+#[derive(Debug, Default)]
+struct ClipIndicatorState {
+    alpha: f64,
+    hold_remaining_seconds: f64,
+    last_clip_event_counter: u32,
+    last_updated_at: Option<Instant>,
+}
+
 #[derive(Debug)]
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
@@ -47,6 +62,7 @@ pub struct OverlayWindow {
     meter_container_view: Retained<NSView>,
     meter_bar_views: Vec<Retained<NSView>>,
     meter_bar_levels: RefCell<Vec<f32>>,
+    clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: UiMeterStyle,
     text_field: Retained<NSTextField>,
     footer_text_field: Retained<NSTextField>,
@@ -149,11 +165,20 @@ impl OverlayWindow {
             layer.setBackgroundColor(Some(&separator_cg_color));
         }
 
-        let meter_container_view =
-            NSView::initWithFrame(NSView::alloc(mtm), meter_container_frame(true));
+        let meter_container_view = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            meter_container_frame(true, style.meter_style),
+        );
         meter_container_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         meter_container_view.setHidden(true);
         meter_container_view.setWantsLayer(true);
+        if let Some(layer) = meter_container_view.layer() {
+            let border_color = clip_indicator_border_color(0.0);
+            let border_cg_color = border_color.CGColor();
+            layer.setBorderWidth(CLIP_INDICATOR_BORDER_WIDTH);
+            layer.setBorderColor(Some(&border_cg_color));
+            layer.setCornerRadius(CLIP_INDICATOR_CORNER_RADIUS);
+        }
 
         let mut meter_bar_views = Vec::with_capacity(METER_BAR_COUNT);
         for _ in 0..METER_BAR_COUNT {
@@ -212,12 +237,14 @@ impl OverlayWindow {
             meter_container_view,
             meter_bar_views,
             meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
+            clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
             meter_style: style.meter_style,
             text_field,
             footer_text_field,
             is_visible: Cell::new(false),
         };
         overlay_window.render_meter_bars();
+        overlay_window.render_clip_indicator();
         overlay_window
     }
 
@@ -248,8 +275,10 @@ impl OverlayWindow {
 
         if meter_is_visible {
             self.update_meter(mic_meter);
+            self.update_clip_indicator(mic_meter);
         } else {
             self.clear_meter();
+            self.clear_clip_indicator();
         }
 
         if !self.is_visible.get() {
@@ -264,6 +293,7 @@ impl OverlayWindow {
             self.panel.orderOut(None);
         }
         self.clear_meter();
+        self.clear_clip_indicator();
         self.set_text("");
         self.set_footer_text("");
     }
@@ -328,7 +358,7 @@ impl OverlayWindow {
         self.scroll_view
             .setFrame(scroll_view_frame(footer_is_visible, meter_is_visible));
         self.meter_container_view
-            .setFrame(meter_container_frame(footer_is_visible));
+            .setFrame(meter_container_frame(footer_is_visible, self.meter_style));
         self.meter_container_view.setHidden(!meter_is_visible);
     }
 
@@ -352,6 +382,77 @@ impl OverlayWindow {
         meter_bar_levels.fill(0.0);
         drop(meter_bar_levels);
         self.render_meter_bars();
+    }
+
+    fn update_clip_indicator(&self, mic_meter: MicMeterSnapshot) {
+        let now = Instant::now();
+        let mut clip_indicator_state = self.clip_indicator_state.borrow_mut();
+        let delta_seconds = clip_indicator_state
+            .last_updated_at
+            .map(|last_updated_at| now.duration_since(last_updated_at).as_secs_f64())
+            .unwrap_or(CLIP_INDICATOR_FADE_IN_SECONDS);
+        clip_indicator_state.last_updated_at = Some(now);
+
+        let clip_detected =
+            mic_meter.clip_event_counter != clip_indicator_state.last_clip_event_counter;
+        clip_indicator_state.last_clip_event_counter = mic_meter.clip_event_counter;
+
+        if clip_detected {
+            clip_indicator_state.hold_remaining_seconds = CLIP_INDICATOR_HOLD_SECONDS;
+        }
+
+        if clip_detected
+            || (clip_indicator_state.hold_remaining_seconds > 0.0
+                && clip_indicator_state.alpha < 0.995)
+        {
+            clip_indicator_state.alpha = animate_towards(
+                clip_indicator_state.alpha,
+                1.0,
+                CLIP_INDICATOR_FADE_IN_SECONDS,
+                delta_seconds,
+            );
+            if clip_indicator_state.alpha >= 0.995 {
+                clip_indicator_state.alpha = 1.0;
+            }
+        } else if clip_indicator_state.hold_remaining_seconds > 0.0 {
+            clip_indicator_state.hold_remaining_seconds =
+                (clip_indicator_state.hold_remaining_seconds - delta_seconds).max(0.0);
+            clip_indicator_state.alpha = 1.0;
+        } else {
+            clip_indicator_state.alpha = animate_towards(
+                clip_indicator_state.alpha,
+                0.0,
+                CLIP_INDICATOR_FADE_OUT_SECONDS,
+                delta_seconds,
+            );
+            if clip_indicator_state.alpha <= 0.001 {
+                clip_indicator_state.alpha = 0.0;
+            }
+        }
+        drop(clip_indicator_state);
+
+        self.render_clip_indicator();
+    }
+
+    fn clear_clip_indicator(&self) {
+        let mut clip_indicator_state = self.clip_indicator_state.borrow_mut();
+        clip_indicator_state.alpha = 0.0;
+        clip_indicator_state.hold_remaining_seconds = 0.0;
+        clip_indicator_state.last_updated_at = None;
+        drop(clip_indicator_state);
+
+        self.render_clip_indicator();
+    }
+
+    fn render_clip_indicator(&self) {
+        let clip_indicator_alpha = self.clip_indicator_state.borrow().alpha;
+        if let Some(layer) = self.meter_container_view.layer() {
+            let border_color = clip_indicator_border_color(clip_indicator_alpha);
+            let border_cg_color = border_color.CGColor();
+            layer.setBorderColor(Some(&border_cg_color));
+        }
+
+        NSView::setNeedsDisplay(&self.meter_container_view, true);
     }
 
     fn render_meter_bars(&self) {
@@ -396,14 +497,14 @@ impl OverlayWindow {
         let cluster_width = meter_cluster_width();
         let total_spacing = METER_BAR_SPACING * (METER_BAR_COUNT.saturating_sub(1)) as f64;
         let bar_width = ((cluster_width - total_spacing) / METER_BAR_COUNT as f64).max(1.0);
-        let cluster_origin_x = (usable_text_width() - cluster_width) / 2.0;
+        let cluster_origin_x = METER_BORDER_PADDING;
 
         for (index, meter_bar_view) in self.meter_bar_views.iter().enumerate() {
             let meter_value = meter_bar_levels[index];
             let bar_height = meter_bar_height(meter_value);
             let x = cluster_origin_x + ((bar_width + METER_BAR_SPACING) * index as f64);
             meter_bar_view.setFrame(NSRect::new(
-                NSPoint::new(x, 0.0),
+                NSPoint::new(x, METER_BORDER_PADDING),
                 NSSize::new(bar_width, bar_height),
             ));
 
@@ -421,8 +522,8 @@ impl OverlayWindow {
         let cluster_width = meter_cluster_width();
         let total_spacing = METER_BAR_SPACING * (METER_BAR_COUNT.saturating_sub(1)) as f64;
         let bar_width = ((cluster_width - total_spacing) / METER_BAR_COUNT as f64).max(1.0);
-        let cluster_origin_x = (usable_text_width() - cluster_width) / 2.0;
-        let y = (METER_VIEW_HEIGHT - METER_COLOR_ONLY_BAR_HEIGHT) / 2.0;
+        let cluster_origin_x = METER_BORDER_PADDING;
+        let y = METER_BORDER_PADDING;
 
         for (index, meter_bar_view) in self.meter_bar_views.iter().enumerate() {
             let meter_value = meter_bar_levels[index];
@@ -543,6 +644,10 @@ fn inactive_meter_bar_color() -> Retained<NSColor> {
     NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.12)
 }
 
+fn clip_indicator_border_color(alpha: f64) -> Retained<NSColor> {
+    NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, alpha.clamp(0.0, 1.0))
+}
+
 fn animated_height_bar_color(meter_value: f32) -> Retained<NSColor> {
     if meter_value >= 0.92 {
         return NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, 1.0);
@@ -601,9 +706,32 @@ fn smoothstep(start: f32, end: f32, value: f32) -> f32 {
     t * t * (3.0 - (2.0 * t))
 }
 
+fn animate_towards(current: f64, target: f64, duration_seconds: f64, delta_seconds: f64) -> f64 {
+    if duration_seconds <= f64::EPSILON {
+        return target;
+    }
+
+    let progress = (delta_seconds / duration_seconds).clamp(0.0, 1.0) as f32;
+    let eased_progress = smoothstep(0.0, 1.0, progress) as f64;
+    current + ((target - current) * eased_progress)
+}
+
 fn meter_cluster_width() -> f64 {
     (usable_text_width() * METER_CLUSTER_WIDTH_FACTOR)
         .clamp(METER_CLUSTER_MIN_WIDTH, METER_CLUSTER_MAX_WIDTH)
+}
+
+fn meter_container_height(meter_style: UiMeterStyle) -> f64 {
+    let graph_height = match meter_style {
+        UiMeterStyle::AnimatedHeight => METER_VIEW_HEIGHT,
+        UiMeterStyle::AnimatedColor => METER_COLOR_ONLY_BAR_HEIGHT,
+    };
+
+    graph_height + (METER_BORDER_PADDING * 2.0)
+}
+
+fn meter_container_width() -> f64 {
+    meter_cluster_width() + (METER_BORDER_PADDING * 2.0)
 }
 
 fn footer_total_height() -> f64 {
@@ -641,16 +769,19 @@ fn scroll_view_frame(footer_is_visible: bool, meter_is_visible: bool) -> NSRect 
     )
 }
 
-fn meter_container_frame(footer_is_visible: bool) -> NSRect {
+fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> NSRect {
     let origin_y = if footer_is_visible {
         footer_total_height() + METER_SECTION_BOTTOM_PADDING
     } else {
         METER_SECTION_BOTTOM_PADDING
     };
+    let container_width = meter_container_width();
+    let container_height = meter_container_height(meter_style);
+    let origin_x = TEXT_HORIZONTAL_PADDING + ((usable_text_width() - container_width) / 2.0);
 
     NSRect::new(
-        NSPoint::new(TEXT_HORIZONTAL_PADDING, origin_y),
-        NSSize::new(usable_text_width(), METER_VIEW_HEIGHT),
+        NSPoint::new(origin_x, origin_y),
+        NSSize::new(container_width, container_height),
     )
 }
 

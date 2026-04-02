@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub const STATE_IDLE: u8 = 0;
@@ -8,12 +8,14 @@ pub const STATE_ERROR: u8 = 3;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MicMeterSnapshot {
+    pub clip_event_counter: u32,
     pub level: u8,
     pub peak: u8,
 }
 
 pub struct AppState {
     abort_requested: AtomicBool,
+    clip_event_counter: AtomicU32,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_footer_text: Mutex<String>,
@@ -25,6 +27,7 @@ impl AppState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
+            clip_event_counter: AtomicU32::new(0),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_footer_text: Mutex::new(String::new()),
@@ -94,7 +97,11 @@ impl AppState {
             .unwrap_or_default()
     }
 
-    pub fn set_mic_meter(&self, level: f32, peak: f32) {
+    pub fn set_mic_meter(&self, level: f32, peak: f32, clip_detected: bool) {
+        if clip_detected {
+            self.clip_event_counter.fetch_add(1, Ordering::Relaxed);
+        }
+
         self.mic_meter_level
             .store(normalized_meter_value(level), Ordering::Relaxed);
         self.mic_meter_peak
@@ -108,6 +115,7 @@ impl AppState {
 
     pub fn mic_meter_snapshot(&self) -> MicMeterSnapshot {
         MicMeterSnapshot {
+            clip_event_counter: self.clip_event_counter.load(Ordering::Relaxed),
             level: self.mic_meter_level.load(Ordering::Relaxed),
             peak: self.mic_meter_peak.load(Ordering::Relaxed),
         }
@@ -126,12 +134,26 @@ mod tests {
     fn non_recording_states_clear_the_mic_meter() {
         let state = AppState::new();
         state.set_state(STATE_RECORDING);
-        state.set_mic_meter(0.4, 0.7);
+        state.set_mic_meter(0.4, 0.7, true);
 
         state.set_state(STATE_IDLE);
 
         let mic_meter = state.mic_meter_snapshot();
         assert_eq!(mic_meter.level, 0);
         assert_eq!(mic_meter.peak, 0);
+        assert_eq!(mic_meter.clip_event_counter, 1);
+    }
+
+    #[test]
+    fn clip_events_increment_the_counter() {
+        let state = AppState::new();
+
+        state.set_mic_meter(0.1, 0.2, false);
+        assert_eq!(state.mic_meter_snapshot().clip_event_counter, 0);
+
+        state.set_mic_meter(0.3, 0.4, true);
+        state.set_mic_meter(0.3, 0.4, true);
+
+        assert_eq!(state.mic_meter_snapshot().clip_event_counter, 2);
     }
 }

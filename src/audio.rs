@@ -5,11 +5,13 @@ use std::sync::Arc;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
 
+const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 const METER_MIN_DB: f32 = -42.0;
 const METER_MAX_DB: f32 = -6.0;
 
 #[derive(Debug)]
 struct EncodedAudioChunk {
+    clipped_sample_count: usize,
     mic_level: f32,
     mic_peak: f32,
     pcm_bytes: Vec<u8>,
@@ -184,6 +186,7 @@ where
                         smoothed_peak = 0.0;
                         was_recording = false;
                     }
+                    meter_state.clear_mic_meter();
                     return;
                 }
 
@@ -204,7 +207,11 @@ where
                 smoothed_peak =
                     smooth_meter_value(smoothed_peak, encoded_chunk.mic_peak, 0.82, 0.10)
                         .max(smoothed_level);
-                meter_state.set_mic_meter(smoothed_level, smoothed_peak);
+                meter_state.set_mic_meter(
+                    smoothed_level,
+                    smoothed_peak,
+                    encoded_chunk.clipped_sample_count > 0,
+                );
                 controller.send_audio(encoded_chunk.pcm_bytes);
             },
             |error| {
@@ -222,6 +229,7 @@ where
 {
     if channels == 0 {
         return EncodedAudioChunk {
+            clipped_sample_count: 0,
             mic_level: 0.0,
             mic_peak: 0.0,
             pcm_bytes: Vec::new(),
@@ -230,6 +238,7 @@ where
 
     let frame_count = data.len() / channels;
     let mut pcm_bytes = Vec::with_capacity(frame_count * 2);
+    let mut clipped_sample_count = 0usize;
     let mut peak_amplitude = 0.0f32;
     let mut squared_sum = 0.0f32;
 
@@ -238,7 +247,12 @@ where
             .iter()
             .fold(0.0f32, |sum, sample| sum + f32::from_sample(*sample))
             / channels as f32;
-        let amplified_sample = (mono_sample * gain).clamp(-1.0, 1.0);
+        let gained_sample = mono_sample * gain;
+        if gained_sample.abs() >= CLIP_DETECTION_THRESHOLD {
+            clipped_sample_count += 1;
+        }
+
+        let amplified_sample = gained_sample.clamp(-1.0, 1.0);
         peak_amplitude = peak_amplitude.max(amplified_sample.abs());
         squared_sum += amplified_sample * amplified_sample;
 
@@ -253,6 +267,7 @@ where
     };
 
     EncodedAudioChunk {
+        clipped_sample_count,
         mic_level: normalize_meter_amplitude(rms_amplitude),
         mic_peak: normalize_meter_amplitude(peak_amplitude),
         pcm_bytes,
@@ -276,7 +291,7 @@ fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_meter_amplitude, smooth_meter_value};
+    use super::{encode_pcm_mono, normalize_meter_amplitude, smooth_meter_value};
 
     #[test]
     fn normalize_meter_amplitude_clamps_silence_and_hot_input() {
@@ -302,5 +317,12 @@ mod tests {
 
         assert_eq!(attacked, 0.5);
         assert_eq!(released, 0.74);
+    }
+
+    #[test]
+    fn encode_pcm_mono_counts_post_gain_clipped_samples() {
+        let encoded_chunk = encode_pcm_mono(&[0.2f32, 0.5, -0.7, 0.1], 1, 2.0);
+
+        assert_eq!(encoded_chunk.clipped_sample_count, 2);
     }
 }
