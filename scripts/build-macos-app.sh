@@ -88,8 +88,9 @@ cat > "${app_contents_path}/Info.plist" <<EOF
 </plist>
 EOF
 
-if [[ "${ADHOC_SIGN_APP:-0}" == "1" ]]; then
+if [[ "${ADHOC_SIGN_APP:-1}" == "1" ]]; then
   codesign --force --deep --sign - "$app_bundle_path"
+  codesign --verify --deep --strict --verbose=2 "$app_bundle_path" >/dev/null
 fi
 
 echo "created app bundle: $app_bundle_path"

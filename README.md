@@ -29,6 +29,8 @@ This project currently targets **macOS on Apple Silicon (arm64)**.
 3. Open the disk image.
 4. Drag `simple-ptt.app` into `Applications`.
 
+Do not launch the app directly from the mounted disk image. Copy it into `Applications` first, then launch it.
+
 Launch it from Terminal without blocking your shell:
 
 ```bash
