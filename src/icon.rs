@@ -4,10 +4,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::AnyThread;
 use objc2_app_kit::{
-    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey,
-    NSColor, NSImage, NSLineCapStyle, NSLineJoinStyle,
+    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSColor,
+    NSImage, NSLineCapStyle, NSLineJoinStyle,
 };
-use objc2_foundation::{NSDictionary, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{MainThreadMarker, NSDictionary, NSPoint, NSRect, NSSize, NSString};
 
 const STATUS_BAR_ICON_SIZE: f64 = 18.0;
 const APPLICATION_ICON_SIZE: f64 = 256.0;
