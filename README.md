@@ -22,20 +22,18 @@ This project currently targets **macOS on Apple Silicon (arm64)**.
 
 ## Install
 
-### Option 1: Download a release binary
+### Option 1: Download the disk image from a release
 
 1. Open the latest GitHub release.
-2. Download the `simple-ptt-vX.Y.Z-macos-arm64.zip` asset.
-3. Unzip it.
-4. Enter the extracted directory and move `simple-ptt` somewhere convenient, for example:
+2. Download the `simple-ptt-vX.Y.Z-macos-arm64.dmg` asset.
+3. Open the disk image.
+4. Drag `simple-ptt.app` into `Applications`.
+
+Launch it from Terminal without blocking your shell:
 
 ```bash
-cd simple-ptt-vX.Y.Z-macos-arm64
-mkdir -p ~/.local/bin
-mv simple-ptt ~/.local/bin/
+open -g /Applications/simple-ptt.app
 ```
-
-If `~/.local/bin` is not already on your `PATH`, add it in your shell profile.
 
 ### Option 2: Build from source
 
@@ -44,21 +42,37 @@ Requirements:
 - Rust toolchain
 - macOS
 
-Build:
+Build the release binary and bundle it as a macOS app:
 
 ```bash
 cargo build --release
+./scripts/build-macos-app.sh target/release/simple-ptt dist/simple-ptt.app
 ```
 
-The binary will be written to:
+Or use the checked-in helpers:
+
+```bash
+just bundle-release
+just bundle-dmg
+```
+
+That creates:
 
 ```text
-target/release/simple-ptt
+dist/simple-ptt.app
+dist/simple-ptt.dmg
+```
+
+If you want to install it into `~/Applications` and keep the non-blocking Terminal launch workflow:
+
+```bash
+just install-app
+just start
 ```
 
 ## First run on macOS
 
-This binary is not Apple-signed or notarized.
+This app bundle is not Apple-signed or notarized.
 
 If macOS blocks it on first launch, use one of the following:
 
@@ -66,8 +80,13 @@ If macOS blocks it on first launch, use one of the following:
 - or remove the quarantine attribute manually:
 
 ```bash
-xattr -d com.apple.quarantine /path/to/simple-ptt
+xattr -dr com.apple.quarantine /path/to/simple-ptt.app
 ```
+
+You should also expect macOS permission prompts for:
+
+- **Microphone**
+- **Accessibility** and/or **Input Monitoring** for the global push-to-talk hotkey and synthetic paste workflow
 
 ## Configuration
 
@@ -145,42 +164,35 @@ utterance_end_ms = 1000
 
 ## Run
 
-If you installed the binary onto your `PATH`:
+For the non-blocking Terminal workflow, install the app bundle into `~/Applications` or `/Applications` and launch it with `open`:
 
 ```bash
-simple-ptt
+open -g ~/Applications/simple-ptt.app
 ```
 
-If you want to point at a custom config file:
+For app launches, keep configuration in `~/.config/simple-ptt/config.toml`.
+Using shell environment variables such as `SIMPLE_PTT_CONFIG` or `DEEPGRAM_API_KEY` is fine for direct binary execution, but it is the wrong default for LaunchServices-based app launches because shell environment inheritance is not reliable there.
+
+To print the available audio input devices and their numeric indices from the installed app bundle:
 
 ```bash
-SIMPLE_PTT_CONFIG=/path/to/config.toml simple-ptt
-```
-
-If you prefer environment variables for secrets:
-
-```bash
-DEEPGRAM_API_KEY=your_key_here simple-ptt
-```
-
-To print the available audio input devices and their numeric indices:
-
-```bash
-simple-ptt --list-devices
+~/Applications/simple-ptt.app/Contents/MacOS/simple-ptt --list-devices
 ```
 
 ## Development
 
-Run locally with the checked-in development helper commands:
+For the checked-in development config in this repository:
 
 ```bash
 just run
 ```
 
-or:
+For the bundled app workflow used by releases:
 
 ```bash
-cargo run
+just bundle-release
+just bundle-dmg
+open -g dist/simple-ptt.app
 ```
 
 ## License

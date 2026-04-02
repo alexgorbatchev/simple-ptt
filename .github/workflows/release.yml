@@ -18,6 +18,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     env:
+      APP_BUNDLE_NAME: simple-ptt.app
       BINARY_NAME: simple-ptt
       CARGO_TERM_COLOR: always
       TARGET_TRIPLE: aarch64-apple-darwin
@@ -32,6 +33,25 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add "$TARGET_TRIPLE"
+
+      - name: Validate tag matches Cargo.toml version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          cargo_version="$(awk -F'"' '
+            $0 == "[package]" { in_package = 1; next }
+            /^\[/ && in_package { exit }
+            in_package && $1 ~ /^version = / { print $2; exit }
+          ' Cargo.toml)"
+
+          expected_tag="v${cargo_version}"
+          if [[ "$TAG" != "$expected_tag" ]]; then
+            echo "release tag $TAG does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          fi
 
       - name: Build release binary
         shell: bash
@@ -48,33 +68,15 @@ jobs:
           set -euo pipefail
 
           asset_basename="${BINARY_NAME}-${TAG}-macos-arm64"
-          package_dir="${RUNNER_TEMP}/${asset_basename}"
-          archive_path="${RUNNER_TEMP}/${asset_basename}.zip"
+          app_bundle_path="${RUNNER_TEMP}/${APP_BUNDLE_NAME}"
+          archive_path="${RUNNER_TEMP}/${asset_basename}.dmg"
           checksum_path="${RUNNER_TEMP}/${asset_basename}.sha256"
 
-          mkdir -p "$package_dir"
-          cp "target/${TARGET_TRIPLE}/release/${BINARY_NAME}" "$package_dir/"
-          cp "config.example.toml" "$package_dir/"
-
-          cat > "${package_dir}/README.txt" <<'EOF'
-          simple-ptt macOS arm64 release
-
-          Contents:
-          - simple-ptt
-          - config.example.toml
-
-          Quick start:
-          1. Copy simple-ptt somewhere on your PATH, or run it directly.
-          2. Create ~/.config/simple-ptt/config.toml from config.example.toml
-             or set SIMPLE_PTT_CONFIG to point to your config file.
-          3. Make sure DEEPGRAM_API_KEY is configured if it is not set in the config.
-          EOF
-
-          (
-            cd "$RUNNER_TEMP"
-            /usr/bin/zip -r -X "$(basename "$archive_path")" "$(basename "$package_dir")" >/dev/null
-            shasum -a 256 "$(basename "$archive_path")" > "$checksum_path"
-          )
+          ./scripts/build-macos-app.sh \
+            "target/${TARGET_TRIPLE}/release/${BINARY_NAME}" \
+            "$app_bundle_path"
+          ./scripts/build-macos-dmg.sh "$app_bundle_path" "$archive_path"
+          shasum -a 256 "$archive_path" > "$checksum_path"
 
           echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
           echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
