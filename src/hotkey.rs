@@ -14,6 +14,7 @@ use crate::transcription::TranscriptionController;
 enum RecordHotkeyAction {
     StartRecording,
     StopAndPaste,
+    StopAndTransformAndPaste,
     PasteBuffer,
 }
 
@@ -23,6 +24,7 @@ pub fn spawn_hotkey_thread(
     controller: TranscriptionController,
     record_hotkey_name: &str,
     transform_hotkey_name: Option<&str>,
+    auto_transform_enabled: bool,
     hold_ms: u64,
 ) {
     let record_hotkey_name = record_hotkey_name.to_owned();
@@ -56,13 +58,14 @@ pub fn spawn_hotkey_thread(
         .spawn(move || {
             let hold_threshold = Duration::from_millis(hold_ms);
             log::info!(
-                "hotkey thread started (record={}, transform={}, hold threshold: {}ms)",
+                "hotkey thread started (record={}, transform={}, auto_transform_enabled={}, hold threshold: {}ms)",
                 record_hotkey_name,
                 if transformation_hotkey_enabled {
                     transform_hotkey_name.clone().unwrap_or_else(|| "disabled".to_owned())
                 } else {
                     "disabled".to_owned()
                 },
+                auto_transform_enabled,
                 hold_ms
             );
 
@@ -93,7 +96,15 @@ pub fn spawn_hotkey_thread(
 
                         match current_state {
                             STATE_RECORDING => {
-                                stop_recording_and_paste(&state, &controller, "escape abort");
+                                if auto_transform_enabled {
+                                    stop_recording_and_transform_and_paste(
+                                        &state,
+                                        &controller,
+                                        "escape abort",
+                                    );
+                                } else {
+                                    stop_recording_and_paste(&state, &controller, "escape abort");
+                                }
                             }
                             STATE_BUFFER_READY => match controller.discard_buffer() {
                                 Ok(()) => log::info!("buffer discarded"),
@@ -135,7 +146,11 @@ pub fn spawn_hotkey_thread(
                                     None
                                 }
                             },
-                            STATE_RECORDING => Some(RecordHotkeyAction::StopAndPaste),
+                            STATE_RECORDING => Some(if auto_transform_enabled {
+                                RecordHotkeyAction::StopAndTransformAndPaste
+                            } else {
+                                RecordHotkeyAction::StopAndPaste
+                            }),
                             STATE_BUFFER_READY => Some(RecordHotkeyAction::PasteBuffer),
                             _ => None,
                         };
@@ -164,13 +179,28 @@ pub fn spawn_hotkey_thread(
                         match action {
                             RecordHotkeyAction::StartRecording => {
                                 if pressed_at.elapsed() >= hold_threshold {
-                                    stop_recording_and_paste(&state, &controller, "hold release");
+                                    if auto_transform_enabled {
+                                        stop_recording_and_transform_and_paste(
+                                            &state,
+                                            &controller,
+                                            "hold release",
+                                        );
+                                    } else {
+                                        stop_recording_and_paste(&state, &controller, "hold release");
+                                    }
                                 } else {
                                     log::info!("recording (tap to stop)");
                                 }
                             }
                             RecordHotkeyAction::StopAndPaste => {
                                 stop_recording_and_paste(&state, &controller, "tap");
+                            }
+                            RecordHotkeyAction::StopAndTransformAndPaste => {
+                                stop_recording_and_transform_and_paste(
+                                    &state,
+                                    &controller,
+                                    "tap",
+                                );
                             }
                             RecordHotkeyAction::PasteBuffer => match controller.paste_buffer() {
                                 Ok(()) => {
@@ -256,6 +286,28 @@ fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionControll
     match controller.stop_session_and_paste() {
         Ok(()) => {
             state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_PROCESSING);
+            log::info!("recording stopped ({})", reason);
+        }
+        Err(stop_error) => {
+            log::error!("failed to stop recording: {}", stop_error);
+            state.set_state(STATE_ERROR);
+        }
+    }
+}
+
+fn stop_recording_and_transform_and_paste(
+    state: &AppState,
+    controller: &TranscriptionController,
+    reason: &str,
+) {
+    if !state.is_recording() {
+        return;
+    }
+
+    match controller.stop_session_and_transform_and_paste() {
+        Ok(()) => {
+            state.set_overlay_text_opacity(0.02);
             state.set_state(STATE_PROCESSING);
             log::info!("recording stopped ({})", reason);
         }

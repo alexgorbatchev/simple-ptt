@@ -49,6 +49,7 @@ enum Command {
     AudioChunk(Vec<u8>),
     StopSessionAndPaste,
     StopSessionAndTransform,
+    StopSessionAndTransformAndPaste,
     PasteBuffer,
     TransformBuffer,
     DiscardBuffer,
@@ -79,6 +80,12 @@ impl TranscriptionController {
     pub fn stop_session_and_transform(&self) -> Result<(), String> {
         self.command_tx
             .send(Command::StopSessionAndTransform)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn stop_session_and_transform_and_paste(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::StopSessionAndTransformAndPaste)
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
@@ -268,6 +275,64 @@ pub fn spawn_transcription_thread(
                                     state.clone(),
                                     &transformation_config,
                                     &mut buffered_text,
+                                    false,
+                                );
+                            }
+                            Err(error) => {
+                                if state.consume_abort_request() {
+                                    log::info!(
+                                        "ignoring Deepgram session error after abort request: {}",
+                                        error
+                                    );
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                log::error!("Deepgram session failed: {}", error);
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                                state.set_state(STATE_ERROR);
+                            }
+                        }
+                    }
+                    Command::StopSessionAndTransformAndPaste => {
+                        state.set_state(STATE_PROCESSING);
+
+                        let Some(session) = active_session.take() else {
+                            log::warn!(
+                                "received transform-and-paste stop request without an active Deepgram session"
+                            );
+                            state.set_state(STATE_IDLE);
+                            continue;
+                        };
+
+                        match finish_session(&runtime, session) {
+                            Ok(transcript) => {
+                                if state.consume_abort_request() {
+                                    log::info!("discarding transcript because the session was aborted");
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                if transcript.is_empty() {
+                                    log::info!("Deepgram session completed without a final transcript");
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
+                                buffered_text = transcript;
+                                transform_buffered_text(
+                                    &runtime,
+                                    state.clone(),
+                                    &transformation_config,
+                                    &mut buffered_text,
+                                    true,
                                 );
                             }
                             Err(error) => {
@@ -298,6 +363,7 @@ pub fn spawn_transcription_thread(
                             state.clone(),
                             &transformation_config,
                             &mut buffered_text,
+                            false,
                         );
                     }
                     Command::DiscardBuffer => {
@@ -414,6 +480,7 @@ fn transform_buffered_text(
     state: Arc<AppState>,
     transformation_config: &Option<TransformationRuntimeConfig>,
     buffered_text: &mut String,
+    paste_after_transform: bool,
 ) {
     if buffered_text.trim().is_empty() {
         log::warn!("ignoring transformation request because no buffered text is available");
@@ -452,10 +519,15 @@ fn transform_buffered_text(
             }
 
             *buffered_text = transformed_text;
-            state.set_overlay_text(buffered_text.clone());
-            state.set_overlay_text_opacity(1.0);
-            state.set_state(STATE_BUFFER_READY);
-            log::info!("buffer transformed successfully");
+            if paste_after_transform {
+                log::info!("buffer transformed successfully; pasting result");
+                paste_buffered_text(&state, buffered_text);
+            } else {
+                state.set_overlay_text(buffered_text.clone());
+                state.set_overlay_text_opacity(1.0);
+                state.set_state(STATE_BUFFER_READY);
+                log::info!("buffer transformed successfully");
+            }
         }
         Err(error) => {
             if state.consume_abort_request() {

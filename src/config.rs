@@ -123,6 +123,9 @@ pub struct TransformationConfig {
     #[serde(default = "default_transformation_hotkey")]
     pub hotkey: String,
 
+    #[serde(default = "default_transformation_auto")]
+    pub auto: bool,
+
     pub provider: Option<String>,
 
     pub api_key: Option<String>,
@@ -138,6 +141,7 @@ impl Default for TransformationConfig {
     fn default() -> Self {
         Self {
             hotkey: default_transformation_hotkey(),
+            auto: default_transformation_auto(),
             provider: None,
             api_key: None,
             model: default_transformation_model(),
@@ -188,6 +192,10 @@ fn default_utterance_end_ms() -> u16 {
 
 fn default_transformation_hotkey() -> String {
     "F6".into()
+}
+
+fn default_transformation_auto() -> bool {
+    true
 }
 
 fn default_transformation_model() -> String {

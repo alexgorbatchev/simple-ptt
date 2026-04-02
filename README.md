@@ -4,9 +4,9 @@
 
 A very basic push-to-talk utility for macOS.
 
-The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking.
+The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking. If configured, you can also press a key to clean up the spoken text with an LLM pass.
 
-I built this because I did not like the existing push-to-talk implementations. The main differentiator here is simple: you can actually see what is being transcribed while you speak.
+I built this because I did not like the existing push-to-talk implementations. Everything felt too slow to respond to a hotkey, too slow to process and paste and none that I tried showed transcription in "real time". 
 
 ## What it does
 
@@ -110,14 +110,21 @@ cp config.example.toml ~/.config/simple-ptt/config.toml
 
 ### Example config
 
-Typical flow:
+Typical flow with transformation enabled:
+
+If `transformation.auto = true` (the default):
 
 1. Press `F5` to start dictation.
-2. Optionally press `F6` to stop dictation and run the current transcript through the configured LLM transformation.
-3. Press `F5` to close and paste the current text.
+2. Press `F5` again to stop dictation, transform the transcript, and paste the transformed result.
 
-If you skip `F6`, that final `F5` stops dictation and pastes the raw transcript directly.
+Optional shortcut:
 
+- Press `F6` while recording to stop dictation and transform the current transcript without auto-pasting it. After that, press `F5` to paste the transformed buffer.
+
+If `transformation.auto = false` or transformation is not configured:
+
+1. Press `F5` to start dictation.
+2. Press `F5` again to stop dictation and paste the raw transcript.
 
 ```toml
 [ui]
@@ -145,6 +152,7 @@ utterance_end_ms = 1000
 
 [transformation]
 hotkey = "F6"
+auto = true
 provider = "openai"
 api_key = "YOUR_LLM_API_KEY"
 model = "gpt-5.4-mini"
@@ -189,6 +197,7 @@ model = "gpt-5.4-mini"
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
 | `hotkey` | No | `F6` | Global key used to stop dictation and transform the current transcript before the final paste step. |
+| `auto` | No | `true` | When `true` and transformation is configured, pressing the record hotkey while dictation is active stops dictation, transforms the transcript, and pastes the transformed result. When `false`, the record hotkey keeps the raw paste behavior. |
 | `provider` | No | none | Rig provider name for the transformation request. See the canonical supported values below. |
 | `api_key` | No | none | API key used for the transformation provider. If omitted, the app falls back to the provider-specific environment variables listed below. |
 | `model` | No | `gpt-5.4-mini` | Model name used for the transformation request. |
@@ -236,7 +245,7 @@ Environment variable fallback for `[transformation]`:
 
 `transformation.api_key` in the TOML takes precedence over the provider-specific API key environment variable.
 There is currently no equivalent environment-variable fallback for `transformation.provider` or `transformation.model`.
-If the `[transformation]` section is omitted or incomplete, the transformation feature is disabled and the transformation hotkey is not registered.
+If the `[transformation]` section is omitted or incomplete, the transformation feature is disabled, the transformation hotkey is not registered, and `transformation.auto` has no effect.
 
 \* Required either in config or via environment.
 

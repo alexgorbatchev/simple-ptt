@@ -44,8 +44,9 @@ fn main() {
     let transformation_hotkey = transformation_config
         .as_ref()
         .map(|_| config.transformation.hotkey.as_str());
+    let auto_transform_enabled = config.transformation.auto && transformation_config.is_some();
     log::info!(
-        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
+        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.auto={}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
         config.ui.hotkey,
         config.mic.audio_device,
         config.mic.sample_rate,
@@ -65,6 +66,7 @@ fn main() {
             || std::env::var(billing::deepgram_project_id_env_var()).ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
         transformation_config.is_some(),
         transformation_hotkey,
+        config.transformation.auto,
         config.transformation.provider,
         &config.transformation.model,
         config.transformation.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
@@ -114,6 +116,7 @@ fn main() {
         transcription_controller,
         &config.ui.hotkey,
         transformation_hotkey,
+        auto_transform_enabled,
         config.mic.hold_ms,
     );
 

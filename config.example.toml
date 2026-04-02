@@ -24,6 +24,7 @@ utterance_end_ms = 1000
 
 [transformation]
 hotkey = "F6"
+auto = true
 provider = "openai"
 api_key = "YOUR_LLM_API_KEY"
 model = "gpt-5.4-mini"
