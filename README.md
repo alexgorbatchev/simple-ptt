@@ -117,6 +117,7 @@ font_size = 12.0
 footer_font_size = 10.0
 meter_style = "animated-color"
 # meter_style = "animated-height"
+# meter_style = "none"
 
 [mic]
 # audio_device = "MacBook Pro Microphone"
@@ -143,7 +144,7 @@ utterance_end_ms = 1000
 | `font_name` | No | system default | Overlay font family name. |
 | `font_size` | No | `12.0` | Main overlay font size. |
 | `footer_font_size` | No | derived from `font_size` | Footer text font size. |
-| `meter_style` | No | `animated-color` | Overlay mic meter style. Supported values: `animated-color` and `animated-height`. |
+| `meter_style` | No | `animated-color` | Overlay mic meter style. Supported values: `animated-color`, `animated-height`, and `none`. |
 
 #### `[mic]`
 

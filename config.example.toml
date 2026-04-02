@@ -5,6 +5,7 @@ font_size = 12.0
 footer_font_size = 10.0
 meter_style = "animated-color"
 # meter_style = "animated-height"
+# meter_style = "none"
 
 [mic]
 # Optional: exact input device name or numeric index from the host input device list.

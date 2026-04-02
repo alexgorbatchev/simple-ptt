@@ -268,7 +268,7 @@ impl OverlayWindow {
             overlay_text
         };
         let footer_is_visible = !overlay_footer_text.trim().is_empty();
-        let meter_is_visible = state == STATE_RECORDING;
+        let meter_is_visible = state == STATE_RECORDING && self.meter_style != UiMeterStyle::None;
         self.update_layout(footer_is_visible, meter_is_visible);
         self.set_text(display_text);
         self.set_footer_text(overlay_footer_text);
@@ -369,6 +369,7 @@ impl OverlayWindow {
         let peak = mic_meter.peak as f32 / u8::MAX as f32;
 
         match self.meter_style {
+            UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
         }
@@ -457,6 +458,7 @@ impl OverlayWindow {
 
     fn render_meter_bars(&self) {
         match self.meter_style {
+            UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.render_meter_bars_animated_height(),
             UiMeterStyle::AnimatedColor => self.render_meter_bars_animated_color(),
         }
@@ -723,6 +725,7 @@ fn meter_cluster_width() -> f64 {
 
 fn meter_container_height(meter_style: UiMeterStyle) -> f64 {
     let graph_height = match meter_style {
+        UiMeterStyle::None => 0.0,
         UiMeterStyle::AnimatedHeight => METER_VIEW_HEIGHT,
         UiMeterStyle::AnimatedColor => METER_COLOR_ONLY_BAR_HEIGHT,
     };

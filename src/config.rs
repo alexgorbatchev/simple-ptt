@@ -22,6 +22,7 @@ pub struct Config {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum UiMeterStyle {
+    None,
     AnimatedHeight,
     #[default]
     AnimatedColor,
