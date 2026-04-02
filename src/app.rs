@@ -15,8 +15,8 @@ use objc2_foundation::{
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::state::{
-    AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
-    STATE_TRANSFORMING,
+    AppState, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING,
+    STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 const APP_DISPLAY_NAME: &str = "simple-ptt";
@@ -171,6 +171,7 @@ impl AppDelegate {
         overlay_text: &str,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
+        mic_meter: MicMeterSnapshot,
     ) {
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
@@ -181,6 +182,7 @@ impl AppDelegate {
             overlay_text,
             overlay_text_opacity,
             overlay_footer_text,
+            mic_meter,
         );
     }
 }
@@ -235,6 +237,7 @@ fn update_overlay_window(
     overlay_text: &str,
     overlay_text_opacity: f64,
     overlay_footer_text: &str,
+    mic_meter: MicMeterSnapshot,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
         overlay_window.update(
@@ -243,6 +246,7 @@ fn update_overlay_window(
             overlay_text,
             overlay_text_opacity,
             overlay_footer_text,
+            mic_meter,
         );
     }
 }
@@ -258,6 +262,7 @@ extern "C" {
 
 struct UiUpdate {
     delegate_addr: usize,
+    mic_meter: MicMeterSnapshot,
     overlay_footer_text: String,
     overlay_text: String,
     overlay_text_opacity: f64,
@@ -274,6 +279,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         &update.overlay_text,
         update.overlay_text_opacity,
         &update.overlay_footer_text,
+        update.mic_meter,
     );
 }
 
@@ -284,6 +290,7 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
     std::thread::Builder::new()
         .name("ui-poller".into())
         .spawn(move || {
+            let mut last_mic_meter = MicMeterSnapshot::default();
             let mut last_overlay_footer_text = String::new();
             let mut last_overlay_text = String::new();
             let mut last_overlay_text_opacity = 1.0;
@@ -291,6 +298,7 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
                 let current_state = state.get_state();
+                let current_mic_meter = state.mic_meter_snapshot();
                 let current_overlay_footer_text = state.overlay_footer_text();
                 let current_overlay_text = state.overlay_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
@@ -299,13 +307,20 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
                     || current_overlay_text != last_overlay_text
                     || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
                         > f64::EPSILON;
+                let mic_meter_changed = current_mic_meter != last_mic_meter;
+                let should_animate_meter = current_state == STATE_RECORDING;
                 let should_animate_overlay =
                     matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
-                if !ui_changed && !should_animate_overlay {
+                if !ui_changed
+                    && !mic_meter_changed
+                    && !should_animate_meter
+                    && !should_animate_overlay
+                {
                     continue;
                 }
 
                 last_state = current_state;
+                last_mic_meter = current_mic_meter;
                 last_overlay_footer_text = current_overlay_footer_text.clone();
                 last_overlay_text = current_overlay_text.clone();
                 last_overlay_text_opacity = current_overlay_text_opacity;
@@ -328,6 +343,7 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
 
                 let update = Box::new(UiUpdate {
                     delegate_addr,
+                    mic_meter: current_mic_meter,
                     overlay_footer_text: current_overlay_footer_text,
                     overlay_text: current_overlay_text,
                     overlay_text_opacity: current_overlay_text_opacity,

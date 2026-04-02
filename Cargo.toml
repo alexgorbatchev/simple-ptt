@@ -12,6 +12,8 @@ path = "src/main.rs"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = [
     "NSArray",
+    "NSData",
+    "NSDictionary",
     "NSGeometry",
     "NSNotification",
     "NSString",
@@ -26,6 +28,7 @@ objc2-foundation = { version = "0.3", features = [
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
     "NSBezierPath",
+    "NSBitmapImageRep",
     "NSButton",
     "NSCell",
     "NSClipView",
@@ -37,6 +40,7 @@ objc2-app-kit = { version = "0.3", features = [
     "objc2-core-graphics",
     "objc2-quartz-core",
     "NSImage",
+    "NSImageRep",
     "NSMenu",
     "NSMenuItem",
     "NSPanel",

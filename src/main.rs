@@ -9,6 +9,8 @@ mod state;
 mod transcription;
 mod transformation;
 
+use std::path::Path;
+
 use objc2::runtime::ProtocolObject;
 use objc2_app_kit::NSApplication;
 use objc2_foundation::MainThreadMarker;
@@ -17,12 +19,22 @@ fn main() {
     env_logger::init();
 
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    if arguments.len() == 1 && arguments[0] == "--list-devices" {
-        audio::print_input_devices().unwrap_or_else(|error| {
-            eprintln!("{}", error);
-            std::process::exit(1);
-        });
-        return;
+    match arguments.as_slice() {
+        [flag] if flag == "--list-devices" => {
+            audio::print_input_devices().unwrap_or_else(|error| {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            });
+            return;
+        }
+        [flag, output_dir] if flag == "--write-app-iconset" => {
+            icon::write_application_iconset(Path::new(output_dir)).unwrap_or_else(|error| {
+                eprintln!("{}", error);
+                std::process::exit(1);
+            });
+            return;
+        }
+        _ => {}
     }
 
     log::info!("simple-ptt starting");
@@ -33,7 +45,7 @@ fn main() {
         .as_ref()
         .map(|_| config.transformation.hotkey.as_str());
     log::info!(
-        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
+        "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
         config.ui.hotkey,
         config.mic.audio_device,
         config.mic.sample_rate,
@@ -42,6 +54,7 @@ fn main() {
         config.ui.font_name,
         config.ui.font_size,
         config.ui.footer_font_size,
+        config.ui.meter_style,
         config.deepgram.endpointing_ms,
         config.deepgram.utterance_end_ms,
         config.deepgram.model,
@@ -137,6 +150,7 @@ fn main() {
             font_name: config.ui.font_name.clone(),
             font_size: overlay_font_size,
             footer_font_size: overlay_footer_font_size,
+            meter_style: config.ui.meter_style,
             transformation_hint: transformation_hotkey.map(|hotkey| {
                 format!(
                     "{}: transform {}: paste ESC: close",
