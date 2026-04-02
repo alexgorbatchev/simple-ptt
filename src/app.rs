@@ -14,7 +14,9 @@ use objc2_foundation::{
 
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
-use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
+use crate::state::{
+    AppState, MicMeterSnapshot, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
+};
 
 const APP_DISPLAY_NAME: &str = "simple-ptt";
 const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
@@ -167,10 +169,18 @@ impl AppDelegate {
         state: u8,
         overlay_text: &str,
         overlay_footer_text: &str,
+        mic_meter: MicMeterSnapshot,
     ) {
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
-        update_overlay_window(self, mtm, state, overlay_text, overlay_footer_text);
+        update_overlay_window(
+            self,
+            mtm,
+            state,
+            overlay_text,
+            overlay_footer_text,
+            mic_meter,
+        );
     }
 }
 
@@ -220,9 +230,10 @@ fn update_overlay_window(
     state: u8,
     overlay_text: &str,
     overlay_footer_text: &str,
+    mic_meter: MicMeterSnapshot,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
-        overlay_window.update(mtm, state, overlay_text, overlay_footer_text);
+        overlay_window.update(mtm, state, overlay_text, overlay_footer_text, mic_meter);
     }
 }
 
@@ -237,6 +248,7 @@ extern "C" {
 
 struct UiUpdate {
     delegate_addr: usize,
+    mic_meter: MicMeterSnapshot,
     overlay_footer_text: String,
     overlay_text: String,
     state: u8,
@@ -251,6 +263,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         update.state,
         &update.overlay_text,
         &update.overlay_footer_text,
+        update.mic_meter,
     );
 }
 
@@ -261,39 +274,47 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
     std::thread::Builder::new()
         .name("ui-poller".into())
         .spawn(move || {
+            let mut last_mic_meter = MicMeterSnapshot::default();
             let mut last_overlay_footer_text = String::new();
             let mut last_overlay_text = String::new();
             let mut last_state = STATE_IDLE;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
                 let current_state = state.get_state();
+                let current_mic_meter = state.mic_meter_snapshot();
                 let current_overlay_footer_text = state.overlay_footer_text();
                 let current_overlay_text = state.overlay_text();
-                if current_state == last_state
-                    && current_overlay_footer_text == last_overlay_footer_text
-                    && current_overlay_text == last_overlay_text
-                {
+                let ui_changed = current_state != last_state
+                    || current_overlay_footer_text != last_overlay_footer_text
+                    || current_overlay_text != last_overlay_text;
+                let mic_meter_changed = current_mic_meter != last_mic_meter;
+                let should_animate_meter = current_state == STATE_RECORDING;
+                if !ui_changed && !mic_meter_changed && !should_animate_meter {
                     continue;
                 }
 
                 last_state = current_state;
+                last_mic_meter = current_mic_meter;
                 last_overlay_footer_text = current_overlay_footer_text.clone();
                 last_overlay_text = current_overlay_text.clone();
 
-                let label = match current_state {
-                    STATE_RECORDING => "recording",
-                    STATE_PROCESSING => "processing",
-                    STATE_ERROR => "error",
-                    _ => "idle",
-                };
-                log::info!(
-                    "ui update: state={}, transcript_len={}",
-                    label,
-                    current_overlay_text.len()
-                );
+                if ui_changed {
+                    let label = match current_state {
+                        STATE_RECORDING => "recording",
+                        STATE_PROCESSING => "processing",
+                        STATE_ERROR => "error",
+                        _ => "idle",
+                    };
+                    log::info!(
+                        "ui update: state={}, transcript_len={}",
+                        label,
+                        current_overlay_text.len()
+                    );
+                }
 
                 let update = Box::new(UiUpdate {
                     delegate_addr,
+                    mic_meter: current_mic_meter,
                     overlay_footer_text: current_overlay_footer_text,
                     overlay_text: current_overlay_text,
                     state: current_state,

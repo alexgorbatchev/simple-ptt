@@ -6,8 +6,16 @@ pub const STATE_RECORDING: u8 = 1;
 pub const STATE_PROCESSING: u8 = 2;
 pub const STATE_ERROR: u8 = 3;
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MicMeterSnapshot {
+    pub level: u8,
+    pub peak: u8,
+}
+
 pub struct AppState {
     abort_requested: AtomicBool,
+    mic_meter_level: AtomicU8,
+    mic_meter_peak: AtomicU8,
     overlay_footer_text: Mutex<String>,
     overlay_text: Mutex<String>,
     state: AtomicU8,
@@ -17,6 +25,8 @@ impl AppState {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
+            mic_meter_level: AtomicU8::new(0),
+            mic_meter_peak: AtomicU8::new(0),
             overlay_footer_text: Mutex::new(String::new()),
             overlay_text: Mutex::new(String::new()),
             state: AtomicU8::new(STATE_IDLE),
@@ -29,6 +39,9 @@ impl AppState {
 
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
+        if state != STATE_RECORDING {
+            self.clear_mic_meter();
+        }
     }
 
     pub fn get_state(&self) -> u8 {
@@ -79,5 +92,46 @@ impl AppState {
             .lock()
             .map(|overlay_footer_text| overlay_footer_text.clone())
             .unwrap_or_default()
+    }
+
+    pub fn set_mic_meter(&self, level: f32, peak: f32) {
+        self.mic_meter_level
+            .store(normalized_meter_value(level), Ordering::Relaxed);
+        self.mic_meter_peak
+            .store(normalized_meter_value(peak), Ordering::Relaxed);
+    }
+
+    pub fn clear_mic_meter(&self) {
+        self.mic_meter_level.store(0, Ordering::Relaxed);
+        self.mic_meter_peak.store(0, Ordering::Relaxed);
+    }
+
+    pub fn mic_meter_snapshot(&self) -> MicMeterSnapshot {
+        MicMeterSnapshot {
+            level: self.mic_meter_level.load(Ordering::Relaxed),
+            peak: self.mic_meter_peak.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn normalized_meter_value(value: f32) -> u8 {
+    (value.clamp(0.0, 1.0) * u8::MAX as f32).round() as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppState, STATE_IDLE, STATE_RECORDING};
+
+    #[test]
+    fn non_recording_states_clear_the_mic_meter() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_mic_meter(0.4, 0.7);
+
+        state.set_state(STATE_IDLE);
+
+        let mic_meter = state.mic_meter_snapshot();
+        assert_eq!(mic_meter.level, 0);
+        assert_eq!(mic_meter.peak, 0);
     }
 }

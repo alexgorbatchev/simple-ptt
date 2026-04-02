@@ -5,9 +5,21 @@ use std::sync::Arc;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
 
+const METER_MIN_DB: f32 = -42.0;
+const METER_MAX_DB: f32 = -6.0;
+
+#[derive(Debug)]
+struct EncodedAudioChunk {
+    mic_level: f32,
+    mic_peak: f32,
+    pcm_bytes: Vec<u8>,
+}
+
 pub fn print_input_devices() -> Result<(), String> {
     let host = cpal::default_host();
-    let default_device_name = host.default_input_device().and_then(|device| device.name().ok());
+    let default_device_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
     let input_devices = host
         .input_devices()
         .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?;
@@ -156,17 +168,44 @@ where
 {
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
+    let meter_state = Arc::clone(&state);
+    let mut smoothed_level = 0.0f32;
+    let mut smoothed_peak = 0.0f32;
+    let mut was_recording = false;
 
     device
         .build_input_stream(
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
-                if !state.is_recording() {
+                let is_recording = meter_state.is_recording();
+                if !is_recording {
+                    if was_recording {
+                        smoothed_level = 0.0;
+                        smoothed_peak = 0.0;
+                        was_recording = false;
+                    }
                     return;
                 }
 
-                let pcm_bytes = encode_pcm_mono(data, channels, gain);
-                controller.send_audio(pcm_bytes);
+                if !was_recording {
+                    smoothed_level = 0.0;
+                    smoothed_peak = 0.0;
+                    was_recording = true;
+                }
+
+                let encoded_chunk = encode_pcm_mono(data, channels, gain);
+                if encoded_chunk.pcm_bytes.is_empty() {
+                    meter_state.clear_mic_meter();
+                    return;
+                }
+
+                smoothed_level =
+                    smooth_meter_value(smoothed_level, encoded_chunk.mic_level, 0.62, 0.18);
+                smoothed_peak =
+                    smooth_meter_value(smoothed_peak, encoded_chunk.mic_peak, 0.82, 0.10)
+                        .max(smoothed_level);
+                meter_state.set_mic_meter(smoothed_level, smoothed_peak);
+                controller.send_audio(encoded_chunk.pcm_bytes);
             },
             |error| {
                 log::error!("audio stream error: {}", error);
@@ -176,17 +215,23 @@ where
         .expect("failed to build audio input stream")
 }
 
-fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32) -> Vec<u8>
+fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32) -> EncodedAudioChunk
 where
     T: Sample,
     f32: FromSample<T>,
 {
     if channels == 0 {
-        return Vec::new();
+        return EncodedAudioChunk {
+            mic_level: 0.0,
+            mic_peak: 0.0,
+            pcm_bytes: Vec::new(),
+        };
     }
 
     let frame_count = data.len() / channels;
     let mut pcm_bytes = Vec::with_capacity(frame_count * 2);
+    let mut peak_amplitude = 0.0f32;
+    let mut squared_sum = 0.0f32;
 
     for frame in data.chunks(channels) {
         let mono_sample = frame
@@ -194,9 +239,68 @@ where
             .fold(0.0f32, |sum, sample| sum + f32::from_sample(*sample))
             / channels as f32;
         let amplified_sample = (mono_sample * gain).clamp(-1.0, 1.0);
+        peak_amplitude = peak_amplitude.max(amplified_sample.abs());
+        squared_sum += amplified_sample * amplified_sample;
+
         let linear16_sample = (amplified_sample * i16::MAX as f32) as i16;
         pcm_bytes.extend_from_slice(&linear16_sample.to_le_bytes());
     }
 
-    pcm_bytes
+    let rms_amplitude = if frame_count == 0 {
+        0.0
+    } else {
+        (squared_sum / frame_count as f32).sqrt()
+    };
+
+    EncodedAudioChunk {
+        mic_level: normalize_meter_amplitude(rms_amplitude),
+        mic_peak: normalize_meter_amplitude(peak_amplitude),
+        pcm_bytes,
+    }
+}
+
+fn normalize_meter_amplitude(amplitude: f32) -> f32 {
+    let clamped_amplitude = amplitude.clamp(0.0, 1.0);
+    if clamped_amplitude <= f32::EPSILON {
+        return 0.0;
+    }
+
+    let decibels = 20.0 * clamped_amplitude.log10();
+    ((decibels - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)).clamp(0.0, 1.0)
+}
+
+fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) -> f32 {
+    let smoothing_factor = if current >= previous { attack } else { release };
+    previous + ((current - previous) * smoothing_factor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_meter_amplitude, smooth_meter_value};
+
+    #[test]
+    fn normalize_meter_amplitude_clamps_silence_and_hot_input() {
+        assert_eq!(normalize_meter_amplitude(0.0), 0.0);
+        assert_eq!(normalize_meter_amplitude(1.0), 1.0);
+        assert_eq!(normalize_meter_amplitude(2.0), 1.0);
+    }
+
+    #[test]
+    fn normalize_meter_amplitude_is_monotonic() {
+        let quiet = normalize_meter_amplitude(0.02);
+        let conversational = normalize_meter_amplitude(0.12);
+        let loud = normalize_meter_amplitude(0.55);
+
+        assert!(quiet < conversational);
+        assert!(conversational < loud);
+    }
+
+    #[test]
+    fn smooth_meter_value_uses_attack_and_release_paths() {
+        let attacked = smooth_meter_value(0.2, 0.8, 0.5, 0.1);
+        let released = smooth_meter_value(0.8, 0.2, 0.5, 0.1);
+
+        assert_eq!(attacked, 0.5);
+        assert_eq!(released, 0.74);
+    }
 }
