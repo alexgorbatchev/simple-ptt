@@ -4,18 +4,23 @@
 
 A very basic push-to-talk utility for macOS.
 
-The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking. If configured, you can also press a key to clean up the spoken text with an LLM pass.
+The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking. If configured, it can also run an LLM cleanup pass on the buffered transcript before pasting.
 
-I built this because I did not like the existing push-to-talk implementations. Everything felt too slow to respond to a hotkey, too slow to process and paste and none that I tried showed transcription in "real time". 
+I built this because I did not like the existing push-to-talk implementations. Everything felt too slow to respond to a hotkey, too slow to process and paste, and none that I tried showed transcription in real time.
 
 ## What it does
 
-- Global push-to-talk hotkey
+- Menu bar app with a global push-to-talk hotkey
 - Real-time transcription with Deepgram
 - On-screen overlay that updates while you speak
+- Tap-to-toggle and hold-to-talk behavior with a configurable hold threshold
+- Synthetic paste into the currently focused app
 - Optional LLM cleanup pass before pasting buffered text
-- Paste-oriented workflow for dropping transcribed text into whatever app you are using
-- Minimal configuration, minimal runtime footprint
+- Separate transformation hotkey for transform-without-paste workflows
+- Buffered text state so you can transform, paste, or discard later
+- Optional month-to-date Deepgram billing display when `deepgram.project_id` is configured
+- Configurable audio input device, overlay font, and overlay mic meter style
+- CLI helper to list available input devices
 
 ## Platform
 
@@ -48,7 +53,7 @@ Requirements:
 Build the release binary and bundle it as a macOS app:
 
 ```bash
-cargo build --release
+cargo build --locked --release
 ./scripts/build-macos-app.sh target/release/simple-ptt dist/simple-ptt.app
 ```
 
@@ -75,7 +80,7 @@ just start
 
 ## First run on macOS
 
-This app bundle is not Apple-signed or notarized.
+The provided app-bundling script applies **ad-hoc codesigning** by default, but the app is **not Developer ID-signed or notarized**.
 
 If macOS blocks it on first launch, use one of the following:
 
@@ -90,6 +95,73 @@ You should also expect macOS permission prompts for:
 
 - **Microphone**
 - **Accessibility** and/or **Input Monitoring** for the global push-to-talk hotkey and synthetic paste workflow
+
+## How it behaves
+
+### Record hotkey (`ui.hotkey`, default `F5`)
+
+The record hotkey is not just a simple toggle. It supports both tap-to-toggle and hold-to-talk behavior:
+
+- From **idle** or **error** state, pressing the record hotkey starts recording.
+- If you **hold** the hotkey for at least `mic.hold_ms` and then release it, recording stops immediately on release.
+- If you **tap** the hotkey and release it before `mic.hold_ms`, recording stays active and the next press stops it.
+- If a transcript buffer is ready, pressing the record hotkey pastes the buffered text.
+- While background work is already running, presses are ignored.
+
+What happens when recording stops depends on transformation configuration:
+
+- If transformation is configured and `transformation.auto = true`, stopping recording runs the transformation step and pastes the transformed result.
+- Otherwise, stopping recording pastes the raw transcript.
+
+### Transformation hotkey (`transformation.hotkey`, default `F6`)
+
+The transformation hotkey is only registered when transformation is configured successfully.
+
+- While **recording**, pressing the transformation hotkey stops recording and transforms the current transcript **without auto-pasting it**.
+- While a **buffer is ready**, pressing the transformation hotkey transforms the current buffered text in place.
+- After a transformed buffer is ready, press the record hotkey to paste it.
+
+### Escape key
+
+`Escape` is an abort/discard control:
+
+- while **recording**, it aborts the current session and discards the transcript
+- while **processing** or **transforming**, it requests abort
+- while a **buffer is ready**, it discards the buffer
+
+## Overlay and menu bar UI
+
+### Overlay
+
+The on-screen overlay shows:
+
+- live interim and final transcript text
+- default status text when there is no transcript yet:
+  - `Listening…`
+  - `Transcribing…`
+  - `Ready to paste…`
+  - `Transforming…`
+- optional footer text for billing information
+- optional footer hint text showing the transform/paste hotkeys
+- a live mic meter while recording
+- a clip warning border on the mic meter when the input clips
+
+`ui.meter_style = "none"` disables the mic meter and the clip warning indicator.
+
+### Menu bar item
+
+The app runs as a menu bar accessory app.
+
+The status item:
+
+- shows an idle icon when inactive
+- shows an active icon while recording, processing, transforming, or waiting with a buffered transcript
+
+The menu contains:
+
+- a version item that opens the GitHub repository
+- an optional billing line when month-to-date spend is available
+- an app termination item (`⌘Q`)
 
 ## Configuration
 
@@ -110,22 +182,6 @@ cp config.example.toml ~/.config/simple-ptt/config.toml
 
 ### Example config
 
-Typical flow with transformation enabled:
-
-If `transformation.auto = true` (the default):
-
-1. Press `F5` to start dictation.
-2. Press `F5` again to stop dictation, transform the transcript, and paste the transformed result.
-
-Optional shortcut:
-
-- Press `F6` while recording to stop dictation and transform the current transcript without auto-pasting it. After that, press `F5` to paste the transformed buffer.
-
-If `transformation.auto = false` or transformation is not configured:
-
-1. Press `F5` to start dictation.
-2. Press `F5` again to stop dictation and paste the raw transcript.
-
 ```toml
 [ui]
 hotkey = "F5"
@@ -137,6 +193,7 @@ meter_style = "animated-color"
 # meter_style = "none"
 
 [mic]
+# Optional: exact input device name or numeric index from the host input device list.
 # audio_device = "MacBook Pro Microphone"
 sample_rate = 16000
 gain = 4.0
@@ -160,48 +217,74 @@ model = "gpt-5.4-mini"
 # system_prompt = "..."
 ```
 
+### Supported hotkey names
+
+Hotkeys currently accept a **single key name only**. Multi-key chords such as `Cmd+Shift+Space` are not supported.
+
+Supported names are:
+
+- function keys: `F1` through `F12`
+- `Escape` / `Esc`
+- `Space`
+- `Tab`
+- `CapsLock`
+- `LeftShift`, `RightShift`, `LShift`, `RShift`
+- `LeftControl`, `RightControl`, `LCtrl`, `RCtrl`
+- `LeftAlt`, `RightAlt`, `LAlt`, `RAlt`, `LeftOption`, `RightOption`
+- `LeftMeta`, `RightMeta`, `LeftCommand`, `RightCommand`, `LCmd`, `RCmd`
+- `Return`, `Enter`
+- `Backspace`, `Delete`, `ForwardDelete`
+- `Home`, `End`, `PageUp`, `PageDown`
+- `UpArrow`, `DownArrow`, `LeftArrow`, `RightArrow`, and their short forms `Up`, `Down`, `Left`, `Right`
+
 ### Config values
 
 #### `[ui]`
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
-| `hotkey` | No | `F5` | Global push-to-talk key. |
-| `font_name` | No | system default | Overlay font family name. |
+| `hotkey` | No | `F5` | Global record key. See the record-hotkey behavior above. Only single-key values are supported. |
+| `font_name` | No | system default | Overlay font family name. The legacy alias `overlay_font_family` is also accepted. |
 | `font_size` | No | `12.0` | Main overlay font size. |
 | `footer_font_size` | No | derived from `font_size` | Footer text font size. |
-| `meter_style` | No | `animated-color` | Overlay mic meter style. Supported values: `animated-color`, `animated-height`, and `none`. |
+| `meter_style` | No | `animated-color` | Overlay mic meter style. Supported values: `animated-color`, `animated-height`, and `none`. `none` hides the meter and clip indicator entirely. |
 
 #### `[mic]`
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
 | `audio_device` | No | default input device | Exact input device name or numeric index. Use `simple-ptt --list-devices` to print the available inputs and their indices. |
-| `sample_rate` | No | `16000` | Requested audio sample rate in Hz. |
-| `gain` | No | `4.0` | Input gain multiplier. |
-| `hold_ms` | No | `300` | Minimum hold duration for the push-to-talk hotkey in milliseconds. |
+| `sample_rate` | No | `16000` | Requested audio sample rate in Hz. If the device does not support it, the app falls back to the device default input config. |
+| `gain` | No | `4.0` | Input gain multiplier applied before encoding and meter calculation. |
+| `hold_ms` | No | `300` | Hold threshold in milliseconds for the record hotkey. Releasing after at least this long acts like hold-to-talk; releasing sooner leaves recording running until the next press. |
 
 #### `[deepgram]`
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
 | `api_key` | Yes* | none | Deepgram API key. Can also be provided via `DEEPGRAM_API_KEY`. |
-| `project_id` | No | none | Optional Deepgram project ID. Can also be provided via `DEEPGRAM_PROJECT_ID`. |
+| `project_id` | No | none | Optional Deepgram project ID. When set, the app refreshes month-to-date Deepgram spend when recording starts and shows it in the overlay footer. If a dollar amount is available, it is also shown in the menu bar. `DEEPGRAM_PROJECT_ID` is also accepted. |
 | `language` | No | `en-US` | Deepgram language code. |
 | `model` | No | `nova-3` | Deepgram transcription model. |
 | `endpointing_ms` | No | `300` | Endpointing delay for transcription finalization. |
 | `utterance_end_ms` | No | `1000` | Utterance end timeout in milliseconds. |
 
+Billing notes for `deepgram.project_id`:
+
+- billing display is disabled completely when no project ID is configured
+- billing refresh happens when recording starts
+- the Deepgram billing API may require an admin- or owner-level project API key; otherwise the overlay footer shows a permission warning instead of a dollar amount
+
 #### `[transformation]`
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
-| `hotkey` | No | `F6` | Global key used to stop dictation and transform the current transcript before the final paste step. |
-| `auto` | No | `true` | When `true` and transformation is configured, pressing the record hotkey while dictation is active stops dictation, transforms the transcript, and pastes the transformed result. When `false`, the record hotkey keeps the raw paste behavior. |
+| `hotkey` | No | `F6` | Global transform key. While recording, it stops and transforms without auto-pasting. While a buffer is ready, it transforms the buffered text in place. Only single-key values are supported. |
+| `auto` | No | `true` | When `true` and transformation is configured, stopping recording with the record hotkey transforms the transcript and pastes the transformed result. When `false`, the record hotkey keeps the raw-paste behavior. |
 | `provider` | No | none | Rig provider name for the transformation request. See the canonical supported values below. |
 | `api_key` | No | none | API key used for the transformation provider. If omitted, the app falls back to the provider-specific environment variables listed below. |
 | `model` | No | `gpt-5.4-mini` | Model name used for the transformation request. |
-| `system_prompt` | No | built-in prompt | Optional override for the built-in transformation prompt. |
+| `system_prompt` | No | built-in prompt | Optional override for the built-in transformation prompt. The built-in prompt rewrites raw dictation into clean instructions, fixes punctuation and obvious transcription errors, preserves technical terms, and can convert spoken symbol words such as “underscore” or “slash” into their literal characters when clearly intended. |
 
 Canonical supported values for `transformation.provider`:
 
@@ -241,7 +324,7 @@ Environment variable fallback for `[transformation]`:
 - `perplexity` → `PERPLEXITY_API_KEY`
 - `together` → `TOGETHER_API_KEY`
 - `xai` → `XAI_API_KEY`
-- `ollama` → no API key, but the current Rig-based client path expects `OLLAMA_API_BASE_URL`
+- `ollama` → no API key, but the current Rig client path expects `OLLAMA_API_BASE_URL`
 
 `transformation.api_key` in the TOML takes precedence over the provider-specific API key environment variable.
 There is currently no equivalent environment-variable fallback for `transformation.provider` or `transformation.model`.
@@ -260,11 +343,21 @@ open -g ~/Applications/simple-ptt.app
 For app launches, keep configuration in `~/.config/simple-ptt/config.toml`.
 Using shell environment variables such as `SIMPLE_PTT_CONFIG` or `DEEPGRAM_API_KEY` is fine for direct binary execution, but it is the wrong default for LaunchServices-based app launches because shell environment inheritance is not reliable there.
 
-To print the available audio input devices and their numeric indices from the installed app bundle:
+### CLI helpers
+
+List available audio input devices from the installed app bundle:
 
 ```bash
 ~/Applications/simple-ptt.app/Contents/MacOS/simple-ptt --list-devices
 ```
+
+There is also an internal helper used by the app-bundling script:
+
+```bash
+simple-ptt --write-app-iconset <output-dir>
+```
+
+That command is primarily for packaging and generates the iconset consumed by `scripts/build-macos-app.sh`.
 
 ## Development
 
@@ -274,13 +367,28 @@ For the checked-in development config in this repository:
 just run
 ```
 
-For the bundled app workflow used by releases:
+Useful helper targets:
 
 ```bash
+just run-config path/to/config.toml
+just run-xdg
 just bundle-release
 just bundle-dmg
-open -g dist/simple-ptt.app
+just install-app
+just start
+just list-devices
 ```
+
+What they do:
+
+- `just run` / `just run-local`: runs `cargo run` with `SIMPLE_PTT_CONFIG=./config.toml`
+- `just run-config <path>`: same, but with an explicit config path
+- `just run-xdg`: runs without `SIMPLE_PTT_CONFIG`, so normal config-path lookup applies
+- `just bundle-release`: builds the release binary and bundles `dist/simple-ptt.app`
+- `just bundle-dmg`: builds `dist/simple-ptt.dmg`
+- `just install-app`: installs the bundled app into `~/Applications` by default
+- `just start`: launches the installed app with `open -g`
+- `just list-devices`: runs `--list-devices` from the installed app bundle
 
 ## License
 
