@@ -165,19 +165,7 @@ define_class!(
                 self.present_settings_window();
             }
 
-            if deepgram_api_key_missing {
-                show_modal_alert(
-                    "simple-ptt needs a Deepgram API key",
-                    &format!(
-                        concat!(
-                            "Open Settings and add your Deepgram API key, then click Save and Apply.\n\n",
-                            "Config file: {}\n\n",
-                            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
-                        ),
-                        self.ivars().config_store.path().display()
-                    ),
-                );
-            } else if config_file_missing {
+            if !deepgram_api_key_missing && config_file_missing {
                 show_modal_alert(
                     "simple-ptt didn't find a config.toml yet",
                     &format!(
