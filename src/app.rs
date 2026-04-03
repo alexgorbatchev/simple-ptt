@@ -481,18 +481,20 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
         .resolve_transformation_config()
         .ok()
         .map(|_| config.transformation.hotkey.as_str());
+    let shortcut_hint = Some(match transformation_hotkey {
+        Some(hotkey) => format!(
+            "<{}> transform <{}> paste <Cmd+V> insert <ESC> cancel",
+            hotkey, config.ui.hotkey
+        ),
+        None => format!("<{}> paste <Cmd+V> insert <ESC> cancel", config.ui.hotkey),
+    });
 
     OverlayStyle {
         font_name: config.ui.font_name.clone(),
         font_size: overlay_font_size,
         footer_font_size: overlay_footer_font_size,
         meter_style: config.ui.meter_style,
-        transformation_hint: transformation_hotkey.map(|hotkey| {
-            format!(
-                "{}: transform {}: paste ESC: cancel",
-                hotkey, config.ui.hotkey
-            )
-        }),
+        shortcut_hint,
     }
 }
 
@@ -651,7 +653,8 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::config_file_is_missing;
+    use super::{config_file_is_missing, overlay_style_from_config};
+    use crate::config::Config;
 
     #[test]
     fn config_file_is_missing_only_reports_not_found_paths() {
@@ -668,6 +671,32 @@ mod tests {
         assert!(!config_file_is_missing(&path));
         std::fs::remove_file(&path).unwrap();
     }
+
+    #[test]
+    fn overlay_style_includes_clipboard_shortcut_without_transformation() {
+        let config = Config::default();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn overlay_style_includes_transform_shortcut_when_transformation_is_configured() {
+        let mut config = Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
 }
 
 pub fn setup_status_polling(

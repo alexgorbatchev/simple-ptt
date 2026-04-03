@@ -48,6 +48,7 @@ pub struct TranscriptionController {
 enum Command {
     StartSession,
     AudioChunk(Vec<u8>),
+    InsertClipboardText,
     StopSessionAndPaste,
     StopSessionAndTransform,
     StopSessionAndTransformAndPaste,
@@ -69,6 +70,12 @@ impl TranscriptionController {
     pub fn start_session(&self) -> Result<(), String> {
         self.command_tx
             .send(Command::StartSession)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn insert_clipboard_text(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::InsertClipboardText)
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
@@ -144,6 +151,7 @@ pub fn spawn_transcription_thread(
 
             let mut active_session: Option<ActiveSession> = None;
             let mut buffered_text = String::new();
+            let mut recording_prefix = String::new();
 
             while let Ok(command) = command_rx.recv() {
                 match command {
@@ -160,6 +168,7 @@ pub fn spawn_transcription_thread(
                             continue;
                         }
 
+                        recording_prefix.clear();
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
                         state.clear_abort_request();
                         state.clear_overlay_text();
@@ -178,6 +187,7 @@ pub fn spawn_transcription_thread(
                             state.clone(),
                             &deepgram_config,
                             current_sample_rate,
+                            recording_prefix.clone(),
                         ) {
                             Ok(session) => {
                                 active_session = Some(session);
@@ -201,6 +211,111 @@ pub fn spawn_transcription_thread(
                             Err(tokio_mpsc::error::TrySendError::Closed(_)) => {
                                 log::error!("Deepgram session queue closed unexpectedly");
                                 active_session = None;
+                                recording_prefix.clear();
+                                state.set_state(STATE_ERROR);
+                            }
+                        }
+                    }
+                    Command::InsertClipboardText => {
+                        let Some(session) = active_session.take() else {
+                            log::warn!(
+                                "received clipboard-insert request without an active Deepgram session"
+                            );
+                            continue;
+                        };
+
+                        match finish_session(&runtime, session) {
+                            Ok(transcript) => {
+                                append_text_segment(&mut recording_prefix, transcript.as_str());
+
+                                match read_clipboard_text() {
+                                    Ok(clipboard_text) => {
+                                        if clipboard_text.trim().is_empty() {
+                                            log::warn!(
+                                                "ignoring clipboard insert request because the clipboard text is empty"
+                                            );
+                                        } else {
+                                            append_text_segment(
+                                                &mut recording_prefix,
+                                                clipboard_text.as_str(),
+                                            );
+                                            log::info!(
+                                                "inserted {} clipboard characters into the active transcript",
+                                                clipboard_text.trim().chars().count()
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        log::warn!(
+                                            "skipping clipboard insertion because clipboard text could not be read: {}",
+                                            error
+                                        );
+                                    }
+                                }
+
+                                if recording_prefix.is_empty() {
+                                    state.clear_overlay_text();
+                                } else {
+                                    state.set_overlay_text(recording_prefix.clone());
+                                }
+                                state.set_overlay_text_opacity(1.0);
+
+                                let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
+                                let current_config = config_store.current();
+                                let deepgram_config = match resolved_deepgram_config(&current_config)
+                                {
+                                    Ok(deepgram_config) => deepgram_config,
+                                    Err(error) => {
+                                        log::error!(
+                                            "failed to resolve Deepgram config for clipboard insertion: {}",
+                                            error
+                                        );
+                                        buffered_text = recording_prefix.clone();
+                                        recording_prefix.clear();
+                                        if buffered_text.is_empty() {
+                                            state.set_state(STATE_ERROR);
+                                        } else {
+                                            state.set_overlay_text(buffered_text.clone());
+                                            state.set_state(STATE_BUFFER_READY);
+                                        }
+                                        continue;
+                                    }
+                                };
+
+                                match start_session(
+                                    &runtime,
+                                    state.clone(),
+                                    &deepgram_config,
+                                    current_sample_rate,
+                                    recording_prefix.clone(),
+                                ) {
+                                    Ok(session) => {
+                                        active_session = Some(session);
+                                    }
+                                    Err(error) => {
+                                        log::error!(
+                                            "failed to resume Deepgram session after clipboard insertion: {}",
+                                            error
+                                        );
+                                        buffered_text = recording_prefix.clone();
+                                        recording_prefix.clear();
+                                        if buffered_text.is_empty() {
+                                            state.set_state(STATE_ERROR);
+                                        } else {
+                                            state.set_overlay_text(buffered_text.clone());
+                                            state.set_state(STATE_BUFFER_READY);
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "failed to checkpoint the active transcript for clipboard insertion: {}",
+                                    error
+                                );
+                                recording_prefix.clear();
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
                                 state.set_state(STATE_ERROR);
                             }
                         }
@@ -218,13 +333,20 @@ pub fn spawn_transcription_thread(
                             Ok(transcript) => {
                                 if state.consume_abort_request() {
                                     log::info!("discarding transcript because the session was aborted");
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
-                                if transcript.is_empty() {
+                                let combined_transcript = combine_transcript(
+                                    recording_prefix.as_str(),
+                                    transcript.as_str(),
+                                );
+                                recording_prefix.clear();
+
+                                if combined_transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
@@ -232,7 +354,7 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                buffered_text = transcript;
+                                buffered_text = combined_transcript;
                                 paste_buffered_text(&state, &mut buffered_text);
                             }
                             Err(error) => {
@@ -241,12 +363,14 @@ pub fn spawn_transcription_thread(
                                         "ignoring Deepgram session error after abort request: {}",
                                         error
                                     );
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
+                                recording_prefix.clear();
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
@@ -269,13 +393,20 @@ pub fn spawn_transcription_thread(
                             Ok(transcript) => {
                                 if state.consume_abort_request() {
                                     log::info!("discarding transcript because the session was aborted");
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
-                                if transcript.is_empty() {
+                                let combined_transcript = combine_transcript(
+                                    recording_prefix.as_str(),
+                                    transcript.as_str(),
+                                );
+                                recording_prefix.clear();
+
+                                if combined_transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
@@ -283,7 +414,7 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                buffered_text = transcript;
+                                buffered_text = combined_transcript;
                                 let transformation_config =
                                     config_store.current().resolve_transformation_config().ok();
                                 transform_buffered_text(
@@ -300,12 +431,14 @@ pub fn spawn_transcription_thread(
                                         "ignoring Deepgram session error after abort request: {}",
                                         error
                                     );
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
+                                recording_prefix.clear();
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
@@ -328,13 +461,20 @@ pub fn spawn_transcription_thread(
                             Ok(transcript) => {
                                 if state.consume_abort_request() {
                                     log::info!("discarding transcript because the session was aborted");
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
-                                if transcript.is_empty() {
+                                let combined_transcript = combine_transcript(
+                                    recording_prefix.as_str(),
+                                    transcript.as_str(),
+                                );
+                                recording_prefix.clear();
+
+                                if combined_transcript.is_empty() {
                                     log::info!("Deepgram session completed without a final transcript");
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
@@ -342,7 +482,7 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                buffered_text = transcript;
+                                buffered_text = combined_transcript;
                                 let transformation_config =
                                     config_store.current().resolve_transformation_config().ok();
                                 transform_buffered_text(
@@ -359,12 +499,14 @@ pub fn spawn_transcription_thread(
                                         "ignoring Deepgram session error after abort request: {}",
                                         error
                                     );
+                                    recording_prefix.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
                                     state.set_state(STATE_IDLE);
                                     continue;
                                 }
 
+                                recording_prefix.clear();
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
@@ -388,6 +530,7 @@ pub fn spawn_transcription_thread(
                     }
                     Command::DiscardBuffer => {
                         buffered_text.clear();
+                        recording_prefix.clear();
                         state.clear_abort_request();
                         state.clear_overlay_text();
                         state.set_overlay_text_opacity(1.0);
@@ -419,6 +562,7 @@ fn start_session(
     state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
+    recording_prefix: String,
 ) -> Result<ActiveSession, String> {
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
     let deepgram_config = config.clone();
@@ -461,8 +605,9 @@ fn start_session(
         config.language
     );
 
-    let task = runtime
-        .spawn(async move { run_transcription_stream(&mut transcription_stream, state).await });
+    let task = runtime.spawn(async move {
+        run_transcription_stream(&mut transcription_stream, state, recording_prefix).await
+    });
 
     Ok(ActiveSession { audio_tx, task })
 }
@@ -576,6 +721,7 @@ fn transform_buffered_text(
 async fn run_transcription_stream(
     stream: &mut TranscriptionStream,
     state: Arc<AppState>,
+    recording_prefix: String,
 ) -> Result<String, String> {
     let mut interim_transcript = String::new();
     let mut transcript_parts: Vec<String> = Vec::new();
@@ -609,7 +755,11 @@ async fn run_transcription_stream(
                         interim_transcript.clear();
                         transcript_parts.push(transcript);
                         if !state.is_abort_requested() {
-                            state.set_overlay_text(build_overlay_text(&transcript_parts, None));
+                            state.set_overlay_text(build_overlay_text(
+                                recording_prefix.as_str(),
+                                &transcript_parts,
+                                None,
+                            ));
                         }
                     }
                     continue;
@@ -619,6 +769,7 @@ async fn run_transcription_stream(
                 interim_transcript = transcript;
                 if !state.is_abort_requested() {
                     state.set_overlay_text(build_overlay_text(
+                        recording_prefix.as_str(),
                         &transcript_parts,
                         Some(interim_transcript.as_str()),
                     ));
@@ -642,7 +793,7 @@ async fn run_transcription_stream(
         }
     }
 
-    let final_transcript = join_transcript_parts(&transcript_parts);
+    let final_transcript = join_transcript_parts(recording_prefix.as_str(), &transcript_parts);
     if !state.is_abort_requested() {
         state.set_overlay_text(final_transcript.clone());
     }
@@ -657,25 +808,46 @@ fn extract_transcript(channel: &Channel) -> String {
         .unwrap_or_default()
 }
 
-fn build_overlay_text(transcript_parts: &[String], interim_transcript: Option<&str>) -> String {
-    let mut segments: Vec<&str> = transcript_parts
-        .iter()
-        .map(|transcript| transcript.trim())
-        .filter(|transcript| !transcript.is_empty())
-        .collect();
-
-    if let Some(interim_transcript) = interim_transcript {
-        let trimmed_interim_transcript = interim_transcript.trim();
-        if !trimmed_interim_transcript.is_empty() {
-            segments.push(trimmed_interim_transcript);
-        }
+fn append_text_segment(output: &mut String, segment: &str) {
+    let trimmed_segment = segment.trim();
+    if trimmed_segment.is_empty() {
+        return;
     }
 
-    segments.join(" ")
+    if !output.is_empty() {
+        output.push(' ');
+    }
+    output.push_str(trimmed_segment);
 }
 
-fn join_transcript_parts(transcript_parts: &[String]) -> String {
-    build_overlay_text(transcript_parts, None)
+fn combine_transcript(recording_prefix: &str, transcript: &str) -> String {
+    let mut combined = String::new();
+    append_text_segment(&mut combined, recording_prefix);
+    append_text_segment(&mut combined, transcript);
+    combined
+}
+
+fn build_overlay_text(
+    recording_prefix: &str,
+    transcript_parts: &[String],
+    interim_transcript: Option<&str>,
+) -> String {
+    let mut overlay_text = String::new();
+    append_text_segment(&mut overlay_text, recording_prefix);
+
+    for transcript in transcript_parts {
+        append_text_segment(&mut overlay_text, transcript.as_str());
+    }
+
+    if let Some(interim_transcript) = interim_transcript {
+        append_text_segment(&mut overlay_text, interim_transcript);
+    }
+
+    overlay_text
+}
+
+fn join_transcript_parts(recording_prefix: &str, transcript_parts: &[String]) -> String {
+    build_overlay_text(recording_prefix, transcript_parts, None)
 }
 
 fn write_clipboard_and_paste(text: &str) -> Result<(), String> {
@@ -699,6 +871,10 @@ fn send_key_event(event: EventType) -> Result<(), String> {
     Ok(())
 }
 
+struct ClipboardReadRequest {
+    text: Option<String>,
+}
+
 struct ClipboardWriteRequest {
     text: String,
     success: bool,
@@ -711,6 +887,30 @@ extern "C" {
         context: *mut c_void,
         work: extern "C" fn(*mut c_void),
     );
+}
+
+extern "C" fn perform_clipboard_read(context: *mut c_void) {
+    let request = unsafe { &mut *(context as *mut ClipboardReadRequest) };
+    let pasteboard = NSPasteboard::generalPasteboard();
+    request.text = pasteboard
+        .stringForType(unsafe { NSPasteboardTypeString })
+        .map(|text| text.to_string());
+}
+
+fn read_clipboard_text() -> Result<String, String> {
+    let mut request = Box::new(ClipboardReadRequest { text: None });
+
+    unsafe {
+        dispatch_sync_f(
+            &_dispatch_main_q,
+            (&mut *request) as *mut ClipboardReadRequest as *mut c_void,
+            perform_clipboard_read,
+        );
+    }
+
+    request
+        .text
+        .ok_or_else(|| "clipboard does not currently contain plain text".to_owned())
 }
 
 extern "C" fn perform_clipboard_write(context: *mut c_void) {
@@ -745,4 +945,39 @@ fn write_clipboard_text(text: &str) -> Result<(), String> {
 
 fn format_deepgram_error(error: DeepgramError) -> String {
     format!("{}", error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{append_text_segment, build_overlay_text, combine_transcript};
+
+    #[test]
+    fn append_text_segment_joins_non_empty_segments_with_single_spaces() {
+        let mut output = String::new();
+        append_text_segment(&mut output, "  hello  ");
+        append_text_segment(&mut output, "\nworld\n");
+        append_text_segment(&mut output, "   ");
+
+        assert_eq!(output, "hello world");
+    }
+
+    #[test]
+    fn build_overlay_text_preserves_recording_prefix_before_live_interim_text() {
+        let overlay_text = build_overlay_text(
+            "hello copied-url",
+            &["spoken".to_owned()],
+            Some("right now"),
+        );
+
+        assert_eq!(overlay_text, "hello copied-url spoken right now");
+    }
+
+    #[test]
+    fn combine_transcript_keeps_prefixed_clipboard_insertions() {
+        assert_eq!(
+            combine_transcript("hello copied", "world"),
+            "hello copied world"
+        );
+        assert_eq!(combine_transcript("hello copied", ""), "hello copied");
+    }
 }

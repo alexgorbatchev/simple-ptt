@@ -57,6 +57,7 @@ pub fn spawn_hotkey_thread(
             let press_time: Cell<Option<Instant>> = Cell::new(None);
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
             let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
+            let clipboard_insert_is_down: Cell<bool> = Cell::new(false);
 
             if let Err(error) = run_hotkey_event_loop(move |event| {
                 let current_modifiers = active_modifiers.get();
@@ -78,6 +79,7 @@ pub fn spawn_hotkey_thread(
                                 &press_time,
                                 &record_hotkey_action,
                                 &transform_hotkey_is_down,
+                                &clipboard_insert_is_down,
                             )
                         }
                     }
@@ -95,6 +97,7 @@ pub fn spawn_hotkey_thread(
                                 &press_time,
                                 &record_hotkey_action,
                                 &transform_hotkey_is_down,
+                                &clipboard_insert_is_down,
                             )
                         }
                     }
@@ -128,6 +131,7 @@ fn handle_key_press(
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
     transform_hotkey_is_down: &Cell<bool>,
+    clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
 
@@ -151,6 +155,7 @@ fn handle_key_press(
         press_time.set(None);
         record_hotkey_action.set(None);
         transform_hotkey_is_down.set(false);
+        clipboard_insert_is_down.set(false);
 
         match current_state {
             STATE_RECORDING => {
@@ -241,6 +246,29 @@ fn handle_key_press(
         return true;
     }
 
+    if is_clipboard_insert_shortcut(key, current_modifiers) {
+        if !state.is_recording() {
+            return false;
+        }
+
+        if clipboard_insert_is_down.replace(true) {
+            return true;
+        }
+
+        match controller.insert_clipboard_text() {
+            Ok(()) => {
+                log::info!("checkpointing the active transcript and inserting clipboard text");
+            }
+            Err(error) => {
+                clipboard_insert_is_down.set(false);
+                log::error!("failed to queue clipboard insertion: {}", error);
+                state.set_state(STATE_ERROR);
+            }
+        }
+
+        return true;
+    }
+
     false
 }
 
@@ -252,6 +280,7 @@ fn handle_key_release(
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
     transform_hotkey_is_down: &Cell<bool>,
+    clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
 
@@ -302,6 +331,10 @@ fn handle_key_release(
             },
         }
 
+        return true;
+    }
+
+    if key == Key::KeyV && clipboard_insert_is_down.replace(false) {
         return true;
     }
 
@@ -366,6 +399,14 @@ fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig 
     }
 }
 
+fn is_clipboard_insert_shortcut(key: Key, current_modifiers: HotkeyModifiers) -> bool {
+    key == Key::KeyV
+        && current_modifiers.meta
+        && !current_modifiers.shift
+        && !current_modifiers.control
+        && !current_modifiers.alt
+}
+
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
     if !state.is_recording() {
         return;
@@ -403,5 +444,42 @@ fn stop_recording_and_transform_and_paste(
             log::error!("failed to stop recording: {}", stop_error);
             state.set_state(STATE_ERROR);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_clipboard_insert_shortcut;
+    use crate::hotkey_binding::HotkeyModifiers;
+    use rdev::Key;
+
+    #[test]
+    fn clipboard_insert_shortcut_requires_exact_command_v() {
+        assert!(is_clipboard_insert_shortcut(
+            Key::KeyV,
+            HotkeyModifiers {
+                meta: true,
+                ..HotkeyModifiers::default()
+            }
+        ));
+        assert!(!is_clipboard_insert_shortcut(
+            Key::KeyV,
+            HotkeyModifiers {
+                meta: true,
+                shift: true,
+                ..HotkeyModifiers::default()
+            }
+        ));
+        assert!(!is_clipboard_insert_shortcut(
+            Key::KeyV,
+            HotkeyModifiers::default()
+        ));
+        assert!(!is_clipboard_insert_shortcut(
+            Key::KeyC,
+            HotkeyModifiers {
+                meta: true,
+                ..HotkeyModifiers::default()
+            }
+        ));
     }
 }

@@ -20,7 +20,7 @@ const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const FOOTER_HEIGHT: f64 = 24.0;
 const FOOTER_HINT_GAP: f64 = 12.0;
-const FOOTER_HINT_WIDTH: f64 = 260.0;
+const FOOTER_HINT_WIDTH: f64 = 330.0;
 const CLIP_INDICATOR_BORDER_WIDTH: f64 = 1.0;
 const CLIP_INDICATOR_CORNER_RADIUS: f64 = 4.0;
 const CLIP_INDICATOR_FADE_IN_SECONDS: f64 = 0.08;
@@ -48,7 +48,7 @@ pub struct OverlayStyle {
     pub font_size: f64,
     pub footer_font_size: f64,
     pub meter_style: UiMeterStyle,
-    pub transformation_hint: Option<String>,
+    pub shortcut_hint: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -219,7 +219,7 @@ impl OverlayWindow {
             0.72, 0.72, 0.75, 1.0,
         )));
         footer_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
-        footer_text_field.setFrame(footer_text_frame(style.transformation_hint.is_some()));
+        footer_text_field.setFrame(footer_text_frame(style.shortcut_hint.is_some()));
         footer_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         if let Some(cell) = footer_text_field.cell() {
             cell.setAlignment(NSTextAlignment::Left);
@@ -246,10 +246,10 @@ impl OverlayWindow {
             cell.setLineBreakMode(NSLineBreakMode::ByClipping);
             cell.setUsesSingleLineMode(true);
         }
-        if let Some(transformation_hint) = style.transformation_hint.as_deref() {
-            footer_hint_text_field.setStringValue(&NSString::from_str(transformation_hint));
+        if let Some(shortcut_hint) = style.shortcut_hint.as_deref() {
+            footer_hint_text_field.setStringValue(&NSString::from_str(shortcut_hint));
         }
-        footer_hint_text_field.setHidden(style.transformation_hint.is_none());
+        footer_hint_text_field.setHidden(style.shortcut_hint.is_none());
 
         scroll_view.setDocumentView(Some(&text_field));
         root_view.addSubview(&scroll_view);
@@ -272,7 +272,7 @@ impl OverlayWindow {
             text_field,
             footer_text_field,
             footer_hint_text_field,
-            footer_hint: RefCell::new(style.transformation_hint.clone()),
+            footer_hint: RefCell::new(style.shortcut_hint.clone()),
             is_visible: Cell::new(false),
             text_opacity: Cell::new(1.0),
         };
@@ -353,11 +353,11 @@ impl OverlayWindow {
         self.footer_hint_text_field
             .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         self.meter_style.set(style.meter_style);
-        self.footer_hint.replace(style.transformation_hint.clone());
+        self.footer_hint.replace(style.shortcut_hint.clone());
 
-        if let Some(transformation_hint) = style.transformation_hint.as_deref() {
+        if let Some(shortcut_hint) = style.shortcut_hint.as_deref() {
             self.footer_hint_text_field
-                .setStringValue(&NSString::from_str(transformation_hint));
+                .setStringValue(&NSString::from_str(shortcut_hint));
             self.footer_hint_text_field.setHidden(false);
         } else {
             self.footer_hint_text_field
@@ -365,7 +365,7 @@ impl OverlayWindow {
             self.footer_hint_text_field.setHidden(true);
         }
         self.footer_text_field
-            .setFrame(footer_text_frame(style.transformation_hint.is_some()));
+            .setFrame(footer_text_frame(style.shortcut_hint.is_some()));
 
         let footer_text_is_visible = !self
             .footer_text_field
@@ -373,7 +373,7 @@ impl OverlayWindow {
             .to_string()
             .trim()
             .is_empty();
-        let footer_hint_is_visible = style.transformation_hint.is_some();
+        let footer_hint_is_visible = style.shortcut_hint.is_some();
         let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
         let meter_is_visible =
             self.is_visible.get() && self.meter_style.get() != UiMeterStyle::None;

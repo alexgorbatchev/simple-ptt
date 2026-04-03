@@ -15,6 +15,7 @@ I built this because I did not like the existing push-to-talk implementations. E
 - On-screen overlay that updates while you speak
 - Tap-to-toggle and hold-to-talk behavior with a configurable hold threshold
 - Synthetic paste into the currently focused app
+- `Cmd+V` while recording to splice the current clipboard text into the active transcript
 - Optional LLM cleanup pass before pasting buffered text
 - Separate transformation hotkey for transform-without-paste workflows
 - Buffered text state so you can transform, paste, or discard later
@@ -125,6 +126,12 @@ The transformation hotkey is only registered when transformation is configured s
 - While **recording**, pressing the transformation hotkey stops recording and transforms the current transcript **without auto-pasting it**.
 - While a **buffer is ready**, pressing the transformation hotkey transforms the current buffered text in place.
 - After a transformed buffer is ready, press the record hotkey to paste it.
+
+### `Cmd+V` while recording
+
+While **recording**, pressing `Cmd+V` checkpoints the transcript captured so far, appends the current plain-text clipboard contents to that transcript, and immediately resumes listening in a new streaming session.
+
+This is meant for cases where you want copied text to become part of the dictated transcript itself instead of being pasted directly into the focused app at that moment.
 
 ### Escape key
 
