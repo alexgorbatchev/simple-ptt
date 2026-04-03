@@ -30,6 +30,7 @@ const SETTINGS_FONT_WEIGHT: f64 = 0.0;
 #[derive(Debug)]
 pub struct SettingsWindow {
     window: Retained<NSWindow>,
+    scroll_view: Retained<NSScrollView>,
     path_text_field: Retained<NSTextField>,
     status_text_field: Retained<NSTextField>,
     ui_hotkey_field: Retained<NSTextField>,
@@ -219,9 +220,11 @@ impl SettingsWindow {
         scroll_view.setDocumentView(Some(&content_view));
         root_view.addSubview(&scroll_view);
         window.setContentView(Some(&root_view));
+        window.setInitialFirstResponder(Some(&ui_hotkey_field));
 
         Self {
             window,
+            scroll_view,
             path_text_field,
             status_text_field,
             ui_hotkey_field,
@@ -256,6 +259,8 @@ impl SettingsWindow {
         app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         app.activate();
         self.window.makeKeyAndOrderFront(None);
+        let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
+        self.scroll_to_top();
     }
 
     pub fn load_from_config(&self, config: &Config, config_path: &str) {
@@ -354,6 +359,7 @@ impl SettingsWindow {
         self.transformation_system_prompt_view
             .setString(&NSString::from_str(&config.transformation.system_prompt));
         self.set_status("");
+        self.scroll_to_top();
     }
 
     pub fn read_config(&self) -> Result<Config, String> {
@@ -411,6 +417,19 @@ impl SettingsWindow {
     pub fn set_status(&self, message: &str) {
         self.status_text_field
             .setStringValue(&NSString::from_str(message));
+    }
+
+    fn scroll_to_top(&self) {
+        let clip_view = self.scroll_view.contentView();
+        let Some(document_view) = self.scroll_view.documentView() else {
+            return;
+        };
+
+        let document_height = document_view.frame().size.height;
+        let visible_height = self.scroll_view.contentSize().height;
+        let top_origin_y = (document_height - visible_height).max(0.0);
+        clip_view.scrollToPoint(NSPoint::new(0.0, top_origin_y));
+        self.scroll_view.reflectScrolledClipView(&clip_view);
     }
 }
 
