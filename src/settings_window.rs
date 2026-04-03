@@ -233,6 +233,18 @@ impl SettingsWindow {
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
 
+        let cancel_button = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                ns_string!("Cancel"),
+                Some(target),
+                Some(sel!(cancelSettings:)),
+                mtm,
+            )
+        };
+        cancel_button.setFont(Some(&settings_font()));
+        set_view_frame(&*cancel_button, WINDOW_WIDTH - 280.0, 10.0, 100.0, 30.0);
+        root_view.addSubview(&cancel_button);
+
         let save_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Save and Apply"),
@@ -252,7 +264,7 @@ impl SettingsWindow {
             &*status_text_field,
             20.0,
             6.0,
-            WINDOW_WIDTH - 200.0,
+            WINDOW_WIDTH - 320.0,
             STATUS_HEIGHT,
         );
         root_view.addSubview(&status_text_field);
@@ -305,6 +317,10 @@ impl SettingsWindow {
         self.window.makeKeyAndOrderFront(None);
         let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
         self.scroll_to_top();
+    }
+
+    pub fn hide(&self) {
+        self.window.orderOut(None);
     }
 
     pub fn load_from_config(&self, config: &Config, config_path: &str) {

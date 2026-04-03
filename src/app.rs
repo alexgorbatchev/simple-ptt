@@ -214,6 +214,17 @@ define_class!(
             self.begin_hotkey_capture(HotkeyCaptureTarget::Transform);
         }
 
+        #[unsafe(method(cancelSettings:))]
+        fn cancel_settings(&self, _sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+
+            self.ivars().hotkey_capture_controller.cancel();
+            settings_window.cancel_hotkey_capture();
+            settings_window.hide();
+        }
+
         #[unsafe(method(saveSettings:))]
         fn save_settings(&self, _sender: Option<&AnyObject>) {
             let Some(settings_window) = self.ivars().settings_window.get() else {
