@@ -2,7 +2,7 @@ use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{sel, MainThreadOnly};
+use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType,
     NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager,
@@ -10,13 +10,15 @@ use objc2_app_kit::{
     NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_quartz_core::CALayer;
 
 use crate::config::{Config, UiMeterStyle};
 use crate::hotkey_capture::HotkeyCaptureTarget;
 
 const WINDOW_HEIGHT: f64 = 760.0;
 const WINDOW_WIDTH: f64 = 760.0;
-const CONTENT_HEIGHT: f64 = 1480.0;
+const CONTENT_HEIGHT: f64 = 1330.0;
+const CONTENT_TOP_PADDING: f64 = 28.0;
 const HORIZONTAL_PADDING: f64 = 20.0;
 const LABEL_WIDTH: f64 = 180.0;
 const FIELD_HEIGHT: f64 = 24.0;
@@ -26,8 +28,10 @@ const CAPTURE_BUTTON_WIDTH: f64 = 100.0;
 const CAPTURE_BUTTON_GAP: f64 = 10.0;
 const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 const ROW_GAP: f64 = 10.0;
+const SECTION_BREAK_GAP: f64 = 12.0;
 const SECTION_GAP: f64 = 20.0;
 const SECTION_HEIGHT: f64 = 22.0;
+const SECTION_TITLE_BOTTOM_GAP: f64 = 10.0;
 const PROMPT_HEIGHT: f64 = 270.0;
 const STATUS_HEIGHT: f64 = 40.0;
 const ENV_HINT_HEIGHT: f64 = 18.0;
@@ -35,6 +39,10 @@ const SETTINGS_FONT_SIZE: f64 = 12.0;
 const SETTINGS_FONT_WEIGHT: f64 = 0.0;
 const SETTINGS_HINT_FONT_SCALE: f64 = 0.8;
 const SETTINGS_SECTION_TITLE_FONT_WEIGHT: f64 = 0.4;
+const INPUT_BORDER_HIGHLIGHT_LEVEL: f64 = 0.5;
+const INPUT_BORDER_WIDTH: f64 = 1.0;
+const INPUT_CORNER_RADIUS: f64 = 6.0;
+const LABEL_VISUAL_CENTER_NUDGE: f64 = -4.0;
 const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
 
 #[derive(Debug)]
@@ -131,7 +139,7 @@ impl SettingsWindow {
         );
         content_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
 
-        let mut current_y = CONTENT_HEIGHT - 28.0;
+        let mut current_y = CONTENT_HEIGHT - CONTENT_TOP_PADDING;
         let path_title = make_section_title(mtm, "Config file");
         set_view_frame(
             &*path_title,
@@ -233,6 +241,7 @@ impl SettingsWindow {
                 mtm,
             )
         };
+        save_button.setFont(Some(&settings_font()));
         set_view_frame(&*save_button, WINDOW_WIDTH - 170.0, 10.0, 150.0, 30.0);
         root_view.addSubview(&save_button);
 
@@ -530,16 +539,17 @@ fn add_section_title(
     current_y: f64,
     title: &str,
 ) -> f64 {
+    let title_y = current_y - SECTION_BREAK_GAP;
     let title_field = make_section_title(mtm, title);
     set_view_frame(
         &*title_field,
         HORIZONTAL_PADDING,
-        current_y,
+        title_y,
         260.0,
         SECTION_HEIGHT,
     );
     content_view.addSubview(&title_field);
-    current_y - SECTION_HEIGHT - ROW_GAP
+    title_y - SECTION_HEIGHT - SECTION_TITLE_BOTTOM_GAP
 }
 
 fn make_section_title(mtm: MainThreadMarker, title: &str) -> Retained<NSTextField> {
@@ -555,13 +565,15 @@ fn add_labeled_text_field(
     current_y: &mut f64,
     label: &str,
 ) -> Retained<NSTextField> {
+    let text_field_y = *current_y - 2.0;
+
     let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
     label_field.setFont(Some(&settings_font()));
     label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     set_view_frame(
         &*label_field,
         HORIZONTAL_PADDING,
-        *current_y,
+        vertically_centered_label_y(text_field_y, FIELD_HEIGHT),
         LABEL_WIDTH,
         FIELD_HEIGHT,
     );
@@ -569,10 +581,11 @@ fn add_labeled_text_field(
 
     let text_field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
     text_field.setFont(Some(&settings_font()));
+    configure_input_border(&text_field);
     set_view_frame(
         &*text_field,
         FIELD_X,
-        *current_y - 2.0,
+        text_field_y,
         FIELD_WIDTH,
         FIELD_HEIGHT,
     );
@@ -591,13 +604,15 @@ fn add_labeled_text_field_with_button(
     button_title: &str,
     action: objc2::runtime::Sel,
 ) -> (Retained<NSTextField>, Retained<NSButton>) {
+    let text_field_y = *current_y - 2.0;
+
     let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
     label_field.setFont(Some(&settings_font()));
     label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     set_view_frame(
         &*label_field,
         HORIZONTAL_PADDING,
-        *current_y,
+        vertically_centered_label_y(text_field_y, FIELD_HEIGHT),
         LABEL_WIDTH,
         FIELD_HEIGHT,
     );
@@ -605,10 +620,11 @@ fn add_labeled_text_field_with_button(
 
     let text_field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
     text_field.setFont(Some(&settings_font()));
+    configure_input_border(&text_field);
     set_view_frame(
         &*text_field,
         FIELD_X,
-        *current_y - 2.0,
+        text_field_y,
         HOTKEY_FIELD_WIDTH,
         FIELD_HEIGHT,
     );
@@ -642,13 +658,16 @@ fn add_labeled_pop_up_button(
     current_y: &mut f64,
     label: &str,
 ) -> Retained<NSPopUpButton> {
+    let popup_button_y = *current_y - 3.0;
+    let popup_button_height = FIELD_HEIGHT + 6.0;
+
     let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
     label_field.setFont(Some(&settings_font()));
     label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     set_view_frame(
         &*label_field,
         HORIZONTAL_PADDING,
-        *current_y,
+        vertically_centered_label_y(popup_button_y, popup_button_height),
         LABEL_WIDTH,
         FIELD_HEIGHT,
     );
@@ -657,12 +676,13 @@ fn add_labeled_pop_up_button(
     let popup_button = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(mtm),
         NSRect::new(
-            NSPoint::new(FIELD_X, *current_y - 3.0),
-            NSSize::new(FIELD_WIDTH, FIELD_HEIGHT + 6.0),
+            NSPoint::new(FIELD_X, popup_button_y),
+            NSSize::new(FIELD_WIDTH, popup_button_height),
         ),
         false,
     );
     popup_button.setFont(Some(&settings_font()));
+    configure_input_border(&popup_button);
     content_view.addSubview(&popup_button);
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
@@ -675,13 +695,15 @@ fn add_labeled_text_field_with_hint(
     current_y: &mut f64,
     label: &str,
 ) -> (Retained<NSTextField>, Retained<NSTextField>) {
+    let text_field_y = *current_y - 2.0;
+
     let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
     label_field.setFont(Some(&settings_font()));
     label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     set_view_frame(
         &*label_field,
         HORIZONTAL_PADDING,
-        *current_y,
+        vertically_centered_label_y(text_field_y, FIELD_HEIGHT),
         LABEL_WIDTH,
         FIELD_HEIGHT,
     );
@@ -689,10 +711,11 @@ fn add_labeled_text_field_with_hint(
 
     let text_field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
     text_field.setFont(Some(&settings_font()));
+    configure_input_border(&text_field);
     set_view_frame(
         &*text_field,
         FIELD_X,
-        *current_y - 2.0,
+        text_field_y,
         FIELD_WIDTH,
         FIELD_HEIGHT,
     );
@@ -764,6 +787,7 @@ fn add_prompt_editor(
     prompt_scroll_view.setHasVerticalScroller(true);
     prompt_scroll_view.setHasHorizontalScroller(false);
     prompt_scroll_view.setDrawsBackground(true);
+    configure_input_border(&prompt_scroll_view);
     let prompt_view = NSTextView::initWithFrame(
         NSTextView::alloc(mtm),
         NSRect::new(
@@ -773,7 +797,8 @@ fn add_prompt_editor(
     );
     prompt_view.setEditable(true);
     prompt_view.setSelectable(true);
-    prompt_view.setDrawsBackground(false);
+    prompt_view.setDrawsBackground(true);
+    prompt_view.setBackgroundColor(&NSColor::textBackgroundColor());
     prompt_view.setFont(Some(&settings_font()));
     prompt_view.setHorizontallyResizable(false);
     prompt_view.setVerticallyResizable(true);
@@ -824,6 +849,28 @@ fn settings_section_title_font() -> Retained<NSFont> {
         SETTINGS_FONT_SIZE,
         SETTINGS_SECTION_TITLE_FONT_WEIGHT,
     )
+}
+
+fn input_border_color() -> Retained<NSColor> {
+    NSColor::separatorColor()
+        .highlightWithLevel(INPUT_BORDER_HIGHLIGHT_LEVEL)
+        .unwrap_or_else(NSColor::separatorColor)
+}
+
+fn configure_input_border(view: &AnyObject) {
+    unsafe {
+        let _: () = msg_send![view, setWantsLayer: true];
+        let layer: Option<Retained<CALayer>> = msg_send![view, layer];
+        let Some(layer) = layer else {
+            return;
+        };
+
+        layer.setCornerRadius(INPUT_CORNER_RADIUS);
+        layer.setBorderWidth(INPUT_BORDER_WIDTH);
+        let border_color = input_border_color();
+        let border_cg_color = border_color.CGColor();
+        layer.setBorderColor(Some(&border_cg_color));
+    }
 }
 
 fn available_font_family_names(mtm: MainThreadMarker) -> Vec<String> {
@@ -892,6 +939,10 @@ fn set_capture_button_state(button: &NSButton, is_active: bool, is_enabled: bool
 
 fn set_hint_text(label: &NSTextField, message: Option<String>) {
     label.setStringValue(&NSString::from_str(message.as_deref().unwrap_or("")));
+}
+
+fn vertically_centered_label_y(control_y: f64, control_height: f64) -> f64 {
+    control_y + ((control_height - FIELD_HEIGHT) / 2.0) + LABEL_VISUAL_CENTER_NUDGE
 }
 
 fn set_view_frame(view: &AnyObject, x: f64, y: f64, width: f64, height: f64) {
