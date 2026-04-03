@@ -12,6 +12,7 @@ use objc2_app_kit::{
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
 
+use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
 use crate::config::{Config, UiMeterStyle};
 use crate::hotkey_capture::HotkeyCaptureTarget;
 
@@ -49,7 +50,14 @@ const INPUT_BORDER_WIDTH: f64 = 1.0;
 const INPUT_CORNER_RADIUS: f64 = 6.0;
 const LABEL_VISUAL_CENTER_NUDGE: f64 = -4.0;
 const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
+const SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL: &str = "System default";
 const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct MicAudioDeviceOption {
+    title: String,
+    value: Option<String>,
+}
 
 // Source: Deepgram model docs and live streaming docs.
 // - https://developers.deepgram.com/docs/model
@@ -100,7 +108,8 @@ pub struct SettingsWindow {
     ui_font_size_field: Retained<NSTextField>,
     ui_footer_font_size_field: Retained<NSTextField>,
     ui_meter_style_popup: Retained<NSPopUpButton>,
-    mic_audio_device_field: Retained<NSTextField>,
+    mic_audio_device_popup: Retained<NSPopUpButton>,
+    mic_audio_device_options: RefCell<Vec<MicAudioDeviceOption>>,
     mic_sample_rate_field: Retained<NSTextField>,
     mic_gain_field: Retained<NSTextField>,
     mic_hold_ms_field: Retained<NSTextField>,
@@ -233,8 +242,8 @@ impl SettingsWindow {
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Meter style");
 
         current_y = add_section_title(&content_view, mtm, current_y, "Microphone");
-        let mic_audio_device_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Audio device");
+        let mic_audio_device_popup =
+            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Audio device");
         let mic_sample_rate_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Sample rate");
         let mic_gain_field = add_labeled_text_field(&content_view, mtm, &mut current_y, "Gain");
@@ -362,7 +371,8 @@ impl SettingsWindow {
             ui_font_size_field,
             ui_footer_font_size_field,
             ui_meter_style_popup,
-            mic_audio_device_field,
+            mic_audio_device_popup,
+            mic_audio_device_options: RefCell::new(Vec::new()),
             mic_sample_rate_field,
             mic_gain_field,
             mic_hold_ms_field,
@@ -407,6 +417,11 @@ impl SettingsWindow {
     }
 
     pub fn load_from_config(&self, config: &Config, config_path: &str) {
+        let audio_device_status_message = self
+            .populate_mic_audio_device_popup(config.mic.audio_device.as_deref())
+            .err()
+            .map(|error| format!("Couldn't refresh audio devices: {}", error));
+
         self.path_text_field
             .setStringValue(&NSString::from_str(config_path));
         self.ui_hotkey_field
@@ -428,10 +443,6 @@ impl SettingsWindow {
             ));
         populate_meter_style_popup(&self.ui_meter_style_popup, config.ui.meter_style);
 
-        self.mic_audio_device_field
-            .setStringValue(&NSString::from_str(
-                config.mic.audio_device.as_deref().unwrap_or(""),
-            ));
         self.mic_sample_rate_field
             .setStringValue(&NSString::from_str(&config.mic.sample_rate.to_string()));
         self.mic_gain_field
@@ -503,7 +514,7 @@ impl SettingsWindow {
         );
         self.transformation_system_prompt_view
             .setString(&NSString::from_str(&config.transformation.system_prompt));
-        self.set_status("");
+        self.set_status(audio_device_status_message.as_deref().unwrap_or(""));
         self.scroll_to_top();
     }
 
@@ -523,7 +534,7 @@ impl SettingsWindow {
                 )?)?,
             },
             mic: crate::config::MicConfig {
-                audio_device: read_optional_string(&self.mic_audio_device_field),
+                audio_device: self.mic_audio_device_value(),
                 sample_rate: read_required_u32(&self.mic_sample_rate_field, "Sample rate")?,
                 gain: read_required_f32(&self.mic_gain_field, "Gain")?,
                 hold_ms: read_required_u64(&self.mic_hold_ms_field, "Hold ms")?,
@@ -638,6 +649,54 @@ impl SettingsWindow {
                 self.transformation_hotkey_field.stringValue().to_string()
             }
         }
+    }
+
+    fn populate_mic_audio_device_popup(
+        &self,
+        configured_audio_device: Option<&str>,
+    ) -> Result<(), String> {
+        let available_audio_input_devices = available_audio_input_devices();
+        let (audio_device_options, selected_audio_device_title) = mic_audio_device_popup_state(
+            available_audio_input_devices
+                .clone()
+                .unwrap_or(AvailableAudioInputDevices {
+                    default_device_name: None,
+                    choices: Vec::new(),
+                }),
+            configured_audio_device,
+        );
+
+        self.mic_audio_device_popup.removeAllItems();
+        for option in &audio_device_options {
+            self.mic_audio_device_popup
+                .addItemWithTitle(&NSString::from_str(&option.title));
+        }
+        self.mic_audio_device_popup
+            .selectItemWithTitle(&NSString::from_str(&selected_audio_device_title));
+        self.mic_audio_device_options.replace(audio_device_options);
+
+        available_audio_input_devices.map(|_| ())
+    }
+
+    fn mic_audio_device_value(&self) -> Option<String> {
+        let selected_title = self
+            .mic_audio_device_popup
+            .titleOfSelectedItem()
+            .map(|selected_title| selected_title.to_string())?;
+
+        self.mic_audio_device_options
+            .borrow()
+            .iter()
+            .find(|option| option.title == selected_title)
+            .and_then(|option| option.value.clone())
+            .or_else(|| {
+                let trimmed_value = selected_title.trim();
+                if trimmed_value.is_empty() {
+                    None
+                } else {
+                    Some(trimmed_value.to_owned())
+                }
+            })
     }
 
     pub fn set_hotkey_value(&self, target: HotkeyCaptureTarget, value: &str) {
@@ -1141,6 +1200,83 @@ fn populate_font_name_popup(
     popup_button.selectItemWithTitle(&selected_font_name);
 }
 
+fn mic_audio_device_popup_state(
+    available_audio_input_devices: AvailableAudioInputDevices,
+    configured_audio_device: Option<&str>,
+) -> (Vec<MicAudioDeviceOption>, String) {
+    let default_audio_device_title =
+        default_audio_device_title(available_audio_input_devices.default_device_name.as_deref());
+    let mut audio_device_options = vec![MicAudioDeviceOption {
+        title: default_audio_device_title.clone(),
+        value: None,
+    }];
+    audio_device_options.extend(
+        available_audio_input_devices
+            .choices
+            .into_iter()
+            .map(|choice| MicAudioDeviceOption {
+                title: choice.label,
+                value: Some(choice.value),
+            }),
+    );
+
+    let Some(configured_audio_device) = configured_audio_device
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return (audio_device_options, default_audio_device_title);
+    };
+
+    if let Some(selected_audio_device_title) =
+        find_mic_audio_device_option_title(&audio_device_options, configured_audio_device)
+            .map(str::to_owned)
+    {
+        return (audio_device_options, selected_audio_device_title);
+    }
+
+    audio_device_options.insert(
+        1,
+        MicAudioDeviceOption {
+            title: configured_audio_device.to_owned(),
+            value: Some(configured_audio_device.to_owned()),
+        },
+    );
+    (audio_device_options, configured_audio_device.to_owned())
+}
+
+fn find_mic_audio_device_option_title<'a>(
+    audio_device_options: &'a [MicAudioDeviceOption],
+    configured_audio_device: &str,
+) -> Option<&'a str> {
+    audio_device_options
+        .iter()
+        .find(|option| {
+            option.title == configured_audio_device
+                || option.value.as_deref() == Some(configured_audio_device)
+                || option
+                    .value
+                    .as_deref()
+                    .map(|value| value.eq_ignore_ascii_case(configured_audio_device))
+                    .unwrap_or(false)
+        })
+        .map(|option| option.title.as_str())
+}
+
+fn default_audio_device_title(default_device_name: Option<&str>) -> String {
+    match default_device_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(default_device_name) => {
+            format!(
+                "{} ({})",
+                SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL, default_device_name
+            )
+        }
+        None => SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
+    }
+}
+
 fn populate_meter_style_popup(popup_button: &NSPopUpButton, selected_meter_style: UiMeterStyle) {
     popup_button.removeAllItems();
     popup_button.addItemWithTitle(ns_string!("animated-color"));
@@ -1354,5 +1490,113 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
             "Meter style must be one of: animated-color, animated-height, none (got '{}')",
             other_value
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        default_audio_device_title, mic_audio_device_popup_state, MicAudioDeviceOption,
+        SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
+    };
+    use crate::audio::{AudioInputDeviceChoice, AvailableAudioInputDevices};
+
+    #[test]
+    fn default_audio_device_title_includes_detected_default_name() {
+        assert_eq!(
+            default_audio_device_title(Some("MacBook Pro Microphone")),
+            "System default (MacBook Pro Microphone)"
+        );
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_selects_default_when_unconfigured() {
+        let (options, selected_title) = mic_audio_device_popup_state(
+            AvailableAudioInputDevices {
+                default_device_name: Some("MacBook Pro Microphone".to_owned()),
+                choices: vec![AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                }],
+            },
+            None,
+        );
+
+        assert_eq!(
+            options,
+            vec![
+                MicAudioDeviceOption {
+                    title: "System default (MacBook Pro Microphone)".to_owned(),
+                    value: None,
+                },
+                MicAudioDeviceOption {
+                    title: "Shure MV7".to_owned(),
+                    value: Some("Shure MV7".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(selected_title, "System default (MacBook Pro Microphone)");
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_matches_configured_name_case_insensitively() {
+        let (options, selected_title) = mic_audio_device_popup_state(
+            AvailableAudioInputDevices {
+                default_device_name: None,
+                choices: vec![AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                }],
+            },
+            Some("shure mv7"),
+        );
+
+        assert_eq!(
+            options,
+            vec![
+                MicAudioDeviceOption {
+                    title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
+                    value: None,
+                },
+                MicAudioDeviceOption {
+                    title: "Shure MV7".to_owned(),
+                    value: Some("Shure MV7".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(selected_title, "Shure MV7");
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_inserts_missing_configured_value() {
+        let (options, selected_title) = mic_audio_device_popup_state(
+            AvailableAudioInputDevices {
+                default_device_name: None,
+                choices: vec![AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                }],
+            },
+            Some("Missing Mic"),
+        );
+
+        assert_eq!(
+            options,
+            vec![
+                MicAudioDeviceOption {
+                    title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
+                    value: None,
+                },
+                MicAudioDeviceOption {
+                    title: "Missing Mic".to_owned(),
+                    value: Some("Missing Mic".to_owned()),
+                },
+                MicAudioDeviceOption {
+                    title: "Shure MV7".to_owned(),
+                    value: Some("Shure MV7".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(selected_title, "Missing Mic");
     }
 }

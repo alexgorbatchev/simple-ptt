@@ -1,5 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::config::MicConfig;
@@ -10,6 +11,25 @@ use crate::transcription::TranscriptionController;
 const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 const METER_MIN_DB: f32 = -42.0;
 const METER_MAX_DB: f32 = -6.0;
+const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AudioInputDeviceChoice {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AvailableAudioInputDevices {
+    pub default_device_name: Option<String>,
+    pub choices: Vec<AudioInputDeviceChoice>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct InputDeviceDescriptor {
+    index: usize,
+    name: Option<String>,
+}
 
 pub struct AudioController {
     active_stream: Mutex<ActiveAudioStream>,
@@ -60,15 +80,25 @@ pub fn validate_mic_config(mic_config: &MicConfig) -> Result<(), String> {
     Ok(())
 }
 
+pub fn available_audio_input_devices() -> Result<AvailableAudioInputDevices, String> {
+    let host = cpal::default_host();
+    let default_device_name = host
+        .default_input_device()
+        .and_then(|device| device.name().ok());
+    let devices = enumerate_input_devices(&host)?;
+
+    Ok(AvailableAudioInputDevices {
+        default_device_name,
+        choices: build_audio_input_device_choices(&devices),
+    })
+}
+
 pub fn print_input_devices() -> Result<(), String> {
     let host = cpal::default_host();
     let default_device_name = host
         .default_input_device()
         .and_then(|device| device.name().ok());
-    let input_devices = host
-        .input_devices()
-        .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?;
-    let devices: Vec<cpal::Device> = input_devices.collect();
+    let devices = enumerate_input_devices(&host)?;
 
     match default_device_name {
         Some(default_device_name) => println!("Default input device: {}", default_device_name),
@@ -81,9 +111,15 @@ pub fn print_input_devices() -> Result<(), String> {
     }
 
     println!("Available input devices:");
-    for (index, device) in devices.iter().enumerate() {
-        let device_name = device.name().unwrap_or_else(|_| "<unknown>".into());
-        println!("{}: {}", index, device_name);
+    for device in devices {
+        println!(
+            "{}: {}",
+            device.index,
+            device
+                .name
+                .as_deref()
+                .unwrap_or(UNKNOWN_AUDIO_INPUT_DEVICE_LABEL)
+        );
     }
 
     Ok(())
@@ -256,6 +292,61 @@ where
         .map_err(|error| format!("failed to validate audio input stream: {}", error))?;
     drop(stream);
     Ok(())
+}
+
+fn enumerate_input_devices(host: &cpal::Host) -> Result<Vec<InputDeviceDescriptor>, String> {
+    let input_devices = host
+        .input_devices()
+        .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?;
+
+    Ok(input_devices
+        .enumerate()
+        .map(|(index, device)| InputDeviceDescriptor {
+            index,
+            name: device.name().ok(),
+        })
+        .collect())
+}
+
+fn build_audio_input_device_choices(
+    devices: &[InputDeviceDescriptor],
+) -> Vec<AudioInputDeviceChoice> {
+    let mut duplicate_name_counts = HashMap::new();
+    for device in devices {
+        let Some(device_name) = device.name.as_ref() else {
+            continue;
+        };
+
+        *duplicate_name_counts
+            .entry(device_name.clone())
+            .or_insert(0usize) += 1;
+    }
+
+    devices
+        .iter()
+        .map(|device| match device.name.as_deref() {
+            Some(device_name)
+                if duplicate_name_counts
+                    .get(device_name)
+                    .copied()
+                    .unwrap_or_default()
+                    == 1 =>
+            {
+                AudioInputDeviceChoice {
+                    label: device_name.to_owned(),
+                    value: device_name.to_owned(),
+                }
+            }
+            Some(device_name) => AudioInputDeviceChoice {
+                label: format!("{} ({})", device_name, device.index),
+                value: device.index.to_string(),
+            },
+            None => AudioInputDeviceChoice {
+                label: format!("{} ({})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index),
+                value: device.index.to_string(),
+            },
+        })
+        .collect()
 }
 
 fn resolve_input_device(
@@ -468,7 +559,78 @@ fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_pcm_mono, normalize_meter_amplitude, smooth_meter_value};
+    use super::{
+        build_audio_input_device_choices, encode_pcm_mono, normalize_meter_amplitude,
+        smooth_meter_value, AudioInputDeviceChoice, InputDeviceDescriptor,
+    };
+
+    #[test]
+    fn build_audio_input_device_choices_prefers_names_for_unique_devices() {
+        let devices = vec![
+            InputDeviceDescriptor {
+                index: 0,
+                name: Some("MacBook Pro Microphone".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 1,
+                name: Some("Shure MV7".to_owned()),
+            },
+        ];
+
+        let choices = build_audio_input_device_choices(&devices);
+
+        assert_eq!(
+            choices,
+            vec![
+                AudioInputDeviceChoice {
+                    label: "MacBook Pro Microphone".to_owned(),
+                    value: "MacBook Pro Microphone".to_owned(),
+                },
+                AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn build_audio_input_device_choices_uses_indexes_for_duplicates_and_unknown_devices() {
+        let devices = vec![
+            InputDeviceDescriptor {
+                index: 0,
+                name: Some("USB Audio Codec".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 1,
+                name: Some("USB Audio Codec".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 2,
+                name: None,
+            },
+        ];
+
+        let choices = build_audio_input_device_choices(&devices);
+
+        assert_eq!(
+            choices,
+            vec![
+                AudioInputDeviceChoice {
+                    label: "USB Audio Codec (0)".to_owned(),
+                    value: "0".to_owned(),
+                },
+                AudioInputDeviceChoice {
+                    label: "USB Audio Codec (1)".to_owned(),
+                    value: "1".to_owned(),
+                },
+                AudioInputDeviceChoice {
+                    label: "<unknown> (2)".to_owned(),
+                    value: "2".to_owned(),
+                },
+            ]
+        );
+    }
 
     #[test]
     fn normalize_meter_amplitude_clamps_silence_and_hot_input() {
