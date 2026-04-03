@@ -550,7 +550,7 @@ fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
 
 fn billing_menu_text(overlay_footer_text: &str) -> Option<&str> {
     let trimmed_overlay_footer_text = overlay_footer_text.trim();
-    if trimmed_overlay_footer_text.starts_with("Billing (")
+    if trimmed_overlay_footer_text.starts_with("Deepgram (")
         && trimmed_overlay_footer_text.contains(": $")
     {
         Some(trimmed_overlay_footer_text)
@@ -653,7 +653,7 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{config_file_is_missing, overlay_style_from_config};
+    use super::{billing_menu_text, config_file_is_missing, overlay_style_from_config};
     use crate::config::Config;
 
     #[test]
@@ -697,6 +697,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn billing_menu_text_accepts_deepgram_monthly_spend_label() {
+        assert_eq!(
+            billing_menu_text("Deepgram (Apr 2026): $12.34"),
+            Some("Deepgram (Apr 2026): $12.34")
+        );
+        assert_eq!(billing_menu_text("Billing (Apr 2026): $12.34"), None);
+    }
 }
 
 pub fn setup_status_polling(

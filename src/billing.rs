@@ -194,10 +194,31 @@ fn month_start_for(date: Date) -> Date {
 
 fn billing_footer_label(date: Date) -> String {
     format!(
-        "Billing ({} {})",
+        "Deepgram ({} {})",
         month_abbreviation(date.month()),
         date.year()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{billing_footer_label, format_usd};
+    use time::{Date, Month};
+
+    #[test]
+    fn billing_footer_label_uses_deepgram_prefix() {
+        let date = Date::from_calendar_date(2026, Month::April, 3).unwrap();
+
+        assert_eq!(billing_footer_label(date), "Deepgram (Apr 2026)");
+    }
+
+    #[test]
+    fn format_usd_rounds_sub_dollar_amounts_to_cents() {
+        assert_eq!(format_usd(0.0), "$0.00");
+        assert_eq!(format_usd(0.004), "$0.00");
+        assert_eq!(format_usd(0.005), "$0.01");
+        assert_eq!(format_usd(0.126), "$0.13");
+    }
 }
 
 fn month_abbreviation(month: Month) -> &'static str {
@@ -241,9 +262,5 @@ fn format_usd(amount: f64) -> String {
         return format!("${:.0}", amount);
     }
 
-    if amount >= 1.0 {
-        return format!("${:.2}", amount);
-    }
-
-    format!("${:.4}", amount)
+    format!("${:.2}", amount)
 }
