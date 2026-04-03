@@ -86,6 +86,7 @@ define_class!(
             }
 
             let menu = NSMenu::new(mtm);
+            app.setMainMenu(Some(&make_hidden_main_menu(self, mtm)));
 
             let title_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -681,6 +682,110 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retained<NSMenu> {
+    let main_menu = NSMenu::new(mtm);
+
+    let app_menu_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(APP_DISPLAY_NAME),
+            None,
+            ns_string!(""),
+        )
+    };
+    let app_menu = NSMenu::new(mtm);
+    let about_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &NSString::from_str(&format!("About {}", APP_DISPLAY_NAME)),
+            Some(sel!(openGitHubRepo:)),
+            ns_string!(""),
+        )
+    };
+    app_menu.addItem(&about_item);
+    let app_separator_item = NSMenuItem::separatorItem(mtm);
+    app_menu.addItem(&app_separator_item);
+    let hide_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            ns_string!("Hide"),
+            Some(sel!(hide:)),
+            ns_string!("h"),
+        )
+    };
+    app_menu.addItem(&hide_item);
+    let hide_others_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            ns_string!("Hide Others"),
+            Some(sel!(hideOtherApplications:)),
+            ns_string!("h"),
+        )
+    };
+    app_menu.addItem(&hide_others_item);
+    if let Some(hide_others_item) = app_menu.itemAtIndex(3) {
+        hide_others_item.setKeyEquivalentModifierMask(
+            objc2_app_kit::NSEventModifierFlags::Command
+                | objc2_app_kit::NSEventModifierFlags::Option,
+        );
+    }
+    let quit_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            ns_string!("Quit"),
+            Some(sel!(terminate:)),
+            ns_string!("q"),
+        )
+    };
+    app_menu.addItem(&quit_item);
+    app_menu_item.setSubmenu(Some(&app_menu));
+    main_menu.addItem(&app_menu_item);
+
+    let edit_menu_item = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            ns_string!("Edit"),
+            None,
+            ns_string!(""),
+        )
+    };
+    let edit_menu = NSMenu::new(mtm);
+    for (title, action, key) in [
+        ("Undo", sel!(undo:), "z"),
+        ("Redo", sel!(redo:), "Z"),
+        ("Cut", sel!(cut:), "x"),
+        ("Copy", sel!(copy:), "c"),
+        ("Paste", sel!(paste:), "v"),
+        ("Select All", sel!(selectAll:), "a"),
+    ] {
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(title),
+                Some(action),
+                &NSString::from_str(key),
+            )
+        };
+        edit_menu.addItem(&item);
+    }
+    if let Some(redo_item) = edit_menu.itemAtIndex(1) {
+        redo_item.setKeyEquivalentModifierMask(
+            objc2_app_kit::NSEventModifierFlags::Command
+                | objc2_app_kit::NSEventModifierFlags::Shift,
+        );
+    }
+    edit_menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 2);
+    edit_menu.insertItem_atIndex(&NSMenuItem::separatorItem(mtm), 6);
+    edit_menu_item.setSubmenu(Some(&edit_menu));
+    main_menu.addItem(&edit_menu_item);
+
+    unsafe {
+        about_item.setTarget(Some(delegate));
+    }
+
+    main_menu
 }
 
 fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
