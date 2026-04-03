@@ -192,7 +192,7 @@ Apply behavior:
 2. `$XDG_CONFIG_HOME/simple-ptt/config.toml`
 3. `~/.config/simple-ptt/config.toml`
 
-If no config file is found, defaults are used where possible. However, you still need to provide a Deepgram API key either in the config file or through the `DEEPGRAM_API_KEY` environment variable.
+If no config file is found, defaults are used where possible and the app opens Settings automatically on launch so you can create `config.toml` with **Save and Apply**. However, you still need to provide a Deepgram API key either in the config file or through the `DEEPGRAM_API_KEY` environment variable.
 
 Start from the example file in this repository:
 

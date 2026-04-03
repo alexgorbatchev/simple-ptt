@@ -1,4 +1,6 @@
 use std::cell::OnceCell;
+use std::io::ErrorKind;
+use std::path::Path;
 use std::sync::Arc;
 
 use objc2::rc::Retained;
@@ -151,20 +153,38 @@ define_class!(
                 .set(SettingsWindow::new(self, mtm))
                 .expect("settings window must only be set once");
 
-            if self
+            let config_file_missing = config_file_is_missing(self.ivars().config_store.path());
+            let deepgram_api_key_missing = self
                 .ivars()
                 .config_store
                 .current()
                 .resolve_deepgram_api_key()
-                .is_err()
-            {
+                .is_err();
+
+            if config_file_missing || deepgram_api_key_missing {
                 self.present_settings_window();
+            }
+
+            if deepgram_api_key_missing {
                 show_modal_alert(
                     "simple-ptt needs a Deepgram API key",
                     &format!(
                         concat!(
                             "Open Settings and add your Deepgram API key, then click Save and Apply.\n\n",
                             "Config file: {}\n\n",
+                            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
+                        ),
+                        self.ivars().config_store.path().display()
+                    ),
+                );
+            } else if config_file_missing {
+                show_modal_alert(
+                    "simple-ptt didn't find a config.toml yet",
+                    &format!(
+                        concat!(
+                            "Settings opened so you can create one on first launch.\n",
+                            "Review the defaults, then click Save and Apply to write:\n\n",
+                            "{}\n\n",
                             "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
                         ),
                         self.ivars().config_store.path().display()
@@ -407,6 +427,13 @@ impl AppDelegate {
     }
 }
 
+fn config_file_is_missing(path: &Path) -> bool {
+    matches!(
+        std::fs::metadata(path),
+        Err(error) if error.kind() == ErrorKind::NotFound
+    )
+}
+
 pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     let overlay_font_size = if config.ui.font_size.is_finite() && config.ui.font_size > 0.0 {
         config.ui.font_size
@@ -589,6 +616,27 @@ fn show_modal_alert(message_text: &str, informative_text: &str) {
 
 pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
     show_modal_alert(message_text, informative_text);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::config_file_is_missing;
+
+    #[test]
+    fn config_file_is_missing_only_reports_not_found_paths() {
+        let path = std::env::temp_dir().join(format!(
+            "simple-ptt-missing-config-{}-{}.toml",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+
+        let _ = std::fs::remove_file(&path);
+        assert!(config_file_is_missing(&path));
+
+        std::fs::write(&path, "[ui]\nhotkey = \"F5\"\n").unwrap();
+        assert!(!config_file_is_missing(&path));
+        std::fs::remove_file(&path).unwrap();
+    }
 }
 
 pub fn setup_status_polling(
