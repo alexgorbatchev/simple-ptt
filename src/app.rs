@@ -5,15 +5,21 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu,
-    NSMenuItem, NSStatusBar, NSStatusItem, NSWorkspace,
+    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSImageScaling, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSWorkspace,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
 };
 
+use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
+use crate::billing::BillingController;
+use crate::config::{self, Config};
+use crate::hotkey::parse_key;
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
+use crate::settings::LiveConfigStore;
+use crate::settings_window::SettingsWindow;
 use crate::state::{
     AppState, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
@@ -24,11 +30,15 @@ const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
 const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
+    audio_controller: AudioController,
+    billing_controller: BillingController,
     billing_menu_item: OnceCell<Retained<NSMenuItem>>,
+    config_store: LiveConfigStore,
     overlay_style: OverlayStyle,
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     overlay_window: OnceCell<OverlayWindow>,
+    settings_window: OnceCell<SettingsWindow>,
     status_item: OnceCell<Retained<NSStatusItem>>,
 }
 
@@ -82,6 +92,19 @@ define_class!(
             }
             menu.addItem(&title_item);
 
+            let settings_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("Settings…"),
+                    Some(sel!(openSettings:)),
+                    ns_string!(",")
+                )
+            };
+            unsafe {
+                settings_item.setTarget(Some(self));
+            }
+            menu.addItem(&settings_item);
+
             let billing_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
@@ -97,7 +120,7 @@ define_class!(
             let quit_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
-                    ns_string!("Close"),
+                    ns_string!("Quit"),
                     Some(sel!(terminate:)),
                     ns_string!("q"),
                 )
@@ -118,6 +141,31 @@ define_class!(
                 .billing_menu_item
                 .set(billing_item)
                 .expect("billing item must only be set once");
+            self.ivars()
+                .settings_window
+                .set(SettingsWindow::new(self, mtm))
+                .expect("settings window must only be set once");
+
+            if self
+                .ivars()
+                .config_store
+                .current()
+                .resolve_deepgram_api_key()
+                .is_err()
+            {
+                self.present_settings_window();
+                show_modal_alert(
+                    "simple-ptt needs a Deepgram API key",
+                    &format!(
+                        concat!(
+                            "Open Settings and add your Deepgram API key, then click Save and Apply.\n\n",
+                            "Config file: {}\n\n",
+                            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
+                        ),
+                        self.ivars().config_store.path().display()
+                    ),
+                );
+            }
 
             log::info!("menu bar initialized");
         }
@@ -137,20 +185,113 @@ define_class!(
                 log::error!("failed to open GitHub URL: {}", GITHUB_REPO_URL);
             }
         }
+
+        #[unsafe(method(openSettings:))]
+        fn open_settings(&self, _sender: Option<&AnyObject>) {
+            self.present_settings_window();
+        }
+
+        #[unsafe(method(saveSettings:))]
+        fn save_settings(&self, _sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+
+            let proposed_config = match settings_window.read_config() {
+                Ok(config) => config,
+                Err(error) => {
+                    settings_window.set_status(&error);
+                    show_modal_alert("Couldn't save settings", &error);
+                    return;
+                }
+            };
+
+            if let Err(error) = validate_settings_config(&proposed_config) {
+                settings_window.set_status(&error);
+                show_modal_alert("Couldn't save settings", &error);
+                return;
+            }
+
+            let runtime_config = config::materialize_runtime_config(&proposed_config);
+            let previous_file_config = self.ivars().config_store.current_file();
+
+            if let Err(error) = config::save_config(self.ivars().config_store.path(), &proposed_config)
+            {
+                settings_window.set_status(&error);
+                show_modal_alert("Couldn't save settings", &error);
+                return;
+            }
+
+            let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
+                Ok(effect) => effect,
+                Err(error) => {
+                    let _ = config::save_config(
+                        self.ivars().config_store.path(),
+                        &previous_file_config,
+                    );
+                    settings_window.set_status(&error);
+                    show_modal_alert("Couldn't apply audio settings", &error);
+                    return;
+                }
+            };
+
+            self.ivars()
+                .config_store
+                .replace(proposed_config.clone(), runtime_config.clone());
+            self.ivars().billing_controller.refresh_month_to_date_spend();
+            if let Some(overlay_window) = self.ivars().overlay_window.get() {
+                overlay_window.apply_style(&overlay_style_from_config(&runtime_config));
+            }
+
+            let audio_message = match audio_apply_effect {
+                AudioConfigApplyEffect::AppliedNow => "audio changes applied now",
+                AudioConfigApplyEffect::DeferredUntilRecordingStops => {
+                    "audio device/sample-rate changes will apply after the current recording stops"
+                }
+            };
+            settings_window.load_from_config(
+                &proposed_config,
+                &self.ivars().config_store.path().display().to_string(),
+            );
+            settings_window.set_status(&format!("Saved and applied settings. {}.", audio_message));
+        }
     }
 );
 
 impl AppDelegate {
-    pub fn new(mtm: MainThreadMarker, overlay_style: OverlayStyle) -> Retained<Self> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        overlay_style: OverlayStyle,
+        config_store: LiveConfigStore,
+        billing_controller: BillingController,
+        audio_controller: AudioController,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
+            audio_controller,
+            billing_controller,
             billing_menu_item: OnceCell::new(),
+            config_store,
             overlay_style,
             active_status_bar_icon: make_status_bar_active_icon(mtm),
             idle_status_bar_icon: make_status_bar_icon(mtm),
             overlay_window: OnceCell::new(),
+            settings_window: OnceCell::new(),
             status_item: OnceCell::new(),
         });
         unsafe { msg_send![super(this), init] }
+    }
+
+    fn present_settings_window(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        let current_file_config = self.ivars().config_store.current_file();
+        settings_window.load_from_config(
+            &current_file_config,
+            &self.ivars().config_store.path().display().to_string(),
+        );
+        settings_window.show(MainThreadMarker::from(self));
     }
 
     pub fn update_ui(
@@ -162,6 +303,7 @@ impl AppDelegate {
         overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
+        self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
         update_overlay_window(
@@ -174,6 +316,81 @@ impl AppDelegate {
             mic_meter,
         );
     }
+}
+
+pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
+    let overlay_font_size = if config.ui.font_size.is_finite() && config.ui.font_size > 0.0 {
+        config.ui.font_size
+    } else {
+        12.0
+    };
+    let overlay_footer_font_size = match config.ui.footer_font_size {
+        Some(footer_font_size) if footer_font_size.is_finite() && footer_font_size > 0.0 => {
+            footer_font_size
+        }
+        Some(_) | None => overlay_font_size * 0.6,
+    };
+    let transformation_hotkey = config
+        .resolve_transformation_config()
+        .ok()
+        .map(|_| config.transformation.hotkey.as_str());
+
+    OverlayStyle {
+        font_name: config.ui.font_name.clone(),
+        font_size: overlay_font_size,
+        footer_font_size: overlay_footer_font_size,
+        meter_style: config.ui.meter_style,
+        transformation_hint: transformation_hotkey.map(|hotkey| {
+            format!(
+                "{}: transform {}: paste ESC: cancel",
+                hotkey, config.ui.hotkey
+            )
+        }),
+    }
+}
+
+fn validate_settings_config(config: &Config) -> Result<(), String> {
+    if parse_key(config.ui.hotkey.as_str()).is_none() {
+        return Err(format!(
+            "record hotkey '{}' is not supported",
+            config.ui.hotkey
+        ));
+    }
+
+    if !config.ui.font_size.is_finite() || config.ui.font_size <= 0.0 {
+        return Err("Font size must be a positive number".to_owned());
+    }
+
+    if let Some(footer_font_size) = config.ui.footer_font_size {
+        if !footer_font_size.is_finite() || footer_font_size <= 0.0 {
+            return Err("Footer font size must be a positive number".to_owned());
+        }
+    }
+
+    if !config.mic.gain.is_finite() {
+        return Err("Gain must be a finite number".to_owned());
+    }
+
+    validate_mic_config(&config.mic)?;
+
+    config.resolve_deepgram_api_key()?;
+
+    if let Some(provider) = config.transformation.provider.as_deref().map(str::trim) {
+        if !provider.is_empty() {
+            if parse_key(config.transformation.hotkey.as_str()).is_none() {
+                return Err(format!(
+                    "transform hotkey '{}' is not supported",
+                    config.transformation.hotkey
+                ));
+            }
+            if config.ui.hotkey == config.transformation.hotkey {
+                return Err("record and transform hotkeys must be different".to_owned());
+            }
+            config.resolve_transformation_config()?;
+        }
+    }
+
+    Ok(())
 }
 
 fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
@@ -270,6 +487,27 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         &update.overlay_footer_text,
         update.mic_meter,
     );
+}
+
+fn show_modal_alert(message_text: &str, informative_text: &str) {
+    let mtm = MainThreadMarker::new().expect("must run on main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    let previous_activation_policy = app.activationPolicy();
+    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+    app.activate();
+
+    let alert = NSAlert::new(mtm);
+    alert.setAlertStyle(NSAlertStyle::Warning);
+    alert.setMessageText(&NSString::from_str(message_text));
+    alert.setInformativeText(&NSString::from_str(informative_text));
+    alert.addButtonWithTitle(ns_string!("OK"));
+    alert.runModal();
+
+    app.setActivationPolicy(previous_activation_policy);
+}
+
+pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
+    show_modal_alert(message_text, informative_text);
 }
 
 pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState>) {

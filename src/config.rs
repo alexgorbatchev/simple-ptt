@@ -1,5 +1,6 @@
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::billing::deepgram_project_id_env_var;
 use crate::transformation::TransformationRuntimeConfig;
@@ -8,7 +9,7 @@ const CONFIG_OVERRIDE_ENV_VAR: &str = "SIMPLE_PTT_CONFIG";
 const DEFAULT_CONFIG_FILE_NAME: &str = "config.toml";
 const XDG_APP_NAME: &str = "simple-ptt";
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
@@ -32,7 +33,7 @@ pub enum UiMeterStyle {
     AnimatedColor,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct UiConfig {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
@@ -61,7 +62,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct MicConfig {
     pub audio_device: Option<String>,
 
@@ -86,7 +87,7 @@ impl Default for MicConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DeepgramConfig {
     pub api_key: Option<String>,
 
@@ -118,7 +119,7 @@ impl Default for DeepgramConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct TransformationConfig {
     #[serde(default = "default_transformation_hotkey")]
     pub hotkey: String,
@@ -250,6 +251,61 @@ pub fn config_path() -> Result<PathBuf, String> {
 }
 
 impl Config {
+    pub fn deepgram_api_key_env_var_in_use(&self) -> Option<&'static str> {
+        if self
+            .deepgram
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return None;
+        }
+
+        env_var_is_present("DEEPGRAM_API_KEY").then_some("DEEPGRAM_API_KEY")
+    }
+
+    pub fn deepgram_project_id_env_var_in_use(&self) -> Option<&'static str> {
+        if self
+            .deepgram
+            .project_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return None;
+        }
+
+        env_var_is_present(deepgram_project_id_env_var()).then_some(deepgram_project_id_env_var())
+    }
+
+    pub fn transformation_api_key_env_var_in_use(&self) -> Option<&'static str> {
+        if self
+            .transformation
+            .api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            return None;
+        }
+
+        let provider = self
+            .transformation
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+
+        transformation_api_key_env_vars(provider)
+            .iter()
+            .copied()
+            .find(|variable_name| env_var_is_present(variable_name))
+    }
+
     pub fn resolve_deepgram_api_key(&self) -> Result<String, String> {
         if let Some(api_key) = self
             .deepgram
@@ -344,6 +400,13 @@ impl Config {
     }
 }
 
+fn env_var_is_present(variable_name: &str) -> bool {
+    std::env::var(variable_name)
+        .ok()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn resolve_transformation_api_key(
     configured_api_key: Option<&str>,
     provider: &str,
@@ -417,6 +480,259 @@ fn config_location_hint() -> String {
     }
 }
 
+fn load_document(path: &Path) -> Result<DocumentMut, String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => contents
+            .parse::<DocumentMut>()
+            .map_err(|error| format!("failed to parse {} for editing: {}", path.display(), error)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(DocumentMut::new()),
+        Err(error) => Err(format!("failed to read {}: {}", path.display(), error)),
+    }
+}
+
+fn write_document_atomically(path: &Path, contents: &str) -> Result<(), String> {
+    let parent_directory = path.parent().ok_or_else(|| {
+        format!(
+            "failed to determine parent directory for {}",
+            path.display()
+        )
+    })?;
+    std::fs::create_dir_all(parent_directory).map_err(|error| {
+        format!(
+            "failed to create config directory {}: {}",
+            parent_directory.display(),
+            error
+        )
+    })?;
+
+    let temporary_path = parent_directory.join(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|file_name| file_name.to_str())
+            .unwrap_or("config.toml"),
+        std::process::id()
+    ));
+
+    std::fs::write(&temporary_path, contents).map_err(|error| {
+        format!(
+            "failed to write temporary config file {}: {}",
+            temporary_path.display(),
+            error
+        )
+    })?;
+
+    std::fs::rename(&temporary_path, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary_path);
+        format!(
+            "failed to replace config file {}: {}",
+            path.display(),
+            error
+        )
+    })
+}
+
+fn root_table(document: &mut DocumentMut) -> &mut toml_edit::Table {
+    document.as_table_mut()
+}
+
+fn ensure_named_table<'a>(document: &'a mut DocumentMut, table_name: &str) -> &'a mut Table {
+    let root = root_table(document);
+    if !root.contains_key(table_name) {
+        root.insert(table_name, Item::Table(Table::new()));
+    }
+
+    root[table_name]
+        .as_table_mut()
+        .expect("managed config section must be a table")
+}
+
+fn existing_key_name(table: &Table, primary_key: &str, aliases: &[&str]) -> String {
+    if table.contains_key(primary_key) {
+        return primary_key.to_owned();
+    }
+
+    aliases
+        .iter()
+        .copied()
+        .find(|alias| table.contains_key(alias))
+        .unwrap_or(primary_key)
+        .to_owned()
+}
+
+fn set_required_string_key(table: &mut Table, key: &str, aliases: &[&str], field_value: &str) {
+    let selected_key = existing_key_name(table, key, aliases);
+    table[&selected_key] = value(field_value);
+    for alias in aliases {
+        if *alias != selected_key {
+            table.remove(alias);
+        }
+    }
+}
+
+fn set_optional_string_key(
+    table: &mut Table,
+    key: &str,
+    aliases: &[&str],
+    field_value: Option<&str>,
+) {
+    let selected_key = existing_key_name(table, key, aliases);
+    match field_value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(non_empty_value) => {
+            table[&selected_key] = value(non_empty_value);
+        }
+        None => {
+            table.remove(&selected_key);
+        }
+    }
+
+    for alias in aliases {
+        if *alias != selected_key {
+            table.remove(alias);
+        }
+    }
+}
+
+fn set_float_key(table: &mut Table, key: &str, field_value: f64) {
+    table[key] = value(field_value);
+}
+
+fn set_float32_key(table: &mut Table, key: &str, field_value: f32) {
+    table[key] = value(f64::from(field_value));
+}
+
+fn set_unsigned_key(table: &mut Table, key: &str, field_value: impl Into<i64>) {
+    table[key] = value(field_value.into());
+}
+
+fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
+    let table = ensure_named_table(document, "ui");
+    set_required_string_key(table, "hotkey", &[], &ui.hotkey);
+    set_optional_string_key(
+        table,
+        "font_name",
+        &["overlay_font_family"],
+        ui.font_name.as_deref(),
+    );
+    set_float_key(table, "font_size", ui.font_size);
+    match ui.footer_font_size {
+        Some(footer_font_size) => set_float_key(table, "footer_font_size", footer_font_size),
+        None => {
+            table.remove("footer_font_size");
+        }
+    }
+    table["meter_style"] = value(match ui.meter_style {
+        UiMeterStyle::None => "none",
+        UiMeterStyle::AnimatedHeight => "animated-height",
+        UiMeterStyle::AnimatedColor => "animated-color",
+    });
+}
+
+fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) {
+    let table = ensure_named_table(document, "mic");
+    set_optional_string_key(table, "audio_device", &[], mic.audio_device.as_deref());
+    set_unsigned_key(table, "sample_rate", i64::from(mic.sample_rate));
+    set_float32_key(table, "gain", mic.gain);
+    set_unsigned_key(
+        table,
+        "hold_ms",
+        i64::try_from(mic.hold_ms).unwrap_or(i64::MAX),
+    );
+}
+
+fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
+    let table = ensure_named_table(document, "deepgram");
+    set_optional_string_key(table, "api_key", &[], deepgram.api_key.as_deref());
+    set_optional_string_key(table, "project_id", &[], deepgram.project_id.as_deref());
+    set_required_string_key(table, "language", &[], &deepgram.language);
+    set_required_string_key(table, "model", &[], &deepgram.model);
+    set_unsigned_key(table, "endpointing_ms", i64::from(deepgram.endpointing_ms));
+    set_unsigned_key(
+        table,
+        "utterance_end_ms",
+        i64::from(deepgram.utterance_end_ms),
+    );
+}
+
+fn write_transformation_table(document: &mut DocumentMut, transformation: &TransformationConfig) {
+    let table = ensure_named_table(document, "transformation");
+    set_required_string_key(table, "hotkey", &[], &transformation.hotkey);
+    table["auto"] = value(transformation.auto);
+    set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
+    set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
+    set_required_string_key(table, "model", &[], &transformation.model);
+    if transformation.system_prompt.trim().is_empty() {
+        table.remove("system_prompt");
+    } else {
+        set_required_string_key(table, "system_prompt", &[], &transformation.system_prompt);
+    }
+}
+
+pub fn save_config(path: &Path, config: &Config) -> Result<(), String> {
+    let mut document = load_document(path)?;
+    write_ui_table(&mut document, &config.ui);
+    write_mic_table(&mut document, &config.mic);
+    write_deepgram_table(&mut document, &config.deepgram);
+    write_transformation_table(&mut document, &config.transformation);
+    write_document_atomically(path, &document.to_string())
+}
+
+pub fn materialize_runtime_config(config: &Config) -> Config {
+    let mut runtime_config = config.clone();
+    if runtime_config
+        .deepgram
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        runtime_config.deepgram.api_key = config.resolve_deepgram_api_key().ok();
+    }
+    if runtime_config.deepgram.project_id.is_none() {
+        runtime_config.deepgram.project_id = config.resolve_deepgram_project_id();
+    }
+    if runtime_config
+        .transformation
+        .provider
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+    {
+        runtime_config.transformation.provider = None;
+    }
+    if runtime_config
+        .transformation
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("")
+        .is_empty()
+        && runtime_config.transformation.provider.is_some()
+    {
+        runtime_config.transformation.api_key = resolve_transformation_api_key(
+            config.transformation.api_key.as_deref(),
+            runtime_config
+                .transformation
+                .provider
+                .as_deref()
+                .unwrap_or_default(),
+        );
+    }
+    if runtime_config.transformation.model.trim().is_empty() {
+        runtime_config.transformation.model = default_transformation_model();
+    }
+    if runtime_config
+        .transformation
+        .system_prompt
+        .trim()
+        .is_empty()
+    {
+        runtime_config.transformation.system_prompt = default_transformation_system_prompt();
+    }
+    runtime_config
+}
+
 pub fn load_config() -> Config {
     let path = match config_path() {
         Ok(path) => path,
@@ -482,4 +798,114 @@ fn non_empty_env_path(variable_name: &str) -> Option<PathBuf> {
 
 fn override_config_path() -> Option<PathBuf> {
     non_empty_env_path(CONFIG_OVERRIDE_ENV_VAR)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Mutex, OnceLock};
+
+    use super::{materialize_runtime_config, save_config, Config, UiMeterStyle};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn save_config_preserves_unknown_sections_and_comments() {
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-config-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(
+            &path,
+            concat!(
+                "# top comment\n",
+                "[ui]\n",
+                "# keep this comment\n",
+                "hotkey = \"F4\"\n",
+                "overlay_font_family = \"Menlo\"\n",
+                "\n",
+                "[custom]\n",
+                "keep_me = true\n"
+            ),
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.ui.hotkey = "F5".to_owned();
+        config.ui.font_name = Some("SF Mono".to_owned());
+        config.ui.font_size = 14.0;
+        config.ui.footer_font_size = Some(11.0);
+        config.ui.meter_style = UiMeterStyle::AnimatedHeight;
+
+        save_config(&path, &config).unwrap();
+        let updated_contents = std::fs::read_to_string(&path).unwrap();
+
+        assert!(updated_contents.contains("# top comment"));
+        assert!(updated_contents.contains("# keep this comment"));
+        assert!(updated_contents.contains("[custom]"));
+        assert!(updated_contents.contains("keep_me = true"));
+        assert!(updated_contents.contains("overlay_font_family = \"SF Mono\""));
+        assert!(updated_contents.contains("hotkey = \"F5\""));
+    }
+
+    #[test]
+    fn materialize_runtime_config_keeps_deepgram_key_when_present() {
+        let mut config = Config::default();
+        config.deepgram.api_key = Some("dg-key".to_owned());
+
+        let runtime_config = materialize_runtime_config(&config);
+        assert_eq!(runtime_config.deepgram.api_key.as_deref(), Some("dg-key"));
+    }
+
+    #[test]
+    fn reports_env_backed_deepgram_values_without_file_values() {
+        let _guard = env_lock().lock().unwrap();
+        let previous_deepgram_api_key = std::env::var("DEEPGRAM_API_KEY").ok();
+        let previous_deepgram_project_id = std::env::var(super::deepgram_project_id_env_var()).ok();
+
+        std::env::set_var("DEEPGRAM_API_KEY", "env-deepgram-key");
+        std::env::set_var(super::deepgram_project_id_env_var(), "env-project-id");
+
+        let config = Config::default();
+        assert_eq!(
+            config.deepgram_api_key_env_var_in_use(),
+            Some("DEEPGRAM_API_KEY")
+        );
+        assert_eq!(
+            config.deepgram_project_id_env_var_in_use(),
+            Some(super::deepgram_project_id_env_var())
+        );
+
+        match previous_deepgram_api_key {
+            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
+            None => std::env::remove_var("DEEPGRAM_API_KEY"),
+        }
+        match previous_deepgram_project_id {
+            Some(value) => std::env::set_var(super::deepgram_project_id_env_var(), value),
+            None => std::env::remove_var(super::deepgram_project_id_env_var()),
+        }
+    }
+
+    #[test]
+    fn reports_env_backed_transformation_api_key_for_selected_provider() {
+        let _guard = env_lock().lock().unwrap();
+        let previous_openai_api_key = std::env::var("OPENAI_API_KEY").ok();
+        std::env::set_var("OPENAI_API_KEY", "env-openai-key");
+
+        let mut config = Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+        config.transformation.api_key = None;
+
+        assert_eq!(
+            config.transformation_api_key_env_var_in_use(),
+            Some("OPENAI_API_KEY")
+        );
+
+        match previous_openai_api_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+    }
 }

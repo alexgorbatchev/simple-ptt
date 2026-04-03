@@ -4,7 +4,7 @@
 
 A very basic push-to-talk utility for macOS.
 
-The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 25 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking. If configured, it can also run an LLM cleanup pass on the buffered transcript before pasting.
+The goal here is not to be feature-rich. The goal is to stay small, stay fast, and stay understandable. In normal use it aims to stay under roughly 35 MB of RAM, uses the Deepgram API for real-time transcription, and shows the live transcription on screen while you are still talking. If configured, it can also run an LLM cleanup pass on the buffered transcript before pasting.
 
 I built this because I did not like the existing push-to-talk implementations. Everything felt too slow to respond to a hotkey, too slow to process and paste, and none that I tried showed transcription in real time.
 
@@ -19,7 +19,10 @@ I built this because I did not like the existing push-to-talk implementations. E
 - Separate transformation hotkey for transform-without-paste workflows
 - Buffered text state so you can transform, paste, or discard later
 - Optional month-to-date Deepgram billing display when `deepgram.project_id` is configured
+- Native settings window from the menu bar
 - Configurable audio input device, overlay font, and overlay mic meter style
+- File-backed settings save with TOML comment/unknown-key preservation
+- Live apply for most settings without relaunch
 - CLI helper to list available input devices
 
 ## Platform
@@ -88,13 +91,15 @@ If macOS blocks it on first launch, use one of the following:
 - or remove the quarantine attribute manually:
 
 ```bash
-xattr -dr com.apple.quarantine /path/to/simple-ptt.app
+xattr -dr com.apple.quarantine /Applications/simple-ptt.app
 ```
 
 You should also expect macOS permission prompts for:
 
 - **Microphone**
 - **Accessibility** and/or **Input Monitoring** for the global push-to-talk hotkey and synthetic paste workflow
+
+If the app launches without a configured Deepgram API key, it now opens the **Settings** window and shows an alert explaining what to add.
 
 ## How it behaves
 
@@ -160,8 +165,22 @@ The status item:
 The menu contains:
 
 - a version item that opens the GitHub repository
+- a **Settings…** item
 - an optional billing line when month-to-date spend is available
 - an app termination item (`⌘Q`)
+
+### Settings window
+
+The settings window is opened from the menu bar.
+
+It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments.
+
+Apply behavior:
+
+- overlay styling, hotkeys, `mic.gain`, and `mic.hold_ms` apply immediately
+- microphone device/sample-rate changes apply immediately when idle, or after the current recording stops if a recording is active
+- Deepgram and transformation provider/model/API settings apply to the next recording or transformation request
+- no relaunch is required for normal settings changes
 
 ## Configuration
 
@@ -342,6 +361,8 @@ open -g ~/Applications/simple-ptt.app
 
 For app launches, keep configuration in `~/.config/simple-ptt/config.toml`.
 Using shell environment variables such as `SIMPLE_PTT_CONFIG` or `DEEPGRAM_API_KEY` is fine for direct binary execution, but it is the wrong default for LaunchServices-based app launches because shell environment inheritance is not reliable there.
+
+You can update settings from the app itself through the menu bar **Settings…** window. That window writes to the resolved config file path shown in the UI.
 
 ### CLI helpers
 

@@ -1,7 +1,9 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
+use crate::config::MicConfig;
+use crate::settings::LiveConfigStore;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
 
@@ -9,12 +11,53 @@ const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 const METER_MIN_DB: f32 = -42.0;
 const METER_MAX_DB: f32 = -6.0;
 
+pub struct AudioController {
+    active_stream: Mutex<ActiveAudioStream>,
+    pending_config: Mutex<Option<MicConfig>>,
+    config_store: LiveConfigStore,
+    state: Arc<AppState>,
+    transcription_controller: TranscriptionController,
+}
+
+struct ActiveAudioStream {
+    configured_audio_device: Option<String>,
+    requested_sample_rate: u32,
+    stream: Stream,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AudioConfigApplyEffect {
+    AppliedNow,
+    DeferredUntilRecordingStops,
+}
+
 #[derive(Debug)]
 struct EncodedAudioChunk {
     clipped_sample_count: usize,
     mic_level: f32,
     mic_peak: f32,
     pcm_bytes: Vec<u8>,
+}
+
+pub fn validate_mic_config(mic_config: &MicConfig) -> Result<(), String> {
+    let host = cpal::default_host();
+    let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
+    let config = select_input_config(&device, mic_config.sample_rate)?;
+    let stream_config = config.config();
+
+    match config.sample_format() {
+        SampleFormat::F32 => build_validation_stream::<f32>(&device, &stream_config)?,
+        SampleFormat::I16 => build_validation_stream::<i16>(&device, &stream_config)?,
+        SampleFormat::U16 => build_validation_stream::<u16>(&device, &stream_config)?,
+        sample_format => {
+            return Err(format!(
+                "unsupported audio input sample format: {:?}",
+                sample_format
+            ));
+        }
+    };
+
+    Ok(())
 }
 
 pub fn print_input_devices() -> Result<(), String> {
@@ -46,22 +89,118 @@ pub fn print_input_devices() -> Result<(), String> {
     Ok(())
 }
 
+impl AudioController {
+    pub fn new(
+        state: Arc<AppState>,
+        transcription_controller: TranscriptionController,
+        config_store: LiveConfigStore,
+    ) -> Result<Self, String> {
+        let mic_config = config_store.current().mic;
+        let (stream, actual_rate) = build_input_stream(
+            state.clone(),
+            transcription_controller.clone(),
+            config_store.clone(),
+            &mic_config,
+        )?;
+        transcription_controller.set_sample_rate(actual_rate);
+
+        Ok(Self {
+            active_stream: Mutex::new(ActiveAudioStream {
+                configured_audio_device: mic_config.audio_device.clone(),
+                requested_sample_rate: mic_config.sample_rate,
+                stream,
+            }),
+            pending_config: Mutex::new(None),
+            config_store,
+            state,
+            transcription_controller,
+        })
+    }
+
+    pub fn apply_mic_config(
+        &self,
+        mic_config: &MicConfig,
+    ) -> Result<AudioConfigApplyEffect, String> {
+        let active_stream = self
+            .active_stream
+            .lock()
+            .map_err(|_| "audio stream lock poisoned".to_owned())?;
+        let needs_stream_rebuild = active_stream.requested_sample_rate != mic_config.sample_rate
+            || active_stream.configured_audio_device != mic_config.audio_device;
+        drop(active_stream);
+
+        if !needs_stream_rebuild {
+            return Ok(AudioConfigApplyEffect::AppliedNow);
+        }
+
+        if self.state.is_recording() {
+            if let Ok(mut pending_config) = self.pending_config.lock() {
+                *pending_config = Some(mic_config.clone());
+            }
+            return Ok(AudioConfigApplyEffect::DeferredUntilRecordingStops);
+        }
+
+        self.rebuild_stream(mic_config)?;
+        Ok(AudioConfigApplyEffect::AppliedNow)
+    }
+
+    pub fn apply_pending_if_idle(&self) {
+        if self.state.is_recording() {
+            return;
+        }
+
+        let pending_config = self
+            .pending_config
+            .lock()
+            .ok()
+            .and_then(|mut pending_config| pending_config.take());
+        let Some(pending_config) = pending_config else {
+            return;
+        };
+
+        if let Err(error) = self.rebuild_stream(&pending_config) {
+            log::error!("failed to apply deferred audio config: {}", error);
+            if let Ok(mut retry_config) = self.pending_config.lock() {
+                *retry_config = Some(pending_config);
+            }
+        }
+    }
+
+    fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
+        let (stream, actual_rate) = build_input_stream(
+            self.state.clone(),
+            self.transcription_controller.clone(),
+            self.config_store.clone(),
+            mic_config,
+        )?;
+
+        self.transcription_controller.set_sample_rate(actual_rate);
+        let mut active_stream = self
+            .active_stream
+            .lock()
+            .map_err(|_| "audio stream lock poisoned".to_owned())?;
+        active_stream.stream = stream;
+        active_stream.requested_sample_rate = mic_config.sample_rate;
+        active_stream.configured_audio_device = mic_config.audio_device.clone();
+        Ok(())
+    }
+}
+
 pub fn build_input_stream(
     state: Arc<AppState>,
     controller: TranscriptionController,
-    preferred_sample_rate: u32,
-    gain: f32,
-    audio_device: Option<&str>,
-) -> (Stream, u32) {
+    config_store: LiveConfigStore,
+    mic_config: &MicConfig,
+) -> Result<(Stream, u32), String> {
     let host = cpal::default_host();
-    let device = resolve_input_device(&host, audio_device);
+    let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
 
     log::info!(
         "audio input device: {}",
         device.name().unwrap_or_else(|_| "<unknown>".into())
     );
 
-    let config = select_input_config(&device, preferred_sample_rate);
+    let config = select_input_config(&device, mic_config.sample_rate)?;
     let actual_rate = config.sample_rate().0;
     let channels = config.channels();
 
@@ -74,44 +213,78 @@ pub fn build_input_stream(
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => {
-            build_stream_for_format::<f32>(&device, &config, state, controller, gain)
+            build_stream_for_format::<f32>(&device, &config, state, controller, config_store)?
         }
         SampleFormat::I16 => {
-            build_stream_for_format::<i16>(&device, &config, state, controller, gain)
+            build_stream_for_format::<i16>(&device, &config, state, controller, config_store)?
         }
         SampleFormat::U16 => {
-            build_stream_for_format::<u16>(&device, &config, state, controller, gain)
+            build_stream_for_format::<u16>(&device, &config, state, controller, config_store)?
         }
-        sample_format => panic!("unsupported audio input sample format: {:?}", sample_format),
+        sample_format => {
+            return Err(format!(
+                "unsupported audio input sample format: {:?}",
+                sample_format
+            ));
+        }
     };
 
-    stream.play().expect("failed to start audio stream");
+    stream
+        .play()
+        .map_err(|error| format!("failed to start audio stream: {}", error))?;
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
-    (stream, actual_rate)
+    Ok((stream, actual_rate))
 }
 
-fn resolve_input_device(host: &cpal::Host, configured_audio_device: Option<&str>) -> cpal::Device {
+fn build_validation_stream<T>(
+    device: &cpal::Device,
+    stream_config: &cpal::StreamConfig,
+) -> Result<(), String>
+where
+    T: Sample + SizedSample + Send + 'static,
+{
+    let stream = device
+        .build_input_stream(
+            stream_config,
+            |_data: &[T], _info: &cpal::InputCallbackInfo| {},
+            |error| {
+                log::error!("validation audio stream error: {}", error);
+            },
+            None,
+        )
+        .map_err(|error| format!("failed to validate audio input stream: {}", error))?;
+    drop(stream);
+    Ok(())
+}
+
+fn resolve_input_device(
+    host: &cpal::Host,
+    configured_audio_device: Option<&str>,
+) -> Result<cpal::Device, String> {
     let Some(requested_device) = configured_audio_device
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
         return host
             .default_input_device()
-            .expect("no default audio input device");
+            .ok_or_else(|| "no default audio input device".to_owned());
     };
 
     let input_devices = host
         .input_devices()
-        .expect("failed to enumerate audio input devices");
+        .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?;
     let devices: Vec<cpal::Device> = input_devices.collect();
 
     if let Ok(index) = requested_device.parse::<usize>() {
         if let Some(device) = devices.get(index) {
             log::info!("using configured audio device index {}", index);
-            return device.clone();
+            return Ok(device.clone());
         }
-        panic!("configured audio_device index {} is out of range", index);
+        return Err(format!(
+            "configured audio_device index {} is out of range",
+            index
+        ));
     }
 
     let requested_device_lower = requested_device.to_lowercase();
@@ -121,31 +294,34 @@ fn resolve_input_device(host: &cpal::Host, configured_audio_device: Option<&str>
         };
         if device_name == requested_device || device_name.to_lowercase() == requested_device_lower {
             log::info!("using configured audio device '{}'", device_name);
-            return device;
+            return Ok(device);
         }
     }
 
-    panic!(
+    Err(format!(
         "configured audio_device '{}' was not found",
         requested_device
-    );
+    ))
 }
 
-fn select_input_config(device: &cpal::Device, preferred_sample_rate: u32) -> SupportedStreamConfig {
+fn select_input_config(
+    device: &cpal::Device,
+    preferred_sample_rate: u32,
+) -> Result<SupportedStreamConfig, String> {
     let default_config = device
         .default_input_config()
-        .expect("no default input config");
+        .map_err(|error| format!("no default input config: {}", error))?;
 
     let Ok(supported_configs) = device.supported_input_configs() else {
         log::warn!("failed to enumerate supported input configs; using device default");
-        return default_config;
+        return Ok(default_config);
     };
 
     for supported_config in supported_configs {
         if let Some(config) =
             supported_config.try_with_sample_rate(cpal::SampleRate(preferred_sample_rate))
         {
-            return config;
+            return Ok(config);
         }
     }
 
@@ -154,7 +330,7 @@ fn select_input_config(device: &cpal::Device, preferred_sample_rate: u32) -> Sup
         preferred_sample_rate,
         default_config.sample_rate().0
     );
-    default_config
+    Ok(default_config)
 }
 
 fn build_stream_for_format<T>(
@@ -162,8 +338,8 @@ fn build_stream_for_format<T>(
     config: &SupportedStreamConfig,
     state: Arc<AppState>,
     controller: TranscriptionController,
-    gain: f32,
-) -> Stream
+    config_store: LiveConfigStore,
+) -> Result<Stream, String>
 where
     T: Sample + SizedSample + Send + 'static,
     f32: FromSample<T>,
@@ -196,7 +372,8 @@ where
                     was_recording = true;
                 }
 
-                let encoded_chunk = encode_pcm_mono(data, channels, gain);
+                let current_gain = config_store.current().mic.gain;
+                let encoded_chunk = encode_pcm_mono(data, channels, current_gain);
                 if encoded_chunk.pcm_bytes.is_empty() {
                     meter_state.clear_mic_meter();
                     return;
@@ -219,7 +396,7 @@ where
             },
             None,
         )
-        .expect("failed to build audio input stream")
+        .map_err(|error| format!("failed to build audio input stream: {}", error))
 }
 
 fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32) -> EncodedAudioChunk

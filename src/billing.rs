@@ -4,6 +4,7 @@ use std::sync::Arc;
 use serde::Deserialize;
 use time::{Date, Month, OffsetDateTime};
 
+use crate::settings::LiveConfigStore;
 use crate::state::AppState;
 
 const BILLING_BREAKDOWN_URL_PREFIX: &str = "https://api.deepgram.com/v1/projects";
@@ -11,15 +12,9 @@ const FOOTER_PERMISSION_DENIED_MESSAGE: &str =
     "Admin- or owner-level project API key required for billing reporting.";
 const PROJECT_ID_ENV_VAR: &str = "DEEPGRAM_PROJECT_ID";
 
-#[derive(Clone, Debug)]
-pub struct BillingConfig {
-    pub api_key: String,
-    pub project_id: Option<String>,
-}
-
 #[derive(Clone)]
 pub struct BillingController {
-    config: BillingConfig,
+    config_store: LiveConfigStore,
     state: Arc<AppState>,
 }
 
@@ -55,8 +50,11 @@ impl Display for BillingFetchError {
 }
 
 impl BillingController {
-    pub fn new(state: Arc<AppState>, config: BillingConfig) -> Self {
-        Self { config, state }
+    pub fn new(state: Arc<AppState>, config_store: LiveConfigStore) -> Self {
+        Self {
+            config_store,
+            state,
+        }
     }
 
     pub fn refresh_month_to_date_spend(&self) {
@@ -64,15 +62,19 @@ impl BillingController {
         let footer_label = billing_footer_label(today);
         let month_start = month_start_for(today);
 
-        let Some(project_id) = self.config.project_id.clone() else {
+        let current_config = self.config_store.current();
+        let Some(project_id) = current_config.resolve_deepgram_project_id() else {
+            self.state.set_overlay_footer_text("");
+            return;
+        };
+
+        let Ok(api_key) = current_config.resolve_deepgram_api_key() else {
             self.state.set_overlay_footer_text("");
             return;
         };
 
         self.state
             .set_overlay_footer_text(format!("{}: refreshing…", footer_label));
-
-        let api_key = self.config.api_key.clone();
         let state = Arc::clone(&self.state);
         std::thread::Builder::new()
             .name("billing-refresh".into())

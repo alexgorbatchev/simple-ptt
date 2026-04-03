@@ -5,10 +5,13 @@ mod config;
 mod hotkey;
 mod icon;
 mod overlay;
+mod settings;
+mod settings_window;
 mod state;
 mod transcription;
 mod transformation;
 
+use std::any::Any;
 use std::path::Path;
 
 use objc2::runtime::ProtocolObject;
@@ -37,130 +40,80 @@ fn main() {
         _ => {}
     }
 
+    match std::panic::catch_unwind(run_graphical_application) {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            report_startup_error(&error);
+            std::process::exit(1);
+        }
+        Err(panic_payload) => {
+            report_startup_error(&panic_payload_message(panic_payload));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run_graphical_application() -> Result<(), String> {
     log::info!("simple-ptt starting");
 
-    let config = config::load_config();
-    let transformation_config = config.resolve_transformation_config().ok();
-    let transformation_hotkey = transformation_config
-        .as_ref()
-        .map(|_| config.transformation.hotkey.as_str());
-    let auto_transform_enabled = config.transformation.auto && transformation_config.is_some();
+    let loaded_config = config::load_config();
+    let runtime_config = config::materialize_runtime_config(&loaded_config);
+    let config_path = config::config_path()?;
     log::info!(
         "config loaded (ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.auto={}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={})",
-        config.ui.hotkey,
-        config.mic.audio_device,
-        config.mic.sample_rate,
-        config.mic.gain,
-        config.mic.hold_ms,
-        config.ui.font_name,
-        config.ui.font_size,
-        config.ui.footer_font_size,
-        config.ui.meter_style,
-        config.deepgram.endpointing_ms,
-        config.deepgram.utterance_end_ms,
-        config.deepgram.model,
-        config.deepgram.language,
-        config.deepgram.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false)
-            || std::env::var("DEEPGRAM_API_KEY").ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
-        config.deepgram.project_id.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false)
-            || std::env::var(billing::deepgram_project_id_env_var()).ok().as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
-        transformation_config.is_some(),
-        transformation_hotkey,
-        config.transformation.auto,
-        config.transformation.provider,
-        &config.transformation.model,
-        config.transformation.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
-        !config.transformation.system_prompt.trim().is_empty(),
+        runtime_config.ui.hotkey,
+        runtime_config.mic.audio_device,
+        runtime_config.mic.sample_rate,
+        runtime_config.mic.gain,
+        runtime_config.mic.hold_ms,
+        runtime_config.ui.font_name,
+        runtime_config.ui.font_size,
+        runtime_config.ui.footer_font_size,
+        runtime_config.ui.meter_style,
+        runtime_config.deepgram.endpointing_ms,
+        runtime_config.deepgram.utterance_end_ms,
+        runtime_config.deepgram.model,
+        runtime_config.deepgram.language,
+        runtime_config.deepgram.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
+        runtime_config.deepgram.project_id.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
+        runtime_config.resolve_transformation_config().is_ok(),
+        Some(runtime_config.transformation.hotkey.as_str()),
+        runtime_config.transformation.auto,
+        runtime_config.transformation.provider,
+        &runtime_config.transformation.model,
+        runtime_config.transformation.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
+        !runtime_config.transformation.system_prompt.trim().is_empty(),
     );
 
-    let deepgram_api_key = config
-        .resolve_deepgram_api_key()
-        .unwrap_or_else(|error| panic!("{}", error));
-
-    let deepgram_project_id = config.resolve_deepgram_project_id();
-
+    let config_store =
+        settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
     let shared_state = state::AppState::new();
 
-    let billing_controller = billing::BillingController::new(
-        shared_state.clone(),
-        billing::BillingConfig {
-            api_key: deepgram_api_key.clone(),
-            project_id: deepgram_project_id,
-        },
-    );
-
-    let transcription_controller = transcription::spawn_transcription_thread(
-        shared_state.clone(),
-        transcription::DeepgramConfig {
-            api_key: deepgram_api_key,
-            model: config.deepgram.model.clone(),
-            language: config.deepgram.language.clone(),
-            endpointing_ms: config.deepgram.endpointing_ms,
-            utterance_end_ms: config.deepgram.utterance_end_ms,
-        },
-        transformation_config,
-    );
-
-    let (_audio_stream, actual_rate) = audio::build_input_stream(
+    let billing_controller =
+        billing::BillingController::new(shared_state.clone(), config_store.clone());
+    let transcription_controller =
+        transcription::spawn_transcription_thread(shared_state.clone(), config_store.clone());
+    let audio_controller = audio::AudioController::new(
         shared_state.clone(),
         transcription_controller.clone(),
-        config.mic.sample_rate,
-        config.mic.gain,
-        config.mic.audio_device.as_deref(),
-    );
-    transcription_controller.set_sample_rate(actual_rate);
+        config_store.clone(),
+    )?;
 
     hotkey::spawn_hotkey_thread(
         shared_state.clone(),
-        billing_controller,
+        billing_controller.clone(),
         transcription_controller,
-        &config.ui.hotkey,
-        transformation_hotkey,
-        auto_transform_enabled,
-        config.mic.hold_ms,
+        config_store.clone(),
     );
-
-    let overlay_font_size = if config.ui.font_size.is_finite() && config.ui.font_size > 0.0 {
-        config.ui.font_size
-    } else {
-        log::warn!(
-            "ui.font_size {} is invalid; falling back to 12.0",
-            config.ui.font_size
-        );
-        12.0
-    };
-    let overlay_footer_font_size = match config.ui.footer_font_size {
-        Some(footer_font_size) if footer_font_size.is_finite() && footer_font_size > 0.0 => {
-            footer_font_size
-        }
-        Some(footer_font_size) => {
-            let fallback_footer_font_size = overlay_font_size * 0.6;
-            log::warn!(
-                "ui.footer_font_size {} is invalid; falling back to {}",
-                footer_font_size,
-                fallback_footer_font_size
-            );
-            fallback_footer_font_size
-        }
-        None => overlay_font_size * 0.6,
-    };
 
     let mtm = MainThreadMarker::new().expect("must run on main thread");
     let ns_app = NSApplication::sharedApplication(mtm);
     let delegate = app::AppDelegate::new(
         mtm,
-        overlay::OverlayStyle {
-            font_name: config.ui.font_name.clone(),
-            font_size: overlay_font_size,
-            footer_font_size: overlay_footer_font_size,
-            meter_style: config.ui.meter_style,
-            transformation_hint: transformation_hotkey.map(|hotkey| {
-                format!(
-                    "{}: transform {}: paste ESC: cancel",
-                    hotkey, config.ui.hotkey
-                )
-            }),
-        },
+        app::overlay_style_from_config(&runtime_config),
+        config_store,
+        billing_controller,
+        audio_controller,
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
@@ -168,4 +121,55 @@ fn main() {
 
     log::info!("starting NSApplication run loop");
     ns_app.run();
+    Ok(())
+}
+
+fn report_startup_error(error: &str) {
+    log::error!("startup failed: {}", error);
+    app::show_startup_error_dialog(
+        "simple-ptt couldn't start",
+        &startup_error_instructions(error),
+    );
+}
+
+fn startup_error_instructions(error: &str) -> String {
+    format!(
+        concat!(
+            "{}\n\n",
+            "What to check:\n",
+            "- ~/.config/simple-ptt/config.toml exists and is valid TOML\n",
+            "- if mic.audio_device is configured, it matches a real input device\n",
+            "- if startup fails before the menu appears, run the bundled binary directly from Terminal for the exact error\n\n",
+            "For more detail, run this in Terminal:\n",
+            "/Applications/simple-ptt.app/Contents/MacOS/simple-ptt\n\n",
+            "Note: simple-ptt is a menu bar app. On successful launch it appears in the menu bar, not in the Dock."
+        ),
+        error
+    )
+}
+
+fn panic_payload_message(panic_payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = panic_payload.downcast_ref::<String>() {
+        return message.clone();
+    }
+
+    if let Some(message) = panic_payload.downcast_ref::<&str>() {
+        return (*message).to_owned();
+    }
+
+    "simple-ptt panicked during startup".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::startup_error_instructions;
+
+    #[test]
+    fn startup_error_instructions_include_terminal_debugging_path() {
+        let instructions =
+            startup_error_instructions("configured audio_device 'Missing' was not found");
+
+        assert!(instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
+        assert!(instructions.contains("menu bar"));
+    }
 }

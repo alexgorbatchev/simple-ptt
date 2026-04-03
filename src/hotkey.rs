@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::billing::BillingController;
+use crate::settings::LiveConfigStore;
 use crate::state::{
     AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
     STATE_TRANSFORMING,
@@ -18,64 +19,34 @@ enum RecordHotkeyAction {
     PasteBuffer,
 }
 
+struct CurrentHotkeyConfig {
+    auto_transform_enabled: bool,
+    hold_ms: u64,
+    record_hotkey: Option<Key>,
+    transform_hotkey: Option<Key>,
+    transformation_hotkey_enabled: bool,
+}
+
 pub fn spawn_hotkey_thread(
     state: Arc<AppState>,
     billing_controller: BillingController,
     controller: TranscriptionController,
-    record_hotkey_name: &str,
-    transform_hotkey_name: Option<&str>,
-    auto_transform_enabled: bool,
-    hold_ms: u64,
+    config_store: LiveConfigStore,
 ) {
-    let record_hotkey_name = record_hotkey_name.to_owned();
-    let transform_hotkey_name = transform_hotkey_name.map(str::to_owned);
-
-    let record_hotkey = parse_key(&record_hotkey_name);
-    if record_hotkey.is_none() {
-        log::warn!("record hotkey '{}' not recognized", record_hotkey_name);
-    }
-
-    let transform_hotkey = transform_hotkey_name.as_deref().and_then(|hotkey_name| {
-        let parsed_hotkey = parse_key(hotkey_name);
-        if parsed_hotkey.is_none() {
-            log::warn!("transformation hotkey '{}' not recognized", hotkey_name);
-        }
-        parsed_hotkey
-    });
-
-    let transformation_hotkey_enabled =
-        transform_hotkey.is_some() && transform_hotkey != record_hotkey;
-    if !transformation_hotkey_enabled && transform_hotkey == record_hotkey {
-        log::warn!(
-            "transformation hotkey '{}' conflicts with record hotkey '{}'; transformation hotkey disabled",
-            transform_hotkey_name.as_deref().unwrap_or("disabled"),
-            record_hotkey_name
-        );
-    }
-
     std::thread::Builder::new()
         .name("hotkey".into())
         .spawn(move || {
-            let hold_threshold = Duration::from_millis(hold_ms);
-            log::info!(
-                "hotkey thread started (record={}, transform={}, auto_transform_enabled={}, hold threshold: {}ms)",
-                record_hotkey_name,
-                if transformation_hotkey_enabled {
-                    transform_hotkey_name.clone().unwrap_or_else(|| "disabled".to_owned())
-                } else {
-                    "disabled".to_owned()
-                },
-                auto_transform_enabled,
-                hold_ms
-            );
+            log::info!("hotkey thread started");
 
             let press_time: Cell<Option<Instant>> = Cell::new(None);
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
             let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
 
             if let Err(error) = grab(move |event: Event| -> Option<Event> {
+                let hotkey_config = current_hotkey_config(&config_store);
                 match event.event_type {
-                    EventType::KeyPress(Key::Escape) if record_hotkey != Some(Key::Escape) => {
+                    EventType::KeyPress(Key::Escape)
+                        if hotkey_config.record_hotkey != Some(Key::Escape) => {
                         let current_state = state.get_state();
                         if !matches!(
                             current_state,
@@ -96,7 +67,7 @@ pub fn spawn_hotkey_thread(
 
                         match current_state {
                             STATE_RECORDING => {
-                                if auto_transform_enabled {
+                                if hotkey_config.auto_transform_enabled {
                                     stop_recording_and_transform_and_paste(
                                         &state,
                                         &controller,
@@ -118,7 +89,7 @@ pub fn spawn_hotkey_thread(
 
                         None
                     }
-                    EventType::KeyPress(key) if record_hotkey == Some(key) => {
+                    EventType::KeyPress(key) if hotkey_config.record_hotkey == Some(key) => {
                         if press_time.get().is_some() {
                             return None;
                         }
@@ -146,7 +117,7 @@ pub fn spawn_hotkey_thread(
                                     None
                                 }
                             },
-                            STATE_RECORDING => Some(if auto_transform_enabled {
+                            STATE_RECORDING => Some(if hotkey_config.auto_transform_enabled {
                                 RecordHotkeyAction::StopAndTransformAndPaste
                             } else {
                                 RecordHotkeyAction::StopAndPaste
@@ -163,7 +134,7 @@ pub fn spawn_hotkey_thread(
 
                         Some(event)
                     }
-                    EventType::KeyRelease(key) if record_hotkey == Some(key) => {
+                    EventType::KeyRelease(key) if hotkey_config.record_hotkey == Some(key) => {
                         let Some(pressed_at) = press_time.get() else {
                             return None;
                         };
@@ -178,8 +149,8 @@ pub fn spawn_hotkey_thread(
 
                         match action {
                             RecordHotkeyAction::StartRecording => {
-                                if pressed_at.elapsed() >= hold_threshold {
-                                    if auto_transform_enabled {
+                                if pressed_at.elapsed() >= Duration::from_millis(hotkey_config.hold_ms) {
+                                    if hotkey_config.auto_transform_enabled {
                                         stop_recording_and_transform_and_paste(
                                             &state,
                                             &controller,
@@ -217,7 +188,8 @@ pub fn spawn_hotkey_thread(
                         None
                     }
                     EventType::KeyPress(key)
-                        if transformation_hotkey_enabled && transform_hotkey == Some(key) =>
+                        if hotkey_config.transformation_hotkey_enabled
+                            && hotkey_config.transform_hotkey == Some(key) =>
                     {
                         if transform_hotkey_is_down.replace(true) {
                             return None;
@@ -233,7 +205,8 @@ pub fn spawn_hotkey_thread(
                         None
                     }
                     EventType::KeyRelease(key)
-                        if transformation_hotkey_enabled && transform_hotkey == Some(key) =>
+                        if hotkey_config.transformation_hotkey_enabled
+                            && hotkey_config.transform_hotkey == Some(key) =>
                     {
                         let was_down = transform_hotkey_is_down.replace(false);
                         if !was_down {
@@ -278,6 +251,26 @@ pub fn spawn_hotkey_thread(
         .expect("failed to spawn hotkey thread");
 }
 
+fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig {
+    let config = config_store.current();
+    let record_hotkey = parse_key(&config.ui.hotkey);
+    let transform_hotkey = config
+        .resolve_transformation_config()
+        .ok()
+        .and_then(|_| parse_key(&config.transformation.hotkey));
+    let transformation_hotkey_enabled =
+        transform_hotkey.is_some() && transform_hotkey != record_hotkey;
+
+    CurrentHotkeyConfig {
+        auto_transform_enabled: config.transformation.auto
+            && config.resolve_transformation_config().is_ok(),
+        hold_ms: config.mic.hold_ms,
+        record_hotkey,
+        transform_hotkey,
+        transformation_hotkey_enabled,
+    }
+}
+
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
     if !state.is_recording() {
         return;
@@ -318,7 +311,7 @@ fn stop_recording_and_transform_and_paste(
     }
 }
 
-fn parse_key(name: &str) -> Option<Key> {
+pub(crate) fn parse_key(name: &str) -> Option<Key> {
     match name {
         "F1" => Some(Key::F1),
         "F2" => Some(Key::F2),
@@ -355,9 +348,6 @@ fn parse_key(name: &str) -> Option<Key> {
         "DownArrow" | "Down" => Some(Key::DownArrow),
         "LeftArrow" | "Left" => Some(Key::LeftArrow),
         "RightArrow" | "Right" => Some(Key::RightArrow),
-        _ => {
-            log::warn!("unknown key name: '{}'", name);
-            None
-        }
+        _ => None,
     }
 }

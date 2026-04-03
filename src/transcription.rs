@@ -19,6 +19,7 @@ use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
+use crate::settings::LiveConfigStore;
 use crate::state::{
     AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_TRANSFORMING,
 };
@@ -126,8 +127,7 @@ impl TranscriptionController {
 
 pub fn spawn_transcription_thread(
     state: Arc<AppState>,
-    config: DeepgramConfig,
-    transformation_config: Option<TransformationRuntimeConfig>,
+    config_store: LiveConfigStore,
 ) -> TranscriptionController {
     let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
     let sample_rate = Arc::new(AtomicU32::new(16000));
@@ -164,7 +164,21 @@ pub fn spawn_transcription_thread(
                         state.clear_abort_request();
                         state.clear_overlay_text();
                         state.set_overlay_text_opacity(1.0);
-                        match start_session(&runtime, state.clone(), &config, current_sample_rate) {
+                        let current_config = config_store.current();
+                        let deepgram_config = match resolved_deepgram_config(&current_config) {
+                            Ok(deepgram_config) => deepgram_config,
+                            Err(error) => {
+                                log::error!("failed to resolve Deepgram config: {}", error);
+                                state.set_state(STATE_ERROR);
+                                continue;
+                            }
+                        };
+                        match start_session(
+                            &runtime,
+                            state.clone(),
+                            &deepgram_config,
+                            current_sample_rate,
+                        ) {
                             Ok(session) => {
                                 active_session = Some(session);
                             }
@@ -270,6 +284,8 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 buffered_text = transcript;
+                                let transformation_config =
+                                    config_store.current().resolve_transformation_config().ok();
                                 transform_buffered_text(
                                     &runtime,
                                     state.clone(),
@@ -327,6 +343,8 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 buffered_text = transcript;
+                                let transformation_config =
+                                    config_store.current().resolve_transformation_config().ok();
                                 transform_buffered_text(
                                     &runtime,
                                     state.clone(),
@@ -358,6 +376,8 @@ pub fn spawn_transcription_thread(
                         paste_buffered_text(&state, &mut buffered_text);
                     }
                     Command::TransformBuffer => {
+                        let transformation_config =
+                            config_store.current().resolve_transformation_config().ok();
                         transform_buffered_text(
                             &runtime,
                             state.clone(),
@@ -382,6 +402,16 @@ pub fn spawn_transcription_thread(
         command_tx,
         sample_rate,
     }
+}
+
+fn resolved_deepgram_config(config: &crate::config::Config) -> Result<DeepgramConfig, String> {
+    Ok(DeepgramConfig {
+        api_key: config.resolve_deepgram_api_key()?,
+        model: config.deepgram.model.clone(),
+        language: config.deepgram.language.clone(),
+        endpointing_ms: config.deepgram.endpointing_ms,
+        utterance_end_ms: config.deepgram.utterance_end_ms,
+    })
 }
 
 fn start_session(

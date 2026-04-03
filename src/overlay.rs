@@ -68,11 +68,11 @@ pub struct OverlayWindow {
     meter_bar_views: Vec<Retained<NSView>>,
     meter_bar_levels: RefCell<Vec<f32>>,
     clip_indicator_state: RefCell<ClipIndicatorState>,
-    meter_style: UiMeterStyle,
+    meter_style: Cell<UiMeterStyle>,
     text_field: Retained<NSTextField>,
     footer_text_field: Retained<NSTextField>,
     footer_hint_text_field: Retained<NSTextField>,
-    footer_hint: Option<String>,
+    footer_hint: RefCell<Option<String>>,
     is_visible: Cell<bool>,
     text_opacity: Cell<f64>,
 }
@@ -268,11 +268,11 @@ impl OverlayWindow {
             meter_bar_views,
             meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
             clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
-            meter_style: style.meter_style,
+            meter_style: Cell::new(style.meter_style),
             text_field,
             footer_text_field,
             footer_hint_text_field,
-            footer_hint: style.transformation_hint.clone(),
+            footer_hint: RefCell::new(style.transformation_hint.clone()),
             is_visible: Cell::new(false),
             text_opacity: Cell::new(1.0),
         };
@@ -305,9 +305,10 @@ impl OverlayWindow {
             overlay_text
         };
         let footer_text_is_visible = !overlay_footer_text.trim().is_empty();
-        let footer_hint_is_visible = self.footer_hint.is_some();
+        let footer_hint_is_visible = self.footer_hint.borrow().is_some();
         let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
-        let meter_is_visible = state == STATE_RECORDING && self.meter_style != UiMeterStyle::None;
+        let meter_is_visible =
+            state == STATE_RECORDING && self.meter_style.get() != UiMeterStyle::None;
         self.update_layout(
             footer_is_visible,
             footer_text_is_visible,
@@ -342,6 +343,53 @@ impl OverlayWindow {
         self.set_text("");
         self.set_text_opacity(1.0);
         self.set_footer_text("");
+    }
+
+    pub fn apply_style(&self, style: &OverlayStyle) {
+        self.text_field
+            .setFont(Some(&resolve_overlay_font(style, style.font_size)));
+        self.footer_text_field
+            .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
+        self.footer_hint_text_field
+            .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
+        self.meter_style.set(style.meter_style);
+        self.footer_hint.replace(style.transformation_hint.clone());
+
+        if let Some(transformation_hint) = style.transformation_hint.as_deref() {
+            self.footer_hint_text_field
+                .setStringValue(&NSString::from_str(transformation_hint));
+            self.footer_hint_text_field.setHidden(false);
+        } else {
+            self.footer_hint_text_field
+                .setStringValue(&NSString::from_str(""));
+            self.footer_hint_text_field.setHidden(true);
+        }
+        self.footer_text_field
+            .setFrame(footer_text_frame(style.transformation_hint.is_some()));
+
+        let footer_text_is_visible = !self
+            .footer_text_field
+            .stringValue()
+            .to_string()
+            .trim()
+            .is_empty();
+        let footer_hint_is_visible = style.transformation_hint.is_some();
+        let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
+        let meter_is_visible =
+            self.is_visible.get() && self.meter_style.get() != UiMeterStyle::None;
+        self.update_layout(
+            footer_is_visible,
+            footer_text_is_visible,
+            footer_hint_is_visible,
+            meter_is_visible,
+        );
+        if !meter_is_visible {
+            self.clear_meter();
+            self.clear_clip_indicator();
+        }
+        NSView::setNeedsDisplay(&self.text_field, true);
+        NSView::setNeedsDisplay(&self.footer_text_field, true);
+        NSView::setNeedsDisplay(&self.footer_hint_text_field, true);
     }
 
     fn position_on_mouse_screen(&self, mtm: MainThreadMarker) {
@@ -427,8 +475,10 @@ impl OverlayWindow {
             .setHidden(!footer_hint_is_visible);
         self.scroll_view
             .setFrame(scroll_view_frame(footer_is_visible, meter_is_visible));
-        self.meter_container_view
-            .setFrame(meter_container_frame(footer_is_visible, self.meter_style));
+        self.meter_container_view.setFrame(meter_container_frame(
+            footer_is_visible,
+            self.meter_style.get(),
+        ));
         self.meter_container_view.setHidden(!meter_is_visible);
     }
 
@@ -438,7 +488,7 @@ impl OverlayWindow {
         let level = mic_meter.level as f32 / u8::MAX as f32;
         let peak = mic_meter.peak as f32 / u8::MAX as f32;
 
-        match self.meter_style {
+        match self.meter_style.get() {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
@@ -527,7 +577,7 @@ impl OverlayWindow {
     }
 
     fn render_meter_bars(&self) {
-        match self.meter_style {
+        match self.meter_style.get() {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.render_meter_bars_animated_height(),
             UiMeterStyle::AnimatedColor => self.render_meter_bars_animated_color(),
