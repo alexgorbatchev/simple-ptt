@@ -1,8 +1,12 @@
-use rdev::{grab, Event, EventType, Key};
+#[path = "hotkey_macos.rs"]
+mod platform;
+
+use rdev::Key;
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use self::platform::run_hotkey_event_loop;
 use crate::billing::BillingController;
 use crate::settings::LiveConfigStore;
 use crate::state::{
@@ -17,6 +21,12 @@ enum RecordHotkeyAction {
     StopAndPaste,
     StopAndTransformAndPaste,
     PasteBuffer,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum HotkeyEvent {
+    KeyPress(Key),
+    KeyRelease(Key),
 }
 
 struct CurrentHotkeyConfig {
@@ -42,11 +52,12 @@ pub fn spawn_hotkey_thread(
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
             let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
 
-            if let Err(error) = grab(move |event: Event| -> Option<Event> {
+            if let Err(error) = run_hotkey_event_loop(move |event| {
                 let hotkey_config = current_hotkey_config(&config_store);
-                match event.event_type {
-                    EventType::KeyPress(Key::Escape)
-                        if hotkey_config.record_hotkey != Some(Key::Escape) => {
+                match event {
+                    HotkeyEvent::KeyPress(Key::Escape)
+                        if hotkey_config.record_hotkey != Some(Key::Escape) =>
+                    {
                         let current_state = state.get_state();
                         if !matches!(
                             current_state,
@@ -55,7 +66,7 @@ pub fn spawn_hotkey_thread(
                                 | STATE_BUFFER_READY
                                 | STATE_TRANSFORMING
                         ) {
-                            return Some(event);
+                            return false;
                         }
 
                         state.request_abort();
@@ -79,7 +90,9 @@ pub fn spawn_hotkey_thread(
                             }
                             STATE_BUFFER_READY => match controller.discard_buffer() {
                                 Ok(()) => log::info!("buffer discarded"),
-                                Err(error) => log::error!("failed to discard buffer: {}", error),
+                                Err(error) => {
+                                    log::error!("failed to discard buffer: {}", error)
+                                }
                             },
                             STATE_PROCESSING | STATE_TRANSFORMING => {
                                 log::info!("abort requested while background work is in progress");
@@ -87,19 +100,17 @@ pub fn spawn_hotkey_thread(
                             _ => {}
                         }
 
-                        None
+                        true
                     }
-                    EventType::KeyPress(key) if hotkey_config.record_hotkey == Some(key) => {
+                    HotkeyEvent::KeyPress(key) if hotkey_config.record_hotkey == Some(key) => {
                         if press_time.get().is_some() {
-                            return None;
+                            return true;
                         }
 
                         let current_state = state.get_state();
                         if matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING) {
-                            log::info!(
-                                "ignoring record hotkey while background work is still running"
-                            );
-                            return None;
+                            log::info!("ignoring record hotkey while background work is still running");
+                            return true;
                         }
 
                         let action = match current_state {
@@ -129,19 +140,19 @@ pub fn spawn_hotkey_thread(
                         if action.is_some() {
                             press_time.set(Some(Instant::now()));
                             record_hotkey_action.set(action);
-                            return None;
+                            return true;
                         }
 
-                        Some(event)
+                        false
                     }
-                    EventType::KeyRelease(key) if hotkey_config.record_hotkey == Some(key) => {
+                    HotkeyEvent::KeyRelease(key) if hotkey_config.record_hotkey == Some(key) => {
                         let Some(pressed_at) = press_time.get() else {
-                            return None;
+                            return true;
                         };
 
                         let Some(action) = record_hotkey_action.get() else {
                             press_time.set(None);
-                            return None;
+                            return true;
                         };
 
                         press_time.set(None);
@@ -149,7 +160,9 @@ pub fn spawn_hotkey_thread(
 
                         match action {
                             RecordHotkeyAction::StartRecording => {
-                                if pressed_at.elapsed() >= Duration::from_millis(hotkey_config.hold_ms) {
+                                if pressed_at.elapsed()
+                                    >= Duration::from_millis(hotkey_config.hold_ms)
+                                {
                                     if hotkey_config.auto_transform_enabled {
                                         stop_recording_and_transform_and_paste(
                                             &state,
@@ -157,7 +170,11 @@ pub fn spawn_hotkey_thread(
                                             "hold release",
                                         );
                                     } else {
-                                        stop_recording_and_paste(&state, &controller, "hold release");
+                                        stop_recording_and_paste(
+                                            &state,
+                                            &controller,
+                                            "hold release",
+                                        );
                                     }
                                 } else {
                                     log::info!("recording (tap to stop)");
@@ -185,14 +202,14 @@ pub fn spawn_hotkey_thread(
                             },
                         }
 
-                        None
+                        true
                     }
-                    EventType::KeyPress(key)
+                    HotkeyEvent::KeyPress(key)
                         if hotkey_config.transformation_hotkey_enabled
                             && hotkey_config.transform_hotkey == Some(key) =>
                     {
                         if transform_hotkey_is_down.replace(true) {
-                            return None;
+                            return true;
                         }
 
                         let current_state = state.get_state();
@@ -202,15 +219,15 @@ pub fn spawn_hotkey_thread(
                             );
                         }
 
-                        None
+                        true
                     }
-                    EventType::KeyRelease(key)
+                    HotkeyEvent::KeyRelease(key)
                         if hotkey_config.transformation_hotkey_enabled
                             && hotkey_config.transform_hotkey == Some(key) =>
                     {
                         let was_down = transform_hotkey_is_down.replace(false);
                         if !was_down {
-                            return None;
+                            return true;
                         }
 
                         match state.get_state() {
@@ -218,7 +235,9 @@ pub fn spawn_hotkey_thread(
                                 Ok(()) => {
                                     state.set_overlay_text_opacity(0.02);
                                     state.set_state(STATE_PROCESSING);
-                                    log::info!("stopping recording and transforming buffered text");
+                                    log::info!(
+                                        "stopping recording and transforming buffered text"
+                                    );
                                 }
                                 Err(error) => {
                                     log::error!(
@@ -240,12 +259,12 @@ pub fn spawn_hotkey_thread(
                             _ => {}
                         }
 
-                        None
+                        true
                     }
-                    _ => Some(event),
+                    _ => false,
                 }
             }) {
-                log::error!("rdev grab failed: {:?}", error);
+                log::error!("global hotkey tap failed: {}", error);
             }
         })
         .expect("failed to spawn hotkey thread");
@@ -349,5 +368,18 @@ pub(crate) fn parse_key(name: &str) -> Option<Key> {
         "LeftArrow" | "Left" => Some(Key::LeftArrow),
         "RightArrow" | "Right" => Some(Key::RightArrow),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_key;
+    use rdev::Key;
+
+    #[test]
+    fn parse_key_supports_navigation_and_modifier_keys() {
+        assert_eq!(parse_key("RightControl"), Some(Key::ControlRight));
+        assert_eq!(parse_key("ForwardDelete"), Some(Key::Delete));
+        assert_eq!(parse_key("PageDown"), Some(Key::PageDown));
     }
 }
