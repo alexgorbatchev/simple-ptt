@@ -185,28 +185,31 @@ impl SettingsWindow {
         content_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
 
         let mut current_y = CONTENT_HEIGHT - CONTENT_TOP_PADDING;
-        let path_title = make_section_title(mtm, "Config file");
+        let path_row_y = current_y - 2.0;
+        let path_title = NSTextField::labelWithString(&NSString::from_str("Config file"), mtm);
+        path_title.setFont(Some(&settings_font()));
+        path_title.setTextColor(Some(&NSColor::secondaryLabelColor()));
         set_view_frame(
             &*path_title,
             HORIZONTAL_PADDING,
-            current_y,
-            220.0,
-            SECTION_HEIGHT,
+            path_row_y,
+            LABEL_WIDTH,
+            FIELD_HEIGHT,
         );
         content_view.addSubview(&path_title);
-        current_y -= SECTION_HEIGHT + 6.0;
 
-        let path_text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
-        configure_wrapping_label(&path_text_field);
+        let path_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        path_text_field.setFont(Some(&settings_font()));
+        path_text_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
         set_view_frame(
             &path_text_field,
-            HORIZONTAL_PADDING,
-            current_y - 32.0,
-            WINDOW_WIDTH - (HORIZONTAL_PADDING * 2.0),
-            36.0,
+            FIELD_X,
+            path_row_y,
+            WINDOW_WIDTH - FIELD_X - HORIZONTAL_PADDING,
+            FIELD_HEIGHT,
         );
         content_view.addSubview(&path_text_field);
-        current_y -= 54.0;
+        current_y -= FIELD_HEIGHT + ROW_GAP;
 
         let available_font_family_names = available_font_family_names(mtm);
 
