@@ -209,19 +209,21 @@ fn default_transformation_system_prompt() -> String {
         "an LLM agent. Rewrite the input as clean, direct written instructions while preserving ",
         "the original meaning and intent. Do not blindly remove words just because they sound ",
         "like filler. Instead, infer the final intended wording. If the speaker starts a phrase, ",
-        "revises it, or corrects themselves, keep only the semantically final version and omit ",
-        "intermediate wording that was clearly discarded by the correction. Remove hesitations, ",
-        "repair trails, and dictation noise only when they are not part of the intended content. ",
-        "Fix punctuation, capitalization, and obvious transcription mistakes. Preserve technical ",
-        "jargon, product names, API names, CLI flags, file paths, environment variable names, ",
-        "and programmer vocabulary when clearly intended. If the speaker is clearly dictating ",
-        "structure such as bullet points, numbered lists, headings, or short action items, ",
-        "format the output accordingly. When the speaker is clearly dictating symbols or meta ",
-        "words in a technical context, convert them to the intended characters, for example dash ",
-        "to -, underscore to _, slash to /, backslash to \\, colon to :, dot to ., open paren ",
-        "to (, close paren to ), open bracket to [, close bracket to ], open brace to {{, and ",
-        "close brace to }}. Do not add new facts, commentary, or formatting beyond what is ",
-        "implied by the input. Return only the transformed text."
+        "revises it, corrects themselves, retracts something, or abandons an editorial aside, ",
+        "keep only the semantically final wording and omit superseded intermediate phrasing. ",
+        "Collapse false starts, self-repairs, retractions, and abandoned side instructions into ",
+        "the speaker's final intended wording. Remove hesitations, repair trails, and dictation ",
+        "noise only when they are not part of the intended content. Fix punctuation, ",
+        "capitalization, and obvious transcription mistakes. Preserve technical jargon, product ",
+        "names, API names, CLI flags, file paths, environment variable names, and programmer ",
+        "vocabulary when clearly intended. If the speaker is clearly dictating structure such as ",
+        "bullet points, numbered lists, headings, or short action items, format the output ",
+        "accordingly. When the speaker is clearly dictating symbols or meta words in a technical ",
+        "context, convert them to the intended characters, for example dash to -, underscore to ",
+        "_, slash to /, backslash to \\, colon to :, dot to ., open paren to (, close paren to ",
+        "), open bracket to [, close bracket to ], open brace to {{, and close brace to }}. Do ",
+        "not add new facts, commentary, or formatting beyond what is implied by the input. ",
+        "Return only the transformed text."
     )
     .into()
 }
@@ -806,7 +808,10 @@ fn override_config_path() -> Option<PathBuf> {
 mod tests {
     use std::sync::{Mutex, OnceLock};
 
-    use super::{materialize_runtime_config, save_config, Config, UiMeterStyle};
+    use super::{
+        default_transformation_system_prompt, materialize_runtime_config, save_config, Config,
+        UiMeterStyle,
+    };
 
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -909,5 +914,14 @@ mod tests {
             Some(value) => std::env::set_var("OPENAI_API_KEY", value),
             None => std::env::remove_var("OPENAI_API_KEY"),
         }
+    }
+
+    #[test]
+    fn default_transformation_prompt_mentions_self_repairs_and_retractions() {
+        let prompt = default_transformation_system_prompt();
+
+        assert!(prompt.contains("self-repairs"));
+        assert!(prompt.contains("retractions"));
+        assert!(prompt.contains("final intended wording"));
     }
 }

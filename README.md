@@ -323,7 +323,7 @@ Billing notes for `deepgram.project_id`:
 | `provider` | No | none | Rig provider name for the transformation request. See the canonical supported values below. |
 | `api_key` | No | none | API key used for the transformation provider. If omitted, the app falls back to the provider-specific environment variables listed below. |
 | `model` | No | `gpt-5.4-mini` | Model name used for the transformation request. |
-| `system_prompt` | No | built-in prompt | Optional override for the built-in transformation prompt. The built-in prompt rewrites raw dictation into clean instructions, fixes punctuation and obvious transcription errors, preserves technical terms, and can convert spoken symbol words such as “underscore” or “slash” into their literal characters when clearly intended. |
+| `system_prompt` | No | built-in prompt | Optional override for the built-in transformation prompt. The built-in prompt rewrites raw dictation into clean instructions, collapses false starts / self-repairs / retractions into the final intended wording, fixes punctuation and obvious transcription errors, preserves technical terms, and can convert spoken symbol words such as “underscore” or “slash” into their literal characters when clearly intended. |
 
 Canonical supported values for `transformation.provider`:
 
