@@ -175,6 +175,8 @@ The settings window is opened from the menu bar.
 
 It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments.
 
+The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately.
+
 Apply behavior:
 
 - overlay styling, hotkeys, `mic.gain`, and `mic.hold_ms` apply immediately
@@ -238,10 +240,12 @@ model = "gpt-5.4-mini"
 
 ### Supported hotkey names
 
-Hotkeys currently accept a **single key name only**. Multi-key chords such as `Cmd+Shift+Space` are not supported.
+Hotkeys accept either a **single key** or a **modifier chord** such as `Shift+Cmd+Z`.
 
-Supported names are:
+Supported primary keys are:
 
+- letters: `A` through `Z`
+- digits: `0` through `9`
 - function keys: `F1` through `F12`
 - `Escape` / `Esc`
 - `Space`
@@ -256,13 +260,22 @@ Supported names are:
 - `Home`, `End`, `PageUp`, `PageDown`
 - `UpArrow`, `DownArrow`, `LeftArrow`, `RightArrow`, and their short forms `Up`, `Down`, `Left`, `Right`
 
+Supported chord modifiers are:
+
+- `Shift`
+- `Ctrl` / `Control`
+- `Alt` / `Option`
+- `Cmd` / `Command` / `Meta`
+
+A multi-key hotkey must contain exactly one non-modifier primary key.
+
 ### Config values
 
 #### `[ui]`
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
-| `hotkey` | No | `F5` | Global record key. See the record-hotkey behavior above. Only single-key values are supported. |
+| `hotkey` | No | `F5` | Global record key. See the record-hotkey behavior above. Accepts either a single key or a modifier chord such as `Shift+Cmd+Z`. |
 | `font_name` | No | system default | Overlay font family name. The legacy alias `overlay_font_family` is also accepted. |
 | `font_size` | No | `12.0` | Main overlay font size. |
 | `footer_font_size` | No | derived from `font_size` | Footer text font size. |
@@ -298,7 +311,7 @@ Billing notes for `deepgram.project_id`:
 
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
-| `hotkey` | No | `F6` | Global transform key. While recording, it stops and transforms without auto-pasting. While a buffer is ready, it transforms the buffered text in place. Only single-key values are supported. |
+| `hotkey` | No | `F6` | Global transform key. While recording, it stops and transforms without auto-pasting. While a buffer is ready, it transforms the buffered text in place. Accepts either a single key or a modifier chord such as `Shift+Cmd+Z`. |
 | `auto` | No | `true` | When `true` and transformation is configured, stopping recording with the record hotkey transforms the transcript and pastes the transformed result. When `false`, the record hotkey keeps the raw-paste behavior. |
 | `provider` | No | none | Rig provider name for the transformation request. See the canonical supported values below. |
 | `api_key` | No | none | API key used for the transformation provider. If omitted, the app falls back to the provider-specific environment variables listed below. |

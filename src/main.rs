@@ -3,6 +3,8 @@ mod audio;
 mod billing;
 mod config;
 mod hotkey;
+mod hotkey_binding;
+mod hotkey_capture;
 mod icon;
 mod overlay;
 mod settings;
@@ -87,6 +89,7 @@ fn run_graphical_application() -> Result<(), String> {
 
     let config_store =
         settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
+    let hotkey_capture_controller = hotkey_capture::HotkeyCaptureController::new();
     let shared_state = state::AppState::new();
 
     let billing_controller =
@@ -104,6 +107,7 @@ fn run_graphical_application() -> Result<(), String> {
         billing_controller.clone(),
         transcription_controller,
         config_store.clone(),
+        hotkey_capture_controller.clone(),
     );
 
     let mtm = MainThreadMarker::new().expect("must run on main thread");
@@ -112,12 +116,13 @@ fn run_graphical_application() -> Result<(), String> {
         mtm,
         app::overlay_style_from_config(&runtime_config),
         config_store,
+        hotkey_capture_controller.clone(),
         billing_controller,
         audio_controller,
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-    app::setup_status_polling(delegate.clone(), shared_state);
+    app::setup_status_polling(delegate.clone(), shared_state, hotkey_capture_controller);
 
     log::info!("starting NSApplication run loop");
     ns_app.run();

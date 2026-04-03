@@ -9,6 +9,7 @@ use objc2_app_kit::{
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::config::{Config, UiMeterStyle};
+use crate::hotkey_capture::HotkeyCaptureTarget;
 
 const WINDOW_HEIGHT: f64 = 760.0;
 const WINDOW_WIDTH: f64 = 760.0;
@@ -17,6 +18,9 @@ const HORIZONTAL_PADDING: f64 = 20.0;
 const LABEL_WIDTH: f64 = 180.0;
 const FIELD_HEIGHT: f64 = 24.0;
 const FIELD_WIDTH: f64 = 500.0;
+const HOTKEY_FIELD_WIDTH: f64 = 390.0;
+const CAPTURE_BUTTON_WIDTH: f64 = 100.0;
+const CAPTURE_BUTTON_GAP: f64 = 10.0;
 const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 const ROW_GAP: f64 = 10.0;
 const SECTION_GAP: f64 = 20.0;
@@ -34,6 +38,7 @@ pub struct SettingsWindow {
     path_text_field: Retained<NSTextField>,
     status_text_field: Retained<NSTextField>,
     ui_hotkey_field: Retained<NSTextField>,
+    ui_hotkey_capture_button: Retained<NSButton>,
     ui_font_name_field: Retained<NSTextField>,
     ui_font_size_field: Retained<NSTextField>,
     ui_footer_font_size_field: Retained<NSTextField>,
@@ -51,6 +56,7 @@ pub struct SettingsWindow {
     deepgram_endpointing_ms_field: Retained<NSTextField>,
     deepgram_utterance_end_ms_field: Retained<NSTextField>,
     transformation_hotkey_field: Retained<NSTextField>,
+    transformation_hotkey_capture_button: Retained<NSButton>,
     transformation_auto_checkbox: Retained<NSButton>,
     transformation_provider_field: Retained<NSTextField>,
     transformation_api_key_field: Retained<NSTextField>,
@@ -142,8 +148,15 @@ impl SettingsWindow {
         current_y -= 54.0;
 
         current_y = add_section_title(&content_view, mtm, current_y, "UI");
-        let ui_hotkey_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Record hotkey");
+        let (ui_hotkey_field, ui_hotkey_capture_button) = add_labeled_text_field_with_button(
+            &content_view,
+            target,
+            mtm,
+            &mut current_y,
+            "Record hotkey",
+            "Capture…",
+            sel!(captureRecordHotkey:),
+        );
         let ui_font_name_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Font name");
         let ui_font_size_field =
@@ -177,8 +190,16 @@ impl SettingsWindow {
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Utterance end ms");
 
         current_y = add_section_title(&content_view, mtm, current_y, "Transformation");
-        let transformation_hotkey_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Transform hotkey");
+        let (transformation_hotkey_field, transformation_hotkey_capture_button) =
+            add_labeled_text_field_with_button(
+                &content_view,
+                target,
+                mtm,
+                &mut current_y,
+                "Transform hotkey",
+                "Capture…",
+                sel!(captureTransformHotkey:),
+            );
         let transformation_auto_checkbox = add_checkbox(
             &content_view,
             mtm,
@@ -228,6 +249,7 @@ impl SettingsWindow {
             path_text_field,
             status_text_field,
             ui_hotkey_field,
+            ui_hotkey_capture_button,
             ui_font_name_field,
             ui_font_size_field,
             ui_footer_font_size_field,
@@ -245,6 +267,7 @@ impl SettingsWindow {
             deepgram_endpointing_ms_field,
             deepgram_utterance_end_ms_field,
             transformation_hotkey_field,
+            transformation_hotkey_capture_button,
             transformation_auto_checkbox,
             transformation_provider_field,
             transformation_api_key_field,
@@ -419,6 +442,50 @@ impl SettingsWindow {
             .setStringValue(&NSString::from_str(message));
     }
 
+    pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
+        self.set_hotkey_capture_state(Some(target));
+        self.set_status("Press a key, or Esc to cancel");
+    }
+
+    pub fn finish_hotkey_capture(&self) {
+        self.set_hotkey_capture_state(None);
+    }
+
+    pub fn hotkey_value(&self, target: HotkeyCaptureTarget) -> String {
+        match target {
+            HotkeyCaptureTarget::Record => self.ui_hotkey_field.stringValue().to_string(),
+            HotkeyCaptureTarget::Transform => {
+                self.transformation_hotkey_field.stringValue().to_string()
+            }
+        }
+    }
+
+    pub fn set_hotkey_value(&self, target: HotkeyCaptureTarget, value: &str) {
+        match target {
+            HotkeyCaptureTarget::Record => {
+                self.ui_hotkey_field
+                    .setStringValue(&NSString::from_str(value));
+            }
+            HotkeyCaptureTarget::Transform => {
+                self.transformation_hotkey_field
+                    .setStringValue(&NSString::from_str(value));
+            }
+        }
+    }
+
+    fn set_hotkey_capture_state(&self, active_target: Option<HotkeyCaptureTarget>) {
+        set_capture_button_state(
+            &self.ui_hotkey_capture_button,
+            active_target == Some(HotkeyCaptureTarget::Record),
+            active_target.is_none(),
+        );
+        set_capture_button_state(
+            &self.transformation_hotkey_capture_button,
+            active_target == Some(HotkeyCaptureTarget::Transform),
+            active_target.is_none(),
+        );
+    }
+
     fn scroll_to_top(&self) {
         let clip_view = self.scroll_view.contentView();
         let Some(document_view) = self.scroll_view.documentView() else {
@@ -489,6 +556,60 @@ fn add_labeled_text_field(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     text_field
+}
+
+fn add_labeled_text_field_with_button(
+    content_view: &NSView,
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+    button_title: &str,
+    action: objc2::runtime::Sel,
+) -> (Retained<NSTextField>, Retained<NSButton>) {
+    let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+    label_field.setFont(Some(&settings_font()));
+    label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &*label_field,
+        HORIZONTAL_PADDING,
+        *current_y,
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&label_field);
+
+    let text_field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
+    text_field.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*text_field,
+        FIELD_X,
+        *current_y - 2.0,
+        HOTKEY_FIELD_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&text_field);
+
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(button_title),
+            Some(target),
+            Some(action),
+            mtm,
+        )
+    };
+    button.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*button,
+        FIELD_X + HOTKEY_FIELD_WIDTH + CAPTURE_BUTTON_GAP,
+        *current_y - 4.0,
+        CAPTURE_BUTTON_WIDTH,
+        FIELD_HEIGHT + 4.0,
+    );
+    content_view.addSubview(&button);
+
+    *current_y -= FIELD_HEIGHT + ROW_GAP;
+    (text_field, button)
 }
 
 fn add_labeled_text_field_with_hint(
@@ -624,6 +745,15 @@ fn settings_font() -> Retained<NSFont> {
 
 fn environment_hint_message(variable_name: &str) -> String {
     format!("Using ${} from environment.", variable_name)
+}
+
+fn set_capture_button_state(button: &NSButton, is_active: bool, is_enabled: bool) {
+    button.setTitle(if is_active {
+        ns_string!("Capturing…")
+    } else {
+        ns_string!("Capture…")
+    });
+    button.setEnabled(is_enabled);
 }
 
 fn set_hint_text(label: &NSTextField, message: Option<String>) {

@@ -15,7 +15,10 @@ use objc2_foundation::{
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
 use crate::billing::BillingController;
 use crate::config::{self, Config};
-use crate::hotkey::parse_key;
+use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding};
+use crate::hotkey_capture::{
+    capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCaptureTarget,
+};
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::settings::LiveConfigStore;
@@ -34,6 +37,7 @@ pub struct Ivars {
     billing_controller: BillingController,
     billing_menu_item: OnceCell<Retained<NSMenuItem>>,
     config_store: LiveConfigStore,
+    hotkey_capture_controller: HotkeyCaptureController,
     overlay_style: OverlayStyle,
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
@@ -191,11 +195,24 @@ define_class!(
             self.present_settings_window();
         }
 
+        #[unsafe(method(captureRecordHotkey:))]
+        fn capture_record_hotkey(&self, _sender: Option<&AnyObject>) {
+            self.begin_hotkey_capture(HotkeyCaptureTarget::Record);
+        }
+
+        #[unsafe(method(captureTransformHotkey:))]
+        fn capture_transform_hotkey(&self, _sender: Option<&AnyObject>) {
+            self.begin_hotkey_capture(HotkeyCaptureTarget::Transform);
+        }
+
         #[unsafe(method(saveSettings:))]
         fn save_settings(&self, _sender: Option<&AnyObject>) {
             let Some(settings_window) = self.ivars().settings_window.get() else {
                 return;
             };
+
+            self.ivars().hotkey_capture_controller.cancel();
+            settings_window.finish_hotkey_capture();
 
             let proposed_config = match settings_window.read_config() {
                 Ok(config) => config,
@@ -263,6 +280,7 @@ impl AppDelegate {
         mtm: MainThreadMarker,
         overlay_style: OverlayStyle,
         config_store: LiveConfigStore,
+        hotkey_capture_controller: HotkeyCaptureController,
         billing_controller: BillingController,
         audio_controller: AudioController,
     ) -> Retained<Self> {
@@ -271,6 +289,7 @@ impl AppDelegate {
             billing_controller,
             billing_menu_item: OnceCell::new(),
             config_store,
+            hotkey_capture_controller,
             overlay_style,
             active_status_bar_icon: make_status_bar_active_icon(mtm),
             idle_status_bar_icon: make_status_bar_icon(mtm),
@@ -286,12 +305,62 @@ impl AppDelegate {
             return;
         };
 
+        self.ivars().hotkey_capture_controller.cancel();
+        settings_window.finish_hotkey_capture();
+
         let current_file_config = self.ivars().config_store.current_file();
         settings_window.load_from_config(
             &current_file_config,
             &self.ivars().config_store.path().display().to_string(),
         );
         settings_window.show(MainThreadMarker::from(self));
+    }
+
+    fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        self.ivars().hotkey_capture_controller.begin_capture(target);
+        settings_window.begin_hotkey_capture(target);
+    }
+
+    fn handle_pending_hotkey_capture(&self) {
+        let Some(outcome) = self.ivars().hotkey_capture_controller.take_outcome() else {
+            return;
+        };
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        settings_window.finish_hotkey_capture();
+
+        match outcome {
+            HotkeyCaptureOutcome::Cancelled { .. } => {
+                settings_window.set_status("Hotkey capture canceled.");
+            }
+            HotkeyCaptureOutcome::Captured { target, binding } => {
+                let Some(captured_name) = format_hotkey_binding(binding) else {
+                    settings_window.set_status("That hotkey is not supported.");
+                    return;
+                };
+
+                let other_target = match target {
+                    HotkeyCaptureTarget::Record => HotkeyCaptureTarget::Transform,
+                    HotkeyCaptureTarget::Transform => HotkeyCaptureTarget::Record,
+                };
+                let other_hotkey = settings_window.hotkey_value(other_target);
+                if parse_hotkey_binding(other_hotkey.as_str()).ok() == Some(binding) {
+                    settings_window.set_status("Record and transform hotkeys must be different.");
+                    return;
+                }
+
+                settings_window.set_hotkey_value(target, &captured_name);
+                if let Some(message) = capture_outcome_message(outcome) {
+                    settings_window.set_status(&message);
+                }
+            }
+        }
     }
 
     pub fn update_ui(
@@ -303,6 +372,7 @@ impl AppDelegate {
         overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
+        self.handle_pending_hotkey_capture();
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
@@ -350,12 +420,8 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
 }
 
 fn validate_settings_config(config: &Config) -> Result<(), String> {
-    if parse_key(config.ui.hotkey.as_str()).is_none() {
-        return Err(format!(
-            "record hotkey '{}' is not supported",
-            config.ui.hotkey
-        ));
-    }
+    let record_hotkey = parse_hotkey_binding(config.ui.hotkey.as_str())
+        .map_err(|error| format!("record hotkey is invalid: {}", error))?;
 
     if !config.ui.font_size.is_finite() || config.ui.font_size <= 0.0 {
         return Err("Font size must be a positive number".to_owned());
@@ -377,13 +443,9 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
 
     if let Some(provider) = config.transformation.provider.as_deref().map(str::trim) {
         if !provider.is_empty() {
-            if parse_key(config.transformation.hotkey.as_str()).is_none() {
-                return Err(format!(
-                    "transform hotkey '{}' is not supported",
-                    config.transformation.hotkey
-                ));
-            }
-            if config.ui.hotkey == config.transformation.hotkey {
+            let transform_hotkey = parse_hotkey_binding(config.transformation.hotkey.as_str())
+                .map_err(|error| format!("transform hotkey is invalid: {}", error))?;
+            if record_hotkey == transform_hotkey {
                 return Err("record and transform hotkeys must be different".to_owned());
             }
             config.resolve_transformation_config()?;
@@ -510,7 +572,11 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
     show_modal_alert(message_text, informative_text);
 }
 
-pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState>) {
+pub fn setup_status_polling(
+    delegate: Retained<AppDelegate>,
+    state: Arc<AppState>,
+    hotkey_capture_controller: HotkeyCaptureController,
+) {
     let delegate_addr = Retained::as_ptr(&delegate) as usize;
     std::mem::forget(delegate);
 
@@ -538,10 +604,12 @@ pub fn setup_status_polling(delegate: Retained<AppDelegate>, state: Arc<AppState
                 let should_animate_meter = current_state == STATE_RECORDING;
                 let should_animate_overlay =
                     matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
+                let hotkey_capture_update_pending = hotkey_capture_controller.has_pending_outcome();
                 if !ui_changed
                     && !mic_meter_changed
                     && !should_animate_meter
                     && !should_animate_overlay
+                    && !hotkey_capture_update_pending
                 {
                     continue;
                 }
