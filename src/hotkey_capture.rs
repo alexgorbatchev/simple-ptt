@@ -41,6 +41,8 @@ struct HotkeyCaptureState {
     pending_outcome: Option<HotkeyCaptureOutcome>,
     pending_preview: Option<HotkeyCapturePreview>,
     pending_single_modifier_key: Option<Key>,
+    pending_captured_key_release: Option<Key>,
+    settings_window_visible: bool,
 }
 
 impl HotkeyCaptureController {
@@ -58,6 +60,7 @@ impl HotkeyCaptureController {
                 text: String::new(),
             });
             state.pending_single_modifier_key = None;
+            state.pending_captured_key_release = None;
         }
     }
 
@@ -68,7 +71,29 @@ impl HotkeyCaptureController {
             state.pending_outcome = None;
             state.pending_preview = None;
             state.pending_single_modifier_key = None;
+            state.pending_captured_key_release = None;
         }
+    }
+
+    pub fn set_settings_window_visible(&self, visible: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.settings_window_visible = visible;
+            if !visible {
+                state.active_target = None;
+                state.active_modifiers = HotkeyModifiers::default();
+                state.pending_outcome = None;
+                state.pending_preview = None;
+                state.pending_single_modifier_key = None;
+                state.pending_captured_key_release = None;
+            }
+        }
+    }
+
+    pub fn settings_window_visible(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.settings_window_visible)
+            .unwrap_or(false)
     }
 
     pub fn has_pending_ui_update(&self) -> bool {
@@ -105,6 +130,7 @@ impl HotkeyCaptureController {
             state.active_modifiers = HotkeyModifiers::default();
             state.pending_preview = None;
             state.pending_single_modifier_key = None;
+            state.pending_captured_key_release = None;
             state.pending_outcome = Some(HotkeyCaptureOutcome::Cancelled { target });
             return true;
         }
@@ -126,6 +152,7 @@ impl HotkeyCaptureController {
         state.active_modifiers = HotkeyModifiers::default();
         state.pending_preview = None;
         state.pending_single_modifier_key = None;
+        state.pending_captured_key_release = Some(key);
         state.pending_outcome = Some(HotkeyCaptureOutcome::Captured {
             target,
             binding: HotkeyBinding {
@@ -140,6 +167,12 @@ impl HotkeyCaptureController {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
+
+        if state.pending_captured_key_release == Some(key) {
+            state.pending_captured_key_release = None;
+            return true;
+        }
+
         let Some(target) = state.active_target else {
             return false;
         };
@@ -151,6 +184,7 @@ impl HotkeyCaptureController {
                 state.active_target = None;
                 state.pending_preview = None;
                 state.pending_single_modifier_key = None;
+                state.pending_captured_key_release = None;
                 state.pending_outcome = Some(HotkeyCaptureOutcome::Captured {
                     target,
                     binding: HotkeyBinding {
@@ -348,5 +382,31 @@ mod tests {
                 text: "Shift".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn captured_non_modifier_release_stays_consumed_after_capture_completes() {
+        let controller = HotkeyCaptureController::new();
+        controller.begin_capture(HotkeyCaptureTarget::Record);
+        let _ = controller.take_preview();
+
+        assert!(controller.handle_key_press(Key::F5, HotkeyModifiers::default()));
+        assert!(controller.handle_key_release(Key::F5));
+        assert!(!controller.handle_key_release(Key::F5));
+    }
+
+    #[test]
+    fn hiding_settings_window_clears_capture_state() {
+        let controller = HotkeyCaptureController::new();
+        controller.set_settings_window_visible(true);
+        controller.begin_capture(HotkeyCaptureTarget::Transform);
+        let _ = controller.take_preview();
+
+        controller.set_settings_window_visible(false);
+
+        assert!(!controller.settings_window_visible());
+        assert!(!controller.handle_key_press(Key::F6, HotkeyModifiers::default()));
+        assert_eq!(controller.take_preview(), None);
+        assert_eq!(controller.take_outcome(), None);
     }
 }

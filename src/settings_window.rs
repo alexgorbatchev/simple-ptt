@@ -1,13 +1,13 @@
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType,
     NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager,
     NSPopUpButton, NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
@@ -34,6 +34,8 @@ const SECTION_HEIGHT: f64 = 22.0;
 const SECTION_TITLE_BOTTOM_GAP: f64 = 10.0;
 const PROMPT_HEIGHT: f64 = 270.0;
 const STATUS_HEIGHT: f64 = 40.0;
+const BUTTON_BAR_Y: f64 = 10.0;
+const BUTTON_BAR_HEIGHT: f64 = 30.0;
 const ENV_HINT_HEIGHT: f64 = 18.0;
 const SETTINGS_FONT_SIZE: f64 = 12.0;
 const SETTINGS_FONT_WEIGHT: f64 = 0.0;
@@ -44,6 +46,44 @@ const INPUT_BORDER_WIDTH: f64 = 1.0;
 const INPUT_CORNER_RADIUS: f64 = 6.0;
 const LABEL_VISUAL_CENTER_NUDGE: f64 = -4.0;
 const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
+const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
+
+// Source: Deepgram model docs and live streaming docs.
+// - https://developers.deepgram.com/docs/model
+// - https://developers.deepgram.com/docs/live-streaming-audio
+// Whisper and custom model IDs are intentionally excluded here because this app
+// uses live streaming transcription and Whisper is documented as pre-recorded-only,
+// while custom IDs cannot be enumerated statically.
+const DEEPGRAM_MODEL_OPTIONS: &[&str] = &[
+    "flux",
+    "nova-3",
+    "nova-3-general",
+    "nova-3-medical",
+    "nova-2-general",
+    "nova-2-meeting",
+    "nova-2-phonecall",
+    "nova-2-voicemail",
+    "nova-2-finance",
+    "nova-2-conversationalai",
+    "nova-2-video",
+    "nova-2-medical",
+    "nova-2-drivethru",
+    "nova-2-automotive",
+    "nova-2-atc",
+    "nova-general",
+    "nova-phonecall",
+    "enhanced-general",
+    "enhanced-meeting",
+    "enhanced-phonecall",
+    "enhanced-finance",
+    "base-general",
+    "base-meeting",
+    "base-phonecall",
+    "base-voicemail",
+    "base-finance",
+    "base-conversationalai",
+    "base-video",
+];
 
 #[derive(Debug)]
 pub struct SettingsWindow {
@@ -66,13 +106,13 @@ pub struct SettingsWindow {
     deepgram_project_id_field: Retained<NSTextField>,
     deepgram_project_id_env_hint_field: Retained<NSTextField>,
     deepgram_language_field: Retained<NSTextField>,
-    deepgram_model_field: Retained<NSTextField>,
+    deepgram_model_popup: Retained<NSPopUpButton>,
     deepgram_endpointing_ms_field: Retained<NSTextField>,
     deepgram_utterance_end_ms_field: Retained<NSTextField>,
     transformation_hotkey_field: Retained<NSTextField>,
     transformation_hotkey_capture_button: Retained<NSButton>,
     transformation_auto_checkbox: Retained<NSButton>,
-    transformation_provider_field: Retained<NSTextField>,
+    transformation_provider_popup: Retained<NSPopUpButton>,
     transformation_api_key_field: Retained<NSTextField>,
     transformation_api_key_env_hint_field: Retained<NSTextField>,
     transformation_model_field: Retained<NSTextField>,
@@ -200,8 +240,8 @@ impl SettingsWindow {
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "Project ID");
         let deepgram_language_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Language");
-        let deepgram_model_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Model");
+        let deepgram_model_popup =
+            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Model");
         let deepgram_endpointing_ms_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Endpointing ms");
         let deepgram_utterance_end_ms_field =
@@ -224,8 +264,12 @@ impl SettingsWindow {
             &mut current_y,
             "Auto-transform when stopping with the record hotkey",
         );
-        let transformation_provider_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Provider");
+        let transformation_provider_popup =
+            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Provider");
+        unsafe {
+            transformation_provider_popup.setTarget(Some(target));
+            transformation_provider_popup.setAction(Some(sel!(transformationProviderChanged:)));
+        }
         let (transformation_api_key_field, transformation_api_key_env_hint_field) =
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "API key");
         let transformation_model_field =
@@ -242,7 +286,13 @@ impl SettingsWindow {
             )
         };
         cancel_button.setFont(Some(&settings_font()));
-        set_view_frame(&*cancel_button, WINDOW_WIDTH - 280.0, 10.0, 100.0, 30.0);
+        set_view_frame(
+            &*cancel_button,
+            WINDOW_WIDTH - 280.0,
+            BUTTON_BAR_Y,
+            100.0,
+            BUTTON_BAR_HEIGHT,
+        );
         root_view.addSubview(&cancel_button);
 
         let save_button = unsafe {
@@ -254,7 +304,13 @@ impl SettingsWindow {
             )
         };
         save_button.setFont(Some(&settings_font()));
-        set_view_frame(&*save_button, WINDOW_WIDTH - 170.0, 10.0, 150.0, 30.0);
+        set_view_frame(
+            &*save_button,
+            WINDOW_WIDTH - 170.0,
+            BUTTON_BAR_Y,
+            150.0,
+            BUTTON_BAR_HEIGHT,
+        );
         root_view.addSubview(&save_button);
 
         let status_text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
@@ -263,7 +319,7 @@ impl SettingsWindow {
         set_view_frame(
             &*status_text_field,
             20.0,
-            6.0,
+            vertically_centered_status_y(BUTTON_BAR_Y, BUTTON_BAR_HEIGHT),
             WINDOW_WIDTH - 320.0,
             STATUS_HEIGHT,
         );
@@ -294,13 +350,13 @@ impl SettingsWindow {
             deepgram_project_id_field,
             deepgram_project_id_env_hint_field,
             deepgram_language_field,
-            deepgram_model_field,
+            deepgram_model_popup,
             deepgram_endpointing_ms_field,
             deepgram_utterance_end_ms_field,
             transformation_hotkey_field,
             transformation_hotkey_capture_button,
             transformation_auto_checkbox,
-            transformation_provider_field,
+            transformation_provider_popup,
             transformation_api_key_field,
             transformation_api_key_env_hint_field,
             transformation_model_field,
@@ -308,6 +364,10 @@ impl SettingsWindow {
             available_font_family_names,
             hotkey_capture_restore_value: RefCell::new(None),
         }
+    }
+
+    pub fn set_delegate(&self, delegate: &ProtocolObject<dyn NSWindowDelegate>) {
+        self.window.setDelegate(Some(delegate));
     }
 
     pub fn show(&self, mtm: MainThreadMarker) {
@@ -378,8 +438,7 @@ impl SettingsWindow {
         );
         self.deepgram_language_field
             .setStringValue(&NSString::from_str(&config.deepgram.language));
-        self.deepgram_model_field
-            .setStringValue(&NSString::from_str(&config.deepgram.model));
+        populate_deepgram_model_popup(&self.deepgram_model_popup, &config.deepgram.model);
         self.deepgram_endpointing_ms_field
             .setStringValue(&NSString::from_str(
                 &config.deepgram.endpointing_ms.to_string(),
@@ -397,10 +456,10 @@ impl SettingsWindow {
             } else {
                 NSControlStateValueOff
             });
-        self.transformation_provider_field
-            .setStringValue(&NSString::from_str(
-                config.transformation.provider.as_deref().unwrap_or(""),
-            ));
+        populate_transformation_provider_popup(
+            &self.transformation_provider_popup,
+            config.transformation.provider.as_deref(),
+        );
         self.transformation_api_key_field
             .setStringValue(&NSString::from_str(
                 config.transformation.api_key.as_deref().unwrap_or(""),
@@ -444,7 +503,10 @@ impl SettingsWindow {
                 api_key: read_optional_string(&self.deepgram_api_key_field),
                 project_id: read_optional_string(&self.deepgram_project_id_field),
                 language: read_required_string(&self.deepgram_language_field, "Deepgram language")?,
-                model: read_required_string(&self.deepgram_model_field, "Deepgram model")?,
+                model: read_required_pop_up_button_string(
+                    &self.deepgram_model_popup,
+                    "Deepgram model",
+                )?,
                 endpointing_ms: read_required_u16(
                     &self.deepgram_endpointing_ms_field,
                     "Endpointing ms",
@@ -460,7 +522,9 @@ impl SettingsWindow {
                     "Transform hotkey",
                 )?,
                 auto: self.transformation_auto_checkbox.state() == NSControlStateValueOn,
-                provider: read_optional_string(&self.transformation_provider_field),
+                provider: read_optional_provider_pop_up_button_string(
+                    &self.transformation_provider_popup,
+                ),
                 api_key: read_optional_string(&self.transformation_api_key_field),
                 model: read_required_string(
                     &self.transformation_model_field,
@@ -474,6 +538,16 @@ impl SettingsWindow {
     pub fn set_status(&self, message: &str) {
         self.status_text_field
             .setStringValue(&NSString::from_str(message));
+    }
+
+    pub fn sync_transformation_api_key_env_hint(&self) {
+        let hint = crate::config::transformation_api_key_env_var_in_use(
+            read_optional_provider_pop_up_button_string(&self.transformation_provider_popup)
+                .as_deref(),
+            read_optional_string(&self.transformation_api_key_field).as_deref(),
+        )
+        .map(environment_hint_message);
+        set_hint_text(&self.transformation_api_key_env_hint_field, hint);
     }
 
     pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -940,6 +1014,50 @@ fn populate_meter_style_popup(popup_button: &NSPopUpButton, selected_meter_style
     popup_button.selectItemWithTitle(&selected_title);
 }
 
+fn populate_transformation_provider_popup(
+    popup_button: &NSPopUpButton,
+    selected_provider: Option<&str>,
+) {
+    popup_button.removeAllItems();
+    popup_button.addItemWithTitle(&NSString::from_str(TRANSFORMATION_PROVIDER_DISABLED_LABEL));
+    for provider in crate::config::supported_transformation_providers() {
+        popup_button.addItemWithTitle(&NSString::from_str(provider));
+    }
+
+    let Some(selected_provider) = selected_provider
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        popup_button.selectItemAtIndex(0);
+        return;
+    };
+
+    let selected_provider = NSString::from_str(selected_provider);
+    if popup_button.indexOfItemWithTitle(&selected_provider) < 0 {
+        popup_button.insertItemWithTitle_atIndex(&selected_provider, 1);
+    }
+    popup_button.selectItemWithTitle(&selected_provider);
+}
+
+fn populate_deepgram_model_popup(popup_button: &NSPopUpButton, selected_model: &str) {
+    popup_button.removeAllItems();
+    for model in DEEPGRAM_MODEL_OPTIONS {
+        popup_button.addItemWithTitle(&NSString::from_str(model));
+    }
+
+    let selected_model = selected_model.trim();
+    if selected_model.is_empty() {
+        popup_button.selectItemWithTitle(&NSString::from_str("nova-3"));
+        return;
+    }
+
+    let selected_model = NSString::from_str(selected_model);
+    if popup_button.indexOfItemWithTitle(&selected_model) < 0 {
+        popup_button.insertItemWithTitle_atIndex(&selected_model, 0);
+    }
+    popup_button.selectItemWithTitle(&selected_model);
+}
+
 fn environment_hint_message(variable_name: &str) -> String {
     format!("Using ${} from environment.", variable_name)
 }
@@ -959,6 +1077,10 @@ fn set_hint_text(label: &NSTextField, message: Option<String>) {
 
 fn vertically_centered_label_y(control_y: f64, control_height: f64) -> f64 {
     control_y + ((control_height - FIELD_HEIGHT) / 2.0) + LABEL_VISUAL_CENTER_NUDGE
+}
+
+fn vertically_centered_status_y(control_y: f64, control_height: f64) -> f64 {
+    control_y + ((control_height - STATUS_HEIGHT) / 2.0)
 }
 
 fn set_view_frame(view: &AnyObject, x: f64, y: f64, width: f64, height: f64) {
@@ -990,6 +1112,16 @@ fn read_optional_pop_up_button_string(popup_button: &NSPopUpButton) -> Option<St
     let selected_title = popup_button.titleOfSelectedItem()?.to_string();
     let trimmed_value = selected_title.trim();
     if trimmed_value.is_empty() || trimmed_value == SYSTEM_DEFAULT_FONT_LABEL {
+        None
+    } else {
+        Some(trimmed_value.to_owned())
+    }
+}
+
+fn read_optional_provider_pop_up_button_string(popup_button: &NSPopUpButton) -> Option<String> {
+    let selected_title = popup_button.titleOfSelectedItem()?.to_string();
+    let trimmed_value = selected_title.trim();
+    if trimmed_value.is_empty() || trimmed_value == TRANSFORMATION_PROVIDER_DISABLED_LABEL {
         None
     } else {
         Some(trimmed_value.to_owned())

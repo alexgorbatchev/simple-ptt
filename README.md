@@ -173,9 +173,9 @@ The menu contains:
 
 The settings window is opened from the menu bar.
 
-It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments. The font family control is a native drop-down populated from available macOS font families plus a system-default option, and the meter style control is also a native drop-down. **Cancel** closes the window without saving.
+It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments. The font family control is a native drop-down populated from available macOS font families plus a system-default option, the meter style control is also a native drop-down, the Deepgram model uses a curated model drop-down, and the transformation provider uses a supported-provider drop-down. **Cancel** closes the window without saving.
 
-The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. The hotkey field updates live as you press or release keys during capture. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately.
+The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. The hotkey field updates live as you press or release keys during capture. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately. While the settings window is open, the main global hotkeys are suspended so function keys and chords can be edited safely.
 
 Apply behavior:
 

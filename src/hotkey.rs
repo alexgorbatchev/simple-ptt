@@ -60,10 +60,13 @@ pub fn spawn_hotkey_thread(
 
             if let Err(error) = run_hotkey_event_loop(move |event| {
                 let current_modifiers = active_modifiers.get();
+                let settings_window_visible = hotkey_capture_controller.settings_window_visible();
                 let handled = match event {
                     HotkeyEvent::KeyPress(key) => {
                         if hotkey_capture_controller.handle_key_press(key, current_modifiers) {
                             true
+                        } else if settings_window_visible {
+                            false
                         } else {
                             handle_key_press(
                                 key,
@@ -81,6 +84,8 @@ pub fn spawn_hotkey_thread(
                     HotkeyEvent::KeyRelease(key) => {
                         if hotkey_capture_controller.handle_key_release(key) {
                             true
+                        } else if settings_window_visible {
+                            false
                         } else {
                             handle_key_release(
                                 key,

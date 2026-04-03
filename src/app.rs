@@ -4,11 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
+use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSImageScaling, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSWorkspace,
+    NSImageScaling, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
@@ -148,9 +148,11 @@ define_class!(
                 .billing_menu_item
                 .set(billing_item)
                 .expect("billing item must only be set once");
+            let settings_window = SettingsWindow::new(self, mtm);
+            settings_window.set_delegate(ProtocolObject::from_ref(self));
             self.ivars()
                 .settings_window
-                .set(SettingsWindow::new(self, mtm))
+                .set(settings_window)
                 .expect("settings window must only be set once");
 
             let config_file_missing = config_file_is_missing(self.ivars().config_store.path());
@@ -214,6 +216,15 @@ define_class!(
             self.begin_hotkey_capture(HotkeyCaptureTarget::Transform);
         }
 
+        #[unsafe(method(transformationProviderChanged:))]
+        fn transformation_provider_changed(&self, _sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+
+            settings_window.sync_transformation_api_key_env_hint();
+        }
+
         #[unsafe(method(cancelSettings:))]
         fn cancel_settings(&self, _sender: Option<&AnyObject>) {
             let Some(settings_window) = self.ivars().settings_window.get() else {
@@ -221,6 +232,9 @@ define_class!(
             };
 
             self.ivars().hotkey_capture_controller.cancel();
+            self.ivars()
+                .hotkey_capture_controller
+                .set_settings_window_visible(false);
             settings_window.cancel_hotkey_capture();
             settings_window.hide();
         }
@@ -293,6 +307,21 @@ define_class!(
             settings_window.set_status(&format!("Saved and applied settings. {}.", audio_message));
         }
     }
+
+    unsafe impl NSWindowDelegate for AppDelegate {
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+
+            self.ivars().hotkey_capture_controller.cancel();
+            self.ivars()
+                .hotkey_capture_controller
+                .set_settings_window_visible(false);
+            settings_window.cancel_hotkey_capture();
+        }
+    }
 );
 
 impl AppDelegate {
@@ -333,6 +362,9 @@ impl AppDelegate {
             &current_file_config,
             &self.ivars().config_store.path().display().to_string(),
         );
+        self.ivars()
+            .hotkey_capture_controller
+            .set_settings_window_visible(true);
         settings_window.show(MainThreadMarker::from(self));
     }
 

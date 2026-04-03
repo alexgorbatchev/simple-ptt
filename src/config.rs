@@ -282,28 +282,10 @@ impl Config {
     }
 
     pub fn transformation_api_key_env_var_in_use(&self) -> Option<&'static str> {
-        if self
-            .transformation
-            .api_key
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return None;
-        }
-
-        let provider = self
-            .transformation
-            .provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())?;
-
-        transformation_api_key_env_vars(provider)
-            .iter()
-            .copied()
-            .find(|variable_name| env_var_is_present(variable_name))
+        transformation_api_key_env_var_in_use(
+            self.transformation.provider.as_deref(),
+            self.transformation.api_key.as_deref(),
+        )
     }
 
     pub fn resolve_deepgram_api_key(&self) -> Result<String, String> {
@@ -407,6 +389,26 @@ fn env_var_is_present(variable_name: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub(crate) fn transformation_api_key_env_var_in_use(
+    provider: Option<&str>,
+    configured_api_key: Option<&str>,
+) -> Option<&'static str> {
+    if configured_api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return None;
+    }
+
+    let provider = provider.map(str::trim).filter(|value| !value.is_empty())?;
+
+    transformation_api_key_env_vars(provider)
+        .iter()
+        .copied()
+        .find(|variable_name| env_var_is_present(variable_name))
+}
+
 fn resolve_transformation_api_key(
     configured_api_key: Option<&str>,
     provider: &str,
@@ -451,7 +453,7 @@ fn transformation_api_key_env_vars(provider: &str) -> &'static [&'static str] {
     }
 }
 
-fn supported_transformation_providers() -> &'static [&'static str] {
+pub(crate) fn supported_transformation_providers() -> &'static [&'static str] {
     &[
         "anthropic",
         "cohere",
