@@ -17,6 +17,9 @@ use objc2_foundation::{
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
 use crate::billing::BillingController;
 use crate::config::{self, Config};
+use crate::deepgram_connection::{
+    DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
+};
 use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding};
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
@@ -44,6 +47,7 @@ pub struct Ivars {
     billing_controller: BillingController,
     billing_menu_item: OnceCell<Retained<NSMenuItem>>,
     config_store: LiveConfigStore,
+    deepgram_connection_controller: DeepgramConnectionController,
     hotkey_capture_controller: HotkeyCaptureController,
     overlay_style: OverlayStyle,
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
@@ -237,6 +241,11 @@ define_class!(
             self.start_transformation_model_action(TransformationModelAction::Check);
         }
 
+        #[unsafe(method(checkDeepgramConnection:))]
+        fn check_deepgram_connection(&self, _sender: Option<&AnyObject>) {
+            self.start_deepgram_connection_check();
+        }
+
         #[unsafe(method(cancelSettings:))]
         fn cancel_settings(&self, _sender: Option<&AnyObject>) {
             let Some(settings_window) = self.ivars().settings_window.get() else {
@@ -344,6 +353,7 @@ impl AppDelegate {
         config_store: LiveConfigStore,
         hotkey_capture_controller: HotkeyCaptureController,
         transformation_models_controller: TransformationModelsController,
+        deepgram_connection_controller: DeepgramConnectionController,
         billing_controller: BillingController,
         audio_controller: AudioController,
     ) -> Retained<Self> {
@@ -352,6 +362,7 @@ impl AppDelegate {
             billing_controller,
             billing_menu_item: OnceCell::new(),
             config_store,
+            deepgram_connection_controller,
             hotkey_capture_controller,
             overlay_style,
             active_status_bar_icon: make_status_bar_active_icon(mtm),
@@ -411,6 +422,21 @@ impl AppDelegate {
             provider,
             resolved_api_key,
             settings_window.transformation_model_value(),
+        ))
+    }
+
+    fn current_deepgram_check_request(&self) -> Result<DeepgramCheckRequest, String> {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return Err("settings window is not available".to_owned());
+        };
+
+        let mut effective_config = self.ivars().config_store.current_file();
+        effective_config.deepgram.api_key = settings_window.deepgram_api_key_value();
+        effective_config.deepgram.project_id = settings_window.deepgram_project_id_value();
+
+        Ok(DeepgramCheckRequest::new(
+            effective_config.resolve_deepgram_api_key()?,
+            effective_config.resolve_deepgram_project_id(),
         ))
     }
 
@@ -476,6 +502,25 @@ impl AppDelegate {
             .start_action(action, request);
     }
 
+    fn start_deepgram_connection_check(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        let request = match self.current_deepgram_check_request() {
+            Ok(request) => request,
+            Err(error) => {
+                settings_window.set_status(&error);
+                return;
+            }
+        };
+
+        settings_window.set_status("Checking Deepgram connection…");
+        self.ivars()
+            .deepgram_connection_controller
+            .start_check(request);
+    }
+
     fn handle_pending_transformation_model_updates(&self) {
         let Some(settings_window) = self.ivars().settings_window.get() else {
             return;
@@ -511,6 +556,34 @@ impl AppDelegate {
                     settings_window.set_status(&message);
                 }
                 TransformationModelUpdate::ActionFailed { message, .. } => {
+                    settings_window.set_status(&message);
+                }
+            }
+        }
+    }
+
+    fn handle_pending_deepgram_check_updates(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        while let Some(update) = self.ivars().deepgram_connection_controller.take_update() {
+            let current_request = self.current_deepgram_check_request().ok();
+            let update_request = match &update {
+                DeepgramCheckUpdate::ConnectionChecked { request, .. }
+                | DeepgramCheckUpdate::ActionFailed { request, .. } => request,
+            };
+            if current_request
+                .as_ref()
+                .map(|request| request.same_source_as(update_request))
+                != Some(true)
+            {
+                continue;
+            }
+
+            match update {
+                DeepgramCheckUpdate::ConnectionChecked { message, .. }
+                | DeepgramCheckUpdate::ActionFailed { message, .. } => {
                     settings_window.set_status(&message);
                 }
             }
@@ -593,6 +666,7 @@ impl AppDelegate {
         self.handle_pending_hotkey_capture_preview();
         self.handle_pending_hotkey_capture();
         self.handle_pending_transformation_model_updates();
+        self.handle_pending_deepgram_check_updates();
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
@@ -966,6 +1040,7 @@ pub fn setup_status_polling(
     state: Arc<AppState>,
     hotkey_capture_controller: HotkeyCaptureController,
     transformation_models_controller: TransformationModelsController,
+    deepgram_connection_controller: DeepgramConnectionController,
 ) {
     let delegate_addr = Retained::as_ptr(&delegate) as usize;
     std::mem::forget(delegate);
@@ -998,12 +1073,15 @@ pub fn setup_status_polling(
                     hotkey_capture_controller.has_pending_ui_update();
                 let transformation_models_update_pending =
                     transformation_models_controller.has_pending_ui_update();
+                let deepgram_connection_update_pending =
+                    deepgram_connection_controller.has_pending_ui_update();
                 if !ui_changed
                     && !mic_meter_changed
                     && !should_animate_meter
                     && !should_animate_overlay
                     && !hotkey_capture_update_pending
                     && !transformation_models_update_pending
+                    && !deepgram_connection_update_pending
                 {
                     continue;
                 }

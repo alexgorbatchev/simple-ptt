@@ -30,6 +30,8 @@ const CAPTURE_BUTTON_GAP: f64 = 10.0;
 const MODEL_COMBO_BOX_WIDTH: f64 = 320.0;
 const MODEL_ACTION_BUTTON_WIDTH: f64 = 80.0;
 const MODEL_ACTION_BUTTON_GAP: f64 = 10.0;
+const FIELD_WITH_ACTION_BUTTON_WIDTH: f64 =
+    FIELD_WIDTH - MODEL_ACTION_BUTTON_GAP - MODEL_ACTION_BUTTON_WIDTH;
 const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 const ROW_GAP: f64 = 10.0;
 const SECTION_BREAK_GAP: f64 = 12.0;
@@ -251,8 +253,19 @@ impl SettingsWindow {
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Hold ms");
 
         current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
-        let (deepgram_api_key_field, deepgram_api_key_env_hint_field) =
-            add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "API key");
+        let (
+            deepgram_api_key_field,
+            _deepgram_api_key_check_button,
+            deepgram_api_key_env_hint_field,
+        ) = add_labeled_text_field_with_hint_and_button(
+            &content_view,
+            target,
+            mtm,
+            &mut current_y,
+            "API key",
+            "Check",
+            sel!(checkDeepgramConnection:),
+        );
         let (deepgram_project_id_field, deepgram_project_id_env_hint_field) =
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "Project ID");
         let deepgram_language_field =
@@ -587,6 +600,14 @@ impl SettingsWindow {
         )
         .map(environment_hint_message);
         set_hint_text(&self.transformation_api_key_env_hint_field, hint);
+    }
+
+    pub fn deepgram_api_key_value(&self) -> Option<String> {
+        read_optional_string(&self.deepgram_api_key_field)
+    }
+
+    pub fn deepgram_project_id_value(&self) -> Option<String> {
+        read_optional_string(&self.deepgram_project_id_field)
     }
 
     pub fn transformation_provider_value(&self) -> Option<String> {
@@ -977,6 +998,81 @@ fn add_labeled_pop_up_button(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     popup_button
+}
+
+fn add_labeled_text_field_with_hint_and_button(
+    content_view: &NSView,
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+    button_title: &str,
+    action: objc2::runtime::Sel,
+) -> (
+    Retained<NSTextField>,
+    Retained<NSButton>,
+    Retained<NSTextField>,
+) {
+    let text_field_y = *current_y - 2.0;
+    let button_y = *current_y - 4.0;
+    let button_height = FIELD_HEIGHT + 4.0;
+
+    let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+    label_field.setFont(Some(&settings_font()));
+    label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &*label_field,
+        HORIZONTAL_PADDING,
+        vertically_centered_label_y(text_field_y, FIELD_HEIGHT),
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&label_field);
+
+    let text_field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
+    text_field.setFont(Some(&settings_font()));
+    configure_input_border(&text_field);
+    set_view_frame(
+        &*text_field,
+        FIELD_X,
+        text_field_y,
+        FIELD_WITH_ACTION_BUTTON_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&text_field);
+
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(button_title),
+            Some(target),
+            Some(action),
+            mtm,
+        )
+    };
+    button.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*button,
+        FIELD_X + FIELD_WITH_ACTION_BUTTON_WIDTH + MODEL_ACTION_BUTTON_GAP,
+        button_y,
+        MODEL_ACTION_BUTTON_WIDTH,
+        button_height,
+    );
+    content_view.addSubview(&button);
+
+    let hint_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
+    configure_hint_label(&hint_field);
+    hint_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &hint_field,
+        FIELD_X,
+        *current_y - ENV_HINT_HEIGHT - 4.0,
+        FIELD_WIDTH,
+        ENV_HINT_HEIGHT,
+    );
+    content_view.addSubview(&hint_field);
+
+    *current_y -= FIELD_HEIGHT + ENV_HINT_HEIGHT + ROW_GAP;
+    (text_field, button, hint_field)
 }
 
 fn add_labeled_text_field_with_hint(

@@ -2,6 +2,8 @@ mod app;
 mod audio;
 mod billing;
 mod config;
+mod deepgram_api;
+mod deepgram_connection;
 mod hotkey;
 mod hotkey_binding;
 mod hotkey_capture;
@@ -93,6 +95,7 @@ fn run_graphical_application() -> Result<(), String> {
     let hotkey_capture_controller = hotkey_capture::HotkeyCaptureController::new();
     let transformation_models_controller =
         transformation_models::TransformationModelsController::new();
+    let deepgram_connection_controller = deepgram_connection::DeepgramConnectionController::new();
     let shared_state = state::AppState::new();
 
     let billing_controller =
@@ -121,6 +124,7 @@ fn run_graphical_application() -> Result<(), String> {
         config_store,
         hotkey_capture_controller.clone(),
         transformation_models_controller.clone(),
+        deepgram_connection_controller.clone(),
         billing_controller,
         audio_controller,
     );
@@ -131,6 +135,7 @@ fn run_graphical_application() -> Result<(), String> {
         shared_state,
         hotkey_capture_controller,
         transformation_models_controller,
+        deepgram_connection_controller,
     );
 
     log::info!("starting NSApplication run loop");
