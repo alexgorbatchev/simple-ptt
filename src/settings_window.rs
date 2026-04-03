@@ -307,23 +307,23 @@ impl SettingsWindow {
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
 
-        let cancel_button = unsafe {
+        let close_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Cancel"),
+                ns_string!("Close"),
                 Some(target),
                 Some(sel!(cancelSettings:)),
                 mtm,
             )
         };
-        cancel_button.setFont(Some(&settings_font()));
+        close_button.setFont(Some(&settings_font()));
         set_view_frame(
-            &*cancel_button,
+            &*close_button,
             WINDOW_WIDTH - 280.0,
             BUTTON_BAR_Y,
             100.0,
             BUTTON_BAR_HEIGHT,
         );
-        root_view.addSubview(&cancel_button);
+        root_view.addSubview(&close_button);
 
         let save_button = unsafe {
             NSButton::buttonWithTitle_target_action(
