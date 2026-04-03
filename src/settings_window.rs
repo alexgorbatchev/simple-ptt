@@ -5,9 +5,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType,
-    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager,
-    NSPopUpButton, NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask,
+    NSButton, NSColor, NSComboBox, NSControlStateValueOff, NSControlStateValueOn, NSFont,
+    NSFontManager, NSPopUpButton, NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView,
+    NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
@@ -26,6 +26,9 @@ const FIELD_WIDTH: f64 = 500.0;
 const HOTKEY_FIELD_WIDTH: f64 = 390.0;
 const CAPTURE_BUTTON_WIDTH: f64 = 100.0;
 const CAPTURE_BUTTON_GAP: f64 = 10.0;
+const MODEL_COMBO_BOX_WIDTH: f64 = 320.0;
+const MODEL_ACTION_BUTTON_WIDTH: f64 = 80.0;
+const MODEL_ACTION_BUTTON_GAP: f64 = 10.0;
 const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 const ROW_GAP: f64 = 10.0;
 const SECTION_BREAK_GAP: f64 = 12.0;
@@ -115,7 +118,9 @@ pub struct SettingsWindow {
     transformation_provider_popup: Retained<NSPopUpButton>,
     transformation_api_key_field: Retained<NSTextField>,
     transformation_api_key_env_hint_field: Retained<NSTextField>,
-    transformation_model_field: Retained<NSTextField>,
+    transformation_model_combo_box: Retained<NSComboBox>,
+    transformation_model_refresh_button: Retained<NSButton>,
+    transformation_model_check_button: Retained<NSButton>,
     transformation_system_prompt_view: Retained<NSTextView>,
     available_font_family_names: Vec<String>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
@@ -272,8 +277,21 @@ impl SettingsWindow {
         }
         let (transformation_api_key_field, transformation_api_key_env_hint_field) =
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "API key");
-        let transformation_model_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Model");
+        let (
+            transformation_model_combo_box,
+            transformation_model_refresh_button,
+            transformation_model_check_button,
+        ) = add_labeled_combo_box_with_buttons(
+            &content_view,
+            target,
+            mtm,
+            &mut current_y,
+            "Model",
+            "Refresh",
+            sel!(refreshTransformationModels:),
+            "Check",
+            sel!(checkTransformationProvider:),
+        );
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
 
@@ -319,9 +337,9 @@ impl SettingsWindow {
         set_view_frame(
             &*status_text_field,
             20.0,
-            vertically_centered_status_y(BUTTON_BAR_Y, BUTTON_BAR_HEIGHT),
+            vertically_centered_label_y(BUTTON_BAR_Y, BUTTON_BAR_HEIGHT),
             WINDOW_WIDTH - 320.0,
-            STATUS_HEIGHT,
+            FIELD_HEIGHT,
         );
         root_view.addSubview(&status_text_field);
 
@@ -359,7 +377,9 @@ impl SettingsWindow {
             transformation_provider_popup,
             transformation_api_key_field,
             transformation_api_key_env_hint_field,
-            transformation_model_field,
+            transformation_model_combo_box,
+            transformation_model_refresh_button,
+            transformation_model_check_button,
             transformation_system_prompt_view,
             available_font_family_names,
             hotkey_capture_restore_value: RefCell::new(None),
@@ -470,8 +490,14 @@ impl SettingsWindow {
                 .transformation_api_key_env_var_in_use()
                 .map(environment_hint_message),
         );
-        self.transformation_model_field
-            .setStringValue(&NSString::from_str(&config.transformation.model));
+        populate_combo_box_with_values(
+            &self.transformation_model_combo_box,
+            &[],
+            &config.transformation.model,
+        );
+        self.set_transformation_model_controls_enabled(
+            self.transformation_provider_value().is_some(),
+        );
         self.transformation_system_prompt_view
             .setString(&NSString::from_str(&config.transformation.system_prompt));
         self.set_status("");
@@ -526,8 +552,8 @@ impl SettingsWindow {
                     &self.transformation_provider_popup,
                 ),
                 api_key: read_optional_string(&self.transformation_api_key_field),
-                model: read_required_string(
-                    &self.transformation_model_field,
+                model: read_required_combo_box_string(
+                    &self.transformation_model_combo_box,
                     "Transformation model",
                 )?,
                 system_prompt: self.transformation_system_prompt_view.string().to_string(),
@@ -542,12 +568,40 @@ impl SettingsWindow {
 
     pub fn sync_transformation_api_key_env_hint(&self) {
         let hint = crate::config::transformation_api_key_env_var_in_use(
-            read_optional_provider_pop_up_button_string(&self.transformation_provider_popup)
-                .as_deref(),
-            read_optional_string(&self.transformation_api_key_field).as_deref(),
+            self.transformation_provider_value().as_deref(),
+            self.transformation_api_key_value().as_deref(),
         )
         .map(environment_hint_message);
         set_hint_text(&self.transformation_api_key_env_hint_field, hint);
+    }
+
+    pub fn transformation_provider_value(&self) -> Option<String> {
+        read_optional_provider_pop_up_button_string(&self.transformation_provider_popup)
+    }
+
+    pub fn transformation_api_key_value(&self) -> Option<String> {
+        read_optional_string(&self.transformation_api_key_field)
+    }
+
+    pub fn transformation_model_value(&self) -> String {
+        self.transformation_model_combo_box
+            .stringValue()
+            .to_string()
+    }
+
+    pub fn populate_transformation_model_values(&self, models: &[String]) {
+        let selected_model = self.transformation_model_value();
+        populate_combo_box_with_values(
+            &self.transformation_model_combo_box,
+            models,
+            selected_model.as_str(),
+        );
+    }
+
+    pub fn set_transformation_model_controls_enabled(&self, enabled: bool) {
+        self.transformation_model_combo_box.setEnabled(enabled);
+        self.transformation_model_refresh_button.setEnabled(enabled);
+        self.transformation_model_check_button.setEnabled(enabled);
     }
 
     pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -740,6 +794,90 @@ fn add_labeled_text_field_with_button(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     (text_field, button)
+}
+
+fn add_labeled_combo_box_with_buttons(
+    content_view: &NSView,
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+    leading_button_title: &str,
+    leading_action: objc2::runtime::Sel,
+    trailing_button_title: &str,
+    trailing_action: objc2::runtime::Sel,
+) -> (Retained<NSComboBox>, Retained<NSButton>, Retained<NSButton>) {
+    let combo_box_y = *current_y - 2.0;
+    let button_y = *current_y - 4.0;
+    let button_height = FIELD_HEIGHT + 4.0;
+
+    let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+    label_field.setFont(Some(&settings_font()));
+    label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &*label_field,
+        HORIZONTAL_PADDING,
+        vertically_centered_label_y(combo_box_y, FIELD_HEIGHT),
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&label_field);
+
+    let combo_box = NSComboBox::initWithFrame(
+        NSComboBox::alloc(mtm),
+        NSRect::new(
+            NSPoint::new(FIELD_X, combo_box_y),
+            NSSize::new(MODEL_COMBO_BOX_WIDTH, FIELD_HEIGHT),
+        ),
+    );
+    combo_box.setFont(Some(&settings_font()));
+    combo_box.setCompletes(true);
+    combo_box.setNumberOfVisibleItems(20);
+    configure_input_border(&combo_box);
+    content_view.addSubview(&combo_box);
+
+    let leading_button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(leading_button_title),
+            Some(target),
+            Some(leading_action),
+            mtm,
+        )
+    };
+    leading_button.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*leading_button,
+        FIELD_X + MODEL_COMBO_BOX_WIDTH + MODEL_ACTION_BUTTON_GAP,
+        button_y,
+        MODEL_ACTION_BUTTON_WIDTH,
+        button_height,
+    );
+    content_view.addSubview(&leading_button);
+
+    let trailing_button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(trailing_button_title),
+            Some(target),
+            Some(trailing_action),
+            mtm,
+        )
+    };
+    trailing_button.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*trailing_button,
+        FIELD_X
+            + MODEL_COMBO_BOX_WIDTH
+            + MODEL_ACTION_BUTTON_GAP
+            + MODEL_ACTION_BUTTON_WIDTH
+            + MODEL_ACTION_BUTTON_GAP,
+        button_y,
+        MODEL_ACTION_BUTTON_WIDTH,
+        button_height,
+    );
+    content_view.addSubview(&trailing_button);
+
+    *current_y -= FIELD_HEIGHT + ROW_GAP;
+    (combo_box, leading_button, trailing_button)
 }
 
 fn add_labeled_pop_up_button(
@@ -1014,6 +1152,17 @@ fn populate_meter_style_popup(popup_button: &NSPopUpButton, selected_meter_style
     popup_button.selectItemWithTitle(&selected_title);
 }
 
+fn populate_combo_box_with_values(combo_box: &NSComboBox, values: &[String], selected_value: &str) {
+    combo_box.removeAllItems();
+    for value in values {
+        let string = NSString::from_str(value);
+        unsafe {
+            combo_box.addItemWithObjectValue(&*string);
+        }
+    }
+    combo_box.setStringValue(&NSString::from_str(selected_value.trim()));
+}
+
 fn populate_transformation_provider_popup(
     popup_button: &NSPopUpButton,
     selected_provider: Option<&str>,
@@ -1079,10 +1228,6 @@ fn vertically_centered_label_y(control_y: f64, control_height: f64) -> f64 {
     control_y + ((control_height - FIELD_HEIGHT) / 2.0) + LABEL_VISUAL_CENTER_NUDGE
 }
 
-fn vertically_centered_status_y(control_y: f64, control_height: f64) -> f64 {
-    control_y + ((control_height - STATUS_HEIGHT) / 2.0)
-}
-
 fn set_view_frame(view: &AnyObject, x: f64, y: f64, width: f64, height: f64) {
     unsafe {
         let _: () = objc2::msg_send![view, setFrame: NSRect::new(NSPoint::new(x, y), NSSize::new(width, height))];
@@ -1125,6 +1270,19 @@ fn read_optional_provider_pop_up_button_string(popup_button: &NSPopUpButton) -> 
         None
     } else {
         Some(trimmed_value.to_owned())
+    }
+}
+
+fn read_required_combo_box_string(
+    combo_box: &NSComboBox,
+    field_name: &str,
+) -> Result<String, String> {
+    let value = combo_box.stringValue().to_string();
+    let trimmed_value = value.trim();
+    if trimmed_value.is_empty() {
+        Err(format!("{} is required", field_name))
+    } else {
+        Ok(trimmed_value.to_owned())
     }
 }
 

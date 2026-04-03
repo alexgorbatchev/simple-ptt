@@ -12,6 +12,7 @@ mod settings_window;
 mod state;
 mod transcription;
 mod transformation;
+mod transformation_models;
 
 use std::any::Any;
 use std::path::Path;
@@ -90,6 +91,8 @@ fn run_graphical_application() -> Result<(), String> {
     let config_store =
         settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
     let hotkey_capture_controller = hotkey_capture::HotkeyCaptureController::new();
+    let transformation_models_controller =
+        transformation_models::TransformationModelsController::new();
     let shared_state = state::AppState::new();
 
     let billing_controller =
@@ -117,12 +120,18 @@ fn run_graphical_application() -> Result<(), String> {
         app::overlay_style_from_config(&runtime_config),
         config_store,
         hotkey_capture_controller.clone(),
+        transformation_models_controller.clone(),
         billing_controller,
         audio_controller,
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
-    app::setup_status_polling(delegate.clone(), shared_state, hotkey_capture_controller);
+    app::setup_status_polling(
+        delegate.clone(),
+        shared_state,
+        hotkey_capture_controller,
+        transformation_models_controller,
+    );
 
     log::info!("starting NSApplication run loop");
     ns_app.run();

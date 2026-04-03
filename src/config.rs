@@ -252,6 +252,21 @@ pub fn config_path() -> Result<PathBuf, String> {
     ))
 }
 
+pub fn cache_dir() -> Result<PathBuf, String> {
+    if let Some(xdg_cache_home) = non_empty_env_path("XDG_CACHE_HOME") {
+        return Ok(xdg_cache_home.join(XDG_APP_NAME));
+    }
+
+    if let Some(home_path) = non_empty_env_path("HOME") {
+        return Ok(home_path.join(".cache").join(XDG_APP_NAME));
+    }
+
+    Err(
+        "Neither HOME nor XDG_CACHE_HOME is available, so no cache directory can be resolved."
+            .to_owned(),
+    )
+}
+
 impl Config {
     pub fn deepgram_api_key_env_var_in_use(&self) -> Option<&'static str> {
         if self
@@ -409,6 +424,14 @@ pub(crate) fn transformation_api_key_env_var_in_use(
         .iter()
         .copied()
         .find(|variable_name| env_var_is_present(variable_name))
+}
+
+pub(crate) fn resolve_transformation_api_key_for_provider(
+    provider: Option<&str>,
+    configured_api_key: Option<&str>,
+) -> Option<String> {
+    let provider = provider.map(str::trim).filter(|value| !value.is_empty())?;
+    resolve_transformation_api_key(configured_api_key, provider)
 }
 
 fn resolve_transformation_api_key(

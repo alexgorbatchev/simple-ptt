@@ -30,6 +30,10 @@ use crate::state::{
     AppState, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
 };
+use crate::transformation_models::{
+    TransformationModelAction, TransformationModelUpdate, TransformationModelsController,
+    TransformationProviderRequest,
+};
 
 const APP_DISPLAY_NAME: &str = "simple-ptt";
 const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
@@ -46,6 +50,7 @@ pub struct Ivars {
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     overlay_window: OnceCell<OverlayWindow>,
     settings_window: OnceCell<SettingsWindow>,
+    transformation_models_controller: TransformationModelsController,
     status_item: OnceCell<Retained<NSStatusItem>>,
 }
 
@@ -218,11 +223,17 @@ define_class!(
 
         #[unsafe(method(transformationProviderChanged:))]
         fn transformation_provider_changed(&self, _sender: Option<&AnyObject>) {
-            let Some(settings_window) = self.ivars().settings_window.get() else {
-                return;
-            };
+            self.sync_transformation_provider_ui();
+        }
 
-            settings_window.sync_transformation_api_key_env_hint();
+        #[unsafe(method(refreshTransformationModels:))]
+        fn refresh_transformation_models(&self, _sender: Option<&AnyObject>) {
+            self.start_transformation_model_action(TransformationModelAction::Refresh);
+        }
+
+        #[unsafe(method(checkTransformationProvider:))]
+        fn check_transformation_provider(&self, _sender: Option<&AnyObject>) {
+            self.start_transformation_model_action(TransformationModelAction::Check);
         }
 
         #[unsafe(method(cancelSettings:))]
@@ -304,6 +315,7 @@ define_class!(
                 &proposed_config,
                 &self.ivars().config_store.path().display().to_string(),
             );
+            self.sync_transformation_provider_ui();
             settings_window.set_status(&format!("Saved and applied settings. {}.", audio_message));
         }
     }
@@ -330,6 +342,7 @@ impl AppDelegate {
         overlay_style: OverlayStyle,
         config_store: LiveConfigStore,
         hotkey_capture_controller: HotkeyCaptureController,
+        transformation_models_controller: TransformationModelsController,
         billing_controller: BillingController,
         audio_controller: AudioController,
     ) -> Retained<Self> {
@@ -344,6 +357,7 @@ impl AppDelegate {
             idle_status_bar_icon: make_status_bar_icon(mtm),
             overlay_window: OnceCell::new(),
             settings_window: OnceCell::new(),
+            transformation_models_controller,
             status_item: OnceCell::new(),
         });
         unsafe { msg_send![super(this), init] }
@@ -362,10 +376,136 @@ impl AppDelegate {
             &current_file_config,
             &self.ivars().config_store.path().display().to_string(),
         );
+        self.sync_transformation_provider_ui();
         self.ivars()
             .hotkey_capture_controller
             .set_settings_window_visible(true);
         settings_window.show(MainThreadMarker::from(self));
+    }
+
+    fn current_transformation_provider_request(
+        &self,
+    ) -> Result<TransformationProviderRequest, String> {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return Err("settings window is not available".to_owned());
+        };
+
+        let provider = settings_window
+            .transformation_provider_value()
+            .ok_or_else(|| "Choose a transformation provider first.".to_owned())?;
+        let resolved_api_key = config::resolve_transformation_api_key_for_provider(
+            Some(provider.as_str()),
+            settings_window.transformation_api_key_value().as_deref(),
+        );
+
+        Ok(TransformationProviderRequest::new(
+            provider,
+            resolved_api_key,
+            settings_window.transformation_model_value(),
+        ))
+    }
+
+    fn sync_transformation_provider_ui(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        settings_window.sync_transformation_api_key_env_hint();
+        let provider_selected = settings_window.transformation_provider_value().is_some();
+        settings_window.set_transformation_model_controls_enabled(provider_selected);
+        if !provider_selected {
+            settings_window.populate_transformation_model_values(&[]);
+            settings_window.set_status("");
+            return;
+        }
+
+        if let Ok(request) = self.current_transformation_provider_request() {
+            match self
+                .ivars()
+                .transformation_models_controller
+                .load_cached_models_now(request)
+            {
+                TransformationModelUpdate::CachedModelsLoaded {
+                    models, message, ..
+                } => {
+                    settings_window.populate_transformation_model_values(&models);
+                    settings_window.set_status(&message);
+                }
+                TransformationModelUpdate::ActionFailed { message, .. } => {
+                    settings_window.set_status(&message);
+                }
+                TransformationModelUpdate::ModelsRefreshed { .. }
+                | TransformationModelUpdate::ConnectionChecked { .. } => {}
+            }
+        }
+    }
+
+    fn start_transformation_model_action(&self, action: TransformationModelAction) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        let request = match self.current_transformation_provider_request() {
+            Ok(request) => request,
+            Err(error) => {
+                settings_window.set_status(&error);
+                return;
+            }
+        };
+
+        let status_message = match action {
+            TransformationModelAction::Refresh => {
+                format!("Refreshing models for {}…", request.provider)
+            }
+            TransformationModelAction::Check => {
+                format!("Checking {} connection…", request.provider)
+            }
+        };
+        settings_window.set_status(&status_message);
+        self.ivars()
+            .transformation_models_controller
+            .start_action(action, request);
+    }
+
+    fn handle_pending_transformation_model_updates(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        while let Some(update) = self.ivars().transformation_models_controller.take_update() {
+            let current_request = self.current_transformation_provider_request().ok();
+            let update_request = match &update {
+                TransformationModelUpdate::CachedModelsLoaded { request, .. }
+                | TransformationModelUpdate::ModelsRefreshed { request, .. }
+                | TransformationModelUpdate::ConnectionChecked { request, .. }
+                | TransformationModelUpdate::ActionFailed { request, .. } => request,
+            };
+            if current_request
+                .as_ref()
+                .map(|request| request.same_source_as(update_request))
+                != Some(true)
+            {
+                continue;
+            }
+
+            match update {
+                TransformationModelUpdate::CachedModelsLoaded {
+                    models, message, ..
+                }
+                | TransformationModelUpdate::ModelsRefreshed {
+                    models, message, ..
+                }
+                | TransformationModelUpdate::ConnectionChecked {
+                    models, message, ..
+                } => {
+                    settings_window.populate_transformation_model_values(&models);
+                    settings_window.set_status(&message);
+                }
+                TransformationModelUpdate::ActionFailed { message, .. } => {
+                    settings_window.set_status(&message);
+                }
+            }
+        }
     }
 
     fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -443,6 +583,7 @@ impl AppDelegate {
     ) {
         self.handle_pending_hotkey_capture_preview();
         self.handle_pending_hotkey_capture();
+        self.handle_pending_transformation_model_updates();
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
@@ -711,6 +852,7 @@ pub fn setup_status_polling(
     delegate: Retained<AppDelegate>,
     state: Arc<AppState>,
     hotkey_capture_controller: HotkeyCaptureController,
+    transformation_models_controller: TransformationModelsController,
 ) {
     let delegate_addr = Retained::as_ptr(&delegate) as usize;
     std::mem::forget(delegate);
@@ -741,11 +883,14 @@ pub fn setup_status_polling(
                     matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
                 let hotkey_capture_update_pending =
                     hotkey_capture_controller.has_pending_ui_update();
+                let transformation_models_update_pending =
+                    transformation_models_controller.has_pending_ui_update();
                 if !ui_changed
                     && !mic_meter_changed
                     && !should_animate_meter
                     && !should_animate_overlay
                     && !hotkey_capture_update_pending
+                    && !transformation_models_update_pending
                 {
                     continue;
                 }
