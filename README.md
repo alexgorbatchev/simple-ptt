@@ -173,7 +173,7 @@ The menu contains:
 
 The settings window is opened from the menu bar.
 
-It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments.
+It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments. The font family control is a native drop-down populated from available macOS font families plus a system-default option, and the meter style control is also a native drop-down.
 
 The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. The hotkey field updates live as you press or release keys during capture. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately.
 
@@ -276,7 +276,7 @@ A multi-key hotkey must contain exactly one non-modifier primary key.
 | Key | Required | Default | Description |
 | --- | --- | --- | --- |
 | `hotkey` | No | `F5` | Global record key. See the record-hotkey behavior above. Accepts either a single key or a modifier chord such as `Shift+Cmd+Z`. |
-| `font_name` | No | system default | Overlay font family name. The legacy alias `overlay_font_family` is also accepted. |
+| `font_name` | No | system default | Overlay font family name. In the settings window this is chosen from a native drop-down of available macOS font families plus the system-default option. The legacy alias `overlay_font_family` is also accepted. |
 | `font_size` | No | `12.0` | Main overlay font size. |
 | `footer_font_size` | No | derived from `font_size` | Footer text font size. |
 | `meter_style` | No | `animated-color` | Overlay mic meter style. Supported values: `animated-color`, `animated-height`, and `none`. `none` hides the meter and clip indicator entirely. |

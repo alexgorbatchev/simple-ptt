@@ -5,8 +5,9 @@ use objc2::runtime::AnyObject;
 use objc2::{sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType,
-    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSScrollView,
-    NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowStyleMask,
+    NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager,
+    NSPopUpButton, NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
@@ -32,6 +33,8 @@ const STATUS_HEIGHT: f64 = 40.0;
 const ENV_HINT_HEIGHT: f64 = 18.0;
 const SETTINGS_FONT_SIZE: f64 = 12.0;
 const SETTINGS_FONT_WEIGHT: f64 = 0.0;
+const SETTINGS_SECTION_TITLE_FONT_WEIGHT: f64 = 0.4;
+const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
 
 #[derive(Debug)]
 pub struct SettingsWindow {
@@ -41,10 +44,10 @@ pub struct SettingsWindow {
     status_text_field: Retained<NSTextField>,
     ui_hotkey_field: Retained<NSTextField>,
     ui_hotkey_capture_button: Retained<NSButton>,
-    ui_font_name_field: Retained<NSTextField>,
+    ui_font_name_popup: Retained<NSPopUpButton>,
     ui_font_size_field: Retained<NSTextField>,
     ui_footer_font_size_field: Retained<NSTextField>,
-    ui_meter_style_field: Retained<NSTextField>,
+    ui_meter_style_popup: Retained<NSPopUpButton>,
     mic_audio_device_field: Retained<NSTextField>,
     mic_sample_rate_field: Retained<NSTextField>,
     mic_gain_field: Retained<NSTextField>,
@@ -65,6 +68,7 @@ pub struct SettingsWindow {
     transformation_api_key_env_hint_field: Retained<NSTextField>,
     transformation_model_field: Retained<NSTextField>,
     transformation_system_prompt_view: Retained<NSTextView>,
+    available_font_family_names: Vec<String>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
 
@@ -150,6 +154,8 @@ impl SettingsWindow {
         content_view.addSubview(&path_text_field);
         current_y -= 54.0;
 
+        let available_font_family_names = available_font_family_names(mtm);
+
         current_y = add_section_title(&content_view, mtm, current_y, "UI");
         let (ui_hotkey_field, ui_hotkey_capture_button) = add_labeled_text_field_with_button(
             &content_view,
@@ -160,14 +166,14 @@ impl SettingsWindow {
             "Capture…",
             sel!(captureRecordHotkey:),
         );
-        let ui_font_name_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Font name");
+        let ui_font_name_popup =
+            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Font name");
         let ui_font_size_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Font size");
         let ui_footer_font_size_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Footer font size");
-        let ui_meter_style_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Meter style");
+        let ui_meter_style_popup =
+            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Meter style");
 
         current_y = add_section_title(&content_view, mtm, current_y, "Microphone");
         let mic_audio_device_field =
@@ -253,10 +259,10 @@ impl SettingsWindow {
             status_text_field,
             ui_hotkey_field,
             ui_hotkey_capture_button,
-            ui_font_name_field,
+            ui_font_name_popup,
             ui_font_size_field,
             ui_footer_font_size_field,
-            ui_meter_style_field,
+            ui_meter_style_popup,
             mic_audio_device_field,
             mic_sample_rate_field,
             mic_gain_field,
@@ -277,6 +283,7 @@ impl SettingsWindow {
             transformation_api_key_env_hint_field,
             transformation_model_field,
             transformation_system_prompt_view,
+            available_font_family_names,
             hotkey_capture_restore_value: RefCell::new(None),
         }
     }
@@ -295,9 +302,11 @@ impl SettingsWindow {
             .setStringValue(&NSString::from_str(config_path));
         self.ui_hotkey_field
             .setStringValue(&NSString::from_str(&config.ui.hotkey));
-        self.ui_font_name_field.setStringValue(&NSString::from_str(
-            config.ui.font_name.as_deref().unwrap_or(""),
-        ));
+        populate_font_name_popup(
+            &self.ui_font_name_popup,
+            &self.available_font_family_names,
+            config.ui.font_name.as_deref(),
+        );
         self.ui_font_size_field
             .setStringValue(&NSString::from_str(&config.ui.font_size.to_string()));
         self.ui_footer_font_size_field
@@ -308,12 +317,7 @@ impl SettingsWindow {
                     .map(|value| value.to_string())
                     .unwrap_or_default(),
             ));
-        self.ui_meter_style_field
-            .setStringValue(&NSString::from_str(match config.ui.meter_style {
-                UiMeterStyle::None => "none",
-                UiMeterStyle::AnimatedHeight => "animated-height",
-                UiMeterStyle::AnimatedColor => "animated-color",
-            }));
+        populate_meter_style_popup(&self.ui_meter_style_popup, config.ui.meter_style);
 
         self.mic_audio_device_field
             .setStringValue(&NSString::from_str(
@@ -393,14 +397,14 @@ impl SettingsWindow {
         Ok(Config {
             ui: crate::config::UiConfig {
                 hotkey: read_required_string(&self.ui_hotkey_field, "Record hotkey")?,
-                font_name: read_optional_string(&self.ui_font_name_field),
+                font_name: read_optional_pop_up_button_string(&self.ui_font_name_popup),
                 font_size: read_required_f64(&self.ui_font_size_field, "Font size")?,
                 footer_font_size: read_optional_f64(
                     &self.ui_footer_font_size_field,
                     "Footer font size",
                 )?,
-                meter_style: parse_meter_style(&read_required_string(
-                    &self.ui_meter_style_field,
+                meter_style: parse_meter_style(&read_required_pop_up_button_string(
+                    &self.ui_meter_style_popup,
                     "Meter style",
                 )?)?,
             },
@@ -539,7 +543,7 @@ fn add_section_title(
 
 fn make_section_title(mtm: MainThreadMarker, title: &str) -> Retained<NSTextField> {
     let title_field = NSTextField::labelWithString(&NSString::from_str(title), mtm);
-    title_field.setFont(Some(&settings_font()));
+    title_field.setFont(Some(&settings_section_title_font()));
     title_field.setTextColor(Some(&NSColor::labelColor()));
     title_field
 }
@@ -629,6 +633,39 @@ fn add_labeled_text_field_with_button(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     (text_field, button)
+}
+
+fn add_labeled_pop_up_button(
+    content_view: &NSView,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+) -> Retained<NSPopUpButton> {
+    let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+    label_field.setFont(Some(&settings_font()));
+    label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &*label_field,
+        HORIZONTAL_PADDING,
+        *current_y,
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&label_field);
+
+    let popup_button = NSPopUpButton::initWithFrame_pullsDown(
+        NSPopUpButton::alloc(mtm),
+        NSRect::new(
+            NSPoint::new(FIELD_X, *current_y - 3.0),
+            NSSize::new(FIELD_WIDTH, FIELD_HEIGHT + 6.0),
+        ),
+        false,
+    );
+    popup_button.setFont(Some(&settings_font()));
+    content_view.addSubview(&popup_button);
+
+    *current_y -= FIELD_HEIGHT + ROW_GAP;
+    popup_button
 }
 
 fn add_labeled_text_field_with_hint(
@@ -762,6 +799,64 @@ fn settings_font() -> Retained<NSFont> {
     NSFont::monospacedSystemFontOfSize_weight(SETTINGS_FONT_SIZE, SETTINGS_FONT_WEIGHT)
 }
 
+fn settings_section_title_font() -> Retained<NSFont> {
+    NSFont::monospacedSystemFontOfSize_weight(
+        SETTINGS_FONT_SIZE,
+        SETTINGS_SECTION_TITLE_FONT_WEIGHT,
+    )
+}
+
+fn available_font_family_names(mtm: MainThreadMarker) -> Vec<String> {
+    let font_manager = NSFontManager::sharedFontManager(mtm);
+    let font_families = font_manager.availableFontFamilies();
+    let mut names = (0..font_families.count())
+        .map(|index| font_families.objectAtIndex(index).to_string())
+        .collect::<Vec<_>>();
+    names.sort_by_key(|name| name.to_ascii_lowercase());
+    names.dedup();
+    names
+}
+
+fn populate_font_name_popup(
+    popup_button: &NSPopUpButton,
+    available_font_family_names: &[String],
+    selected_font_name: Option<&str>,
+) {
+    popup_button.removeAllItems();
+    popup_button.addItemWithTitle(&NSString::from_str(SYSTEM_DEFAULT_FONT_LABEL));
+    for font_name in available_font_family_names {
+        popup_button.addItemWithTitle(&NSString::from_str(font_name));
+    }
+
+    let Some(selected_font_name) = selected_font_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        popup_button.selectItemAtIndex(0);
+        return;
+    };
+
+    let selected_font_name = NSString::from_str(selected_font_name);
+    if popup_button.indexOfItemWithTitle(&selected_font_name) < 0 {
+        popup_button.insertItemWithTitle_atIndex(&selected_font_name, 1);
+    }
+    popup_button.selectItemWithTitle(&selected_font_name);
+}
+
+fn populate_meter_style_popup(popup_button: &NSPopUpButton, selected_meter_style: UiMeterStyle) {
+    popup_button.removeAllItems();
+    popup_button.addItemWithTitle(ns_string!("animated-color"));
+    popup_button.addItemWithTitle(ns_string!("animated-height"));
+    popup_button.addItemWithTitle(ns_string!("none"));
+
+    let selected_title = NSString::from_str(match selected_meter_style {
+        UiMeterStyle::AnimatedColor => "animated-color",
+        UiMeterStyle::AnimatedHeight => "animated-height",
+        UiMeterStyle::None => "none",
+    });
+    popup_button.selectItemWithTitle(&selected_title);
+}
+
 fn environment_hint_message(variable_name: &str) -> String {
     format!("Using ${} from environment.", variable_name)
 }
@@ -801,6 +896,32 @@ fn read_optional_string(field: &NSTextField) -> Option<String> {
         None
     } else {
         Some(trimmed_value.to_owned())
+    }
+}
+
+fn read_optional_pop_up_button_string(popup_button: &NSPopUpButton) -> Option<String> {
+    let selected_title = popup_button.titleOfSelectedItem()?.to_string();
+    let trimmed_value = selected_title.trim();
+    if trimmed_value.is_empty() || trimmed_value == SYSTEM_DEFAULT_FONT_LABEL {
+        None
+    } else {
+        Some(trimmed_value.to_owned())
+    }
+}
+
+fn read_required_pop_up_button_string(
+    popup_button: &NSPopUpButton,
+    field_name: &str,
+) -> Result<String, String> {
+    let selected_title = popup_button
+        .titleOfSelectedItem()
+        .ok_or_else(|| format!("{} is required", field_name))?
+        .to_string();
+    let trimmed_value = selected_title.trim();
+    if trimmed_value.is_empty() {
+        Err(format!("{} is required", field_name))
+    } else {
+        Ok(trimmed_value.to_owned())
     }
 }
 
