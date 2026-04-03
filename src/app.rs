@@ -242,11 +242,7 @@ define_class!(
                 return;
             };
 
-            self.ivars().hotkey_capture_controller.cancel();
-            self.ivars()
-                .hotkey_capture_controller
-                .set_settings_window_visible(false);
-            settings_window.cancel_hotkey_capture();
+            self.disable_settings_window_hotkey_blocking();
             settings_window.hide();
         }
 
@@ -321,17 +317,21 @@ define_class!(
     }
 
     unsafe impl NSWindowDelegate for AppDelegate {
-        #[unsafe(method(windowWillClose:))]
-        fn window_will_close(&self, _notification: &NSNotification) {
-            let Some(settings_window) = self.ivars().settings_window.get() else {
-                return;
-            };
-
-            self.ivars().hotkey_capture_controller.cancel();
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
             self.ivars()
                 .hotkey_capture_controller
-                .set_settings_window_visible(false);
-            settings_window.cancel_hotkey_capture();
+                .set_settings_window_visible(true);
+        }
+
+        #[unsafe(method(windowDidResignKey:))]
+        fn window_did_resign_key(&self, _notification: &NSNotification) {
+            self.disable_settings_window_hotkey_blocking();
+        }
+
+        #[unsafe(method(windowWillClose:))]
+        fn window_will_close(&self, _notification: &NSNotification) {
+            self.disable_settings_window_hotkey_blocking();
         }
     }
 );
@@ -377,10 +377,18 @@ impl AppDelegate {
             &self.ivars().config_store.path().display().to_string(),
         );
         self.sync_transformation_provider_ui();
+        settings_window.show(MainThreadMarker::from(self));
+    }
+
+    fn disable_settings_window_hotkey_blocking(&self) {
+        self.ivars().hotkey_capture_controller.cancel();
         self.ivars()
             .hotkey_capture_controller
-            .set_settings_window_visible(true);
-        settings_window.show(MainThreadMarker::from(self));
+            .set_settings_window_visible(false);
+
+        if let Some(settings_window) = self.ivars().settings_window.get() {
+            settings_window.cancel_hotkey_capture();
+        }
     }
 
     fn current_transformation_provider_request(
