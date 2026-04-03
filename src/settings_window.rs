@@ -33,6 +33,7 @@ const STATUS_HEIGHT: f64 = 40.0;
 const ENV_HINT_HEIGHT: f64 = 18.0;
 const SETTINGS_FONT_SIZE: f64 = 12.0;
 const SETTINGS_FONT_WEIGHT: f64 = 0.0;
+const SETTINGS_HINT_FONT_SCALE: f64 = 0.8;
 const SETTINGS_SECTION_TITLE_FONT_WEIGHT: f64 = 0.4;
 const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
 
@@ -698,7 +699,7 @@ fn add_labeled_text_field_with_hint(
     content_view.addSubview(&text_field);
 
     let hint_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
-    configure_wrapping_label(&hint_field);
+    configure_hint_label(&hint_field);
     hint_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
     set_view_frame(
         &hint_field,
@@ -795,8 +796,27 @@ fn configure_wrapping_label(label: &NSTextField) {
     }
 }
 
+fn configure_hint_label(label: &NSTextField) {
+    label.setDrawsBackground(false);
+    label.setBordered(false);
+    label.setBezeled(false);
+    label.setEditable(false);
+    label.setSelectable(false);
+    label.setFont(Some(&settings_hint_font()));
+    if let Some(cell) = label.cell() {
+        cell.setAlignment(NSTextAlignment::Left);
+    }
+}
+
 fn settings_font() -> Retained<NSFont> {
     NSFont::monospacedSystemFontOfSize_weight(SETTINGS_FONT_SIZE, SETTINGS_FONT_WEIGHT)
+}
+
+fn settings_hint_font() -> Retained<NSFont> {
+    NSFont::monospacedSystemFontOfSize_weight(
+        SETTINGS_FONT_SIZE * SETTINGS_HINT_FONT_SCALE,
+        SETTINGS_FONT_WEIGHT,
+    )
 }
 
 fn settings_section_title_font() -> Retained<NSFont> {
