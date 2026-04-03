@@ -1219,7 +1219,7 @@ fn configure_hint_label(label: &NSTextField) {
     }
 }
 
-fn settings_font() -> Retained<NSFont> {
+pub(crate) fn settings_font() -> Retained<NSFont> {
     NSFont::monospacedSystemFontOfSize_weight(SETTINGS_FONT_SIZE, SETTINGS_FONT_WEIGHT)
 }
 

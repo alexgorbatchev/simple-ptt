@@ -10,6 +10,7 @@ mod hotkey_capture;
 mod icon;
 mod overlay;
 mod permissions;
+mod permissions_dialog;
 mod settings;
 mod settings_window;
 mod state;
@@ -93,7 +94,9 @@ fn run_graphical_application() -> Result<(), String> {
 
     let config_store =
         settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
-    permissions::ensure_global_hotkey_permissions()?;
+    if !app::show_hotkey_permissions_dialog() {
+        return Ok(());
+    }
 
     let hotkey_capture_controller = hotkey_capture::HotkeyCaptureController::new();
     let transformation_models_controller =
@@ -155,10 +158,6 @@ fn report_startup_error(error: &str) {
 }
 
 fn startup_error_instructions(error: &str) -> String {
-    if error.starts_with("global hotkeys require ") {
-        return hotkey_permission_error_instructions(error);
-    }
-
     format!(
         concat!(
             "{}\n\n",
@@ -169,23 +168,6 @@ fn startup_error_instructions(error: &str) -> String {
             "For more detail, run this in Terminal:\n",
             "/Applications/simple-ptt.app/Contents/MacOS/simple-ptt\n\n",
             "Note: simple-ptt is a menu bar app. On successful launch it appears in the menu bar, not in the Dock."
-        ),
-        error
-    )
-}
-
-fn hotkey_permission_error_instructions(error: &str) -> String {
-    format!(
-        concat!(
-            "{}\n\n",
-            "simple-ptt uses a macOS event tap for global shortcuts, so macOS must trust the app bundle in Privacy & Security.\n\n",
-            "What to do:\n",
-            "- Allow /Applications/simple-ptt.app in Privacy & Security > Input Monitoring\n",
-            "- Allow /Applications/simple-ptt.app in Privacy & Security > Accessibility\n",
-            "- Relaunch the app after granting access\n",
-            "- If shortcuts worked from Terminal but not from the app bundle, remove and re-add /Applications/simple-ptt.app in both panes; ad-hoc-signed rebuilds can look like a new app identity to TCC\n\n",
-            "For debugging, run this in Terminal:\n",
-            "/Applications/simple-ptt.app/Contents/MacOS/simple-ptt\n"
         ),
         error
     )
@@ -205,7 +187,7 @@ fn panic_payload_message(panic_payload: Box<dyn Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{hotkey_permission_error_instructions, startup_error_instructions};
+    use super::startup_error_instructions;
 
     #[test]
     fn startup_error_instructions_include_terminal_debugging_path() {
@@ -214,15 +196,5 @@ mod tests {
 
         assert!(instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
         assert!(instructions.contains("menu bar"));
-    }
-
-    #[test]
-    fn hotkey_permission_instructions_reference_both_privacy_panels() {
-        let instructions =
-            hotkey_permission_error_instructions("global hotkeys require Input Monitoring access");
-
-        assert!(instructions.contains("Input Monitoring"));
-        assert!(instructions.contains("Accessibility"));
-        assert!(instructions.contains("ad-hoc-signed rebuilds"));
     }
 }

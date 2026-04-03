@@ -54,6 +54,8 @@ Expect the usual macOS prompts for:
 - **Microphone**
 - **Accessibility** and/or **Input Monitoring** for the global hotkey and synthetic paste workflow
 
+If either global-hotkey permission is missing, the app now opens a small permissions dialog with buttons to request **Accessibility**, request **Input Monitoring**, and **Re-check** status. Grant both before expecting the global shortcuts to work.
+
 If the app launches but the global shortcuts do nothing, check **Privacy & Security > Input Monitoring** and **Privacy & Security > Accessibility** and make sure `/Applications/simple-ptt.app` is enabled in both places. If you replaced the app bundle with a new ad-hoc-signed build, remove and re-add it there before relaunching; macOS TCC can treat rebuilt ad-hoc-signed bundles as a new identity.
 
 The bundled app is ad-hoc signed but **not notarized**. If macOS blocks it on first launch, either allow it in **System Settings > Privacy & Security** or remove quarantine manually:

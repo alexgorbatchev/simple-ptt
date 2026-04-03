@@ -39,6 +39,7 @@ binary_name="$(basename "$binary_path")"
 app_name="$(basename "$app_bundle_path" .app)"
 bundle_identifier="${APP_BUNDLE_IDENTIFIER:-io.github.alexgorbatchev.${package_name}}"
 microphone_usage_description="${APP_MICROPHONE_USAGE_DESCRIPTION:-simple-ptt needs microphone access to capture push-to-talk audio for real-time transcription.}"
+input_monitoring_usage_description="${APP_INPUT_MONITORING_USAGE_DESCRIPTION:-simple-ptt needs input monitoring access to detect global push-to-talk shortcuts.}"
 
 app_contents_path="${app_bundle_path}/Contents"
 app_macos_path="${app_contents_path}/MacOS"
@@ -84,6 +85,8 @@ cat > "${app_contents_path}/Info.plist" <<EOF
   <true/>
   <key>NSMicrophoneUsageDescription</key>
   <string>${microphone_usage_description}</string>
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>${input_monitoring_usage_description}</string>
 </dict>
 </plist>
 EOF

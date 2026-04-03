@@ -975,6 +975,10 @@ fn show_modal_alert(message_text: &str, informative_text: &str) {
     app.setActivationPolicy(previous_activation_policy);
 }
 
+pub fn show_hotkey_permissions_dialog() -> bool {
+    crate::permissions_dialog::show_hotkey_permissions_dialog()
+}
+
 pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
     show_modal_alert(message_text, informative_text);
 }
@@ -1033,6 +1037,7 @@ mod tests {
         );
         assert_eq!(billing_menu_text("Billing (Apr 2026): $12.34"), None);
     }
+
 }
 
 pub fn setup_status_polling(
