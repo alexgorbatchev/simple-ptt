@@ -17,7 +17,8 @@ use crate::billing::BillingController;
 use crate::config::{self, Config};
 use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding};
 use crate::hotkey_capture::{
-    capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCaptureTarget,
+    capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
+    HotkeyCaptureTarget,
 };
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
@@ -212,7 +213,7 @@ define_class!(
             };
 
             self.ivars().hotkey_capture_controller.cancel();
-            settings_window.finish_hotkey_capture();
+            settings_window.cancel_hotkey_capture();
 
             let proposed_config = match settings_window.read_config() {
                 Ok(config) => config,
@@ -306,7 +307,7 @@ impl AppDelegate {
         };
 
         self.ivars().hotkey_capture_controller.cancel();
-        settings_window.finish_hotkey_capture();
+        settings_window.cancel_hotkey_capture();
 
         let current_file_config = self.ivars().config_store.current_file();
         settings_window.load_from_config(
@@ -321,8 +322,23 @@ impl AppDelegate {
             return;
         };
 
+        self.ivars().hotkey_capture_controller.cancel();
+        settings_window.cancel_hotkey_capture();
         self.ivars().hotkey_capture_controller.begin_capture(target);
         settings_window.begin_hotkey_capture(target);
+    }
+
+    fn handle_pending_hotkey_capture_preview(&self) {
+        let Some(HotkeyCapturePreview { target, text }) =
+            self.ivars().hotkey_capture_controller.take_preview()
+        else {
+            return;
+        };
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        settings_window.set_hotkey_capture_preview(target, &text);
     }
 
     fn handle_pending_hotkey_capture(&self) {
@@ -333,14 +349,14 @@ impl AppDelegate {
             return;
         };
 
-        settings_window.finish_hotkey_capture();
-
         match outcome {
             HotkeyCaptureOutcome::Cancelled { .. } => {
+                settings_window.cancel_hotkey_capture();
                 settings_window.set_status("Hotkey capture canceled.");
             }
             HotkeyCaptureOutcome::Captured { target, binding } => {
                 let Some(captured_name) = format_hotkey_binding(binding) else {
+                    settings_window.cancel_hotkey_capture();
                     settings_window.set_status("That hotkey is not supported.");
                     return;
                 };
@@ -351,10 +367,12 @@ impl AppDelegate {
                 };
                 let other_hotkey = settings_window.hotkey_value(other_target);
                 if parse_hotkey_binding(other_hotkey.as_str()).ok() == Some(binding) {
+                    settings_window.cancel_hotkey_capture();
                     settings_window.set_status("Record and transform hotkeys must be different.");
                     return;
                 }
 
+                settings_window.finish_hotkey_capture();
                 settings_window.set_hotkey_value(target, &captured_name);
                 if let Some(message) = capture_outcome_message(outcome) {
                     settings_window.set_status(&message);
@@ -372,6 +390,7 @@ impl AppDelegate {
         overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
+        self.handle_pending_hotkey_capture_preview();
         self.handle_pending_hotkey_capture();
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
@@ -604,7 +623,8 @@ pub fn setup_status_polling(
                 let should_animate_meter = current_state == STATE_RECORDING;
                 let should_animate_overlay =
                     matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
-                let hotkey_capture_update_pending = hotkey_capture_controller.has_pending_outcome();
+                let hotkey_capture_update_pending =
+                    hotkey_capture_controller.has_pending_ui_update();
                 if !ui_changed
                     && !mic_meter_changed
                     && !should_animate_meter

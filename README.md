@@ -175,7 +175,7 @@ The settings window is opened from the menu bar.
 
 It edits the resolved config file path shown at the top of the window and saves back to TOML while preserving unrelated keys and comments.
 
-The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately.
+The record and transform hotkey rows include **Capture…** buttons. Click one, then press a supported key or key chord to fill the field automatically. The hotkey field updates live as you press or release keys during capture. Press `Escape` with no modifiers to cancel capture. Duplicate record/transform bindings are rejected immediately.
 
 Apply behavior:
 

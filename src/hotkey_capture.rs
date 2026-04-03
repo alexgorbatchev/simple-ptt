@@ -3,13 +3,19 @@ use std::sync::{Arc, Mutex};
 use rdev::Key;
 
 use crate::hotkey_binding::{
-    format_hotkey_binding, is_modifier_key, HotkeyBinding, HotkeyModifiers,
+    format_hotkey_binding, is_modifier_key, key_name, HotkeyBinding, HotkeyModifiers,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HotkeyCaptureTarget {
     Record,
     Transform,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HotkeyCapturePreview {
+    pub target: HotkeyCaptureTarget,
+    pub text: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -33,6 +39,7 @@ struct HotkeyCaptureState {
     active_target: Option<HotkeyCaptureTarget>,
     active_modifiers: HotkeyModifiers,
     pending_outcome: Option<HotkeyCaptureOutcome>,
+    pending_preview: Option<HotkeyCapturePreview>,
     pending_single_modifier_key: Option<Key>,
 }
 
@@ -46,6 +53,10 @@ impl HotkeyCaptureController {
             state.active_target = Some(target);
             state.active_modifiers = HotkeyModifiers::default();
             state.pending_outcome = None;
+            state.pending_preview = Some(HotkeyCapturePreview {
+                target,
+                text: String::new(),
+            });
             state.pending_single_modifier_key = None;
         }
     }
@@ -55,15 +66,23 @@ impl HotkeyCaptureController {
             state.active_target = None;
             state.active_modifiers = HotkeyModifiers::default();
             state.pending_outcome = None;
+            state.pending_preview = None;
             state.pending_single_modifier_key = None;
         }
     }
 
-    pub fn has_pending_outcome(&self) -> bool {
+    pub fn has_pending_ui_update(&self) -> bool {
         self.state
             .lock()
-            .map(|state| state.pending_outcome.is_some())
+            .map(|state| state.pending_outcome.is_some() || state.pending_preview.is_some())
             .unwrap_or(false)
+    }
+
+    pub fn take_preview(&self) -> Option<HotkeyCapturePreview> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|mut state| state.pending_preview.take())
     }
 
     pub fn take_outcome(&self) -> Option<HotkeyCaptureOutcome> {
@@ -84,6 +103,7 @@ impl HotkeyCaptureController {
         if key == Key::Escape && !active_modifiers.any() {
             state.active_target = None;
             state.active_modifiers = HotkeyModifiers::default();
+            state.pending_preview = None;
             state.pending_single_modifier_key = None;
             state.pending_outcome = Some(HotkeyCaptureOutcome::Cancelled { target });
             return true;
@@ -92,11 +112,19 @@ impl HotkeyCaptureController {
         if is_modifier_key(key) {
             state.active_modifiers = active_modifiers.with_key_pressed(key);
             state.pending_single_modifier_key = Some(key);
+            state.pending_preview = Some(HotkeyCapturePreview {
+                target,
+                text: format_capture_preview(
+                    state.active_modifiers,
+                    state.pending_single_modifier_key,
+                ),
+            });
             return true;
         }
 
         state.active_target = None;
         state.active_modifiers = HotkeyModifiers::default();
+        state.pending_preview = None;
         state.pending_single_modifier_key = None;
         state.pending_outcome = Some(HotkeyCaptureOutcome::Captured {
             target,
@@ -121,6 +149,7 @@ impl HotkeyCaptureController {
             state.active_modifiers = state.active_modifiers.with_key_released(key);
             if state.pending_single_modifier_key == Some(key) && !state.active_modifiers.any() {
                 state.active_target = None;
+                state.pending_preview = None;
                 state.pending_single_modifier_key = None;
                 state.pending_outcome = Some(HotkeyCaptureOutcome::Captured {
                     target,
@@ -129,14 +158,46 @@ impl HotkeyCaptureController {
                         key,
                     },
                 });
-            } else if modifier_before_release != state.active_modifiers {
-                state.pending_single_modifier_key = None;
+            } else {
+                if modifier_before_release != state.active_modifiers {
+                    state.pending_single_modifier_key = None;
+                }
+                state.pending_preview = Some(HotkeyCapturePreview {
+                    target,
+                    text: format_capture_preview(
+                        state.active_modifiers,
+                        state.pending_single_modifier_key,
+                    ),
+                });
             }
             return true;
         }
 
         true
     }
+}
+
+fn format_capture_preview(modifiers: HotkeyModifiers, single_modifier_key: Option<Key>) -> String {
+    if let Some(key) = single_modifier_key {
+        if modifiers == HotkeyModifiers::default().with_key_pressed(key) {
+            return key_name(key).unwrap_or_default().to_owned();
+        }
+    }
+
+    let mut tokens = Vec::new();
+    if modifiers.control {
+        tokens.push("Ctrl");
+    }
+    if modifiers.alt {
+        tokens.push("Alt");
+    }
+    if modifiers.shift {
+        tokens.push("Shift");
+    }
+    if modifiers.meta {
+        tokens.push("Cmd");
+    }
+    tokens.join("+")
 }
 
 pub fn capture_outcome_message(outcome: HotkeyCaptureOutcome) -> Option<String> {
@@ -158,7 +219,9 @@ pub fn capture_outcome_message(outcome: HotkeyCaptureOutcome) -> Option<String> 
 
 #[cfg(test)]
 mod tests {
-    use super::{HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCaptureTarget};
+    use super::{
+        HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview, HotkeyCaptureTarget,
+    };
     use crate::hotkey_binding::{HotkeyBinding, HotkeyModifiers};
     use rdev::Key;
 
@@ -167,7 +230,21 @@ mod tests {
         let controller = HotkeyCaptureController::new();
         controller.begin_capture(HotkeyCaptureTarget::Record);
 
+        assert_eq!(
+            controller.take_preview(),
+            Some(HotkeyCapturePreview {
+                target: HotkeyCaptureTarget::Record,
+                text: String::new(),
+            })
+        );
         assert!(controller.handle_key_press(Key::ShiftLeft, HotkeyModifiers::default()));
+        assert_eq!(
+            controller.take_preview(),
+            Some(HotkeyCapturePreview {
+                target: HotkeyCaptureTarget::Record,
+                text: "LeftShift".to_owned(),
+            })
+        );
         assert!(controller.handle_key_press(
             Key::MetaLeft,
             HotkeyModifiers {
@@ -175,6 +252,13 @@ mod tests {
                 ..HotkeyModifiers::default()
             }
         ));
+        assert_eq!(
+            controller.take_preview(),
+            Some(HotkeyCapturePreview {
+                target: HotkeyCaptureTarget::Record,
+                text: "Shift+Cmd".to_owned(),
+            })
+        );
         assert!(controller.handle_key_press(
             Key::KeyZ,
             HotkeyModifiers {
@@ -219,6 +303,13 @@ mod tests {
         controller.begin_capture(HotkeyCaptureTarget::Transform);
 
         assert!(controller.handle_key_press(Key::ShiftLeft, HotkeyModifiers::default()));
+        assert_eq!(
+            controller.take_preview(),
+            Some(HotkeyCapturePreview {
+                target: HotkeyCaptureTarget::Transform,
+                text: "LeftShift".to_owned(),
+            })
+        );
         assert!(controller.handle_key_release(Key::ShiftLeft));
         assert_eq!(
             controller.take_outcome(),
@@ -228,6 +319,33 @@ mod tests {
                     modifiers: HotkeyModifiers::default(),
                     key: Key::ShiftLeft,
                 },
+            })
+        );
+    }
+
+    #[test]
+    fn releasing_one_modifier_updates_preview_to_remaining_keys() {
+        let controller = HotkeyCaptureController::new();
+        controller.begin_capture(HotkeyCaptureTarget::Record);
+        let _ = controller.take_preview();
+
+        assert!(controller.handle_key_press(Key::ShiftLeft, HotkeyModifiers::default()));
+        let _ = controller.take_preview();
+        assert!(controller.handle_key_press(
+            Key::MetaLeft,
+            HotkeyModifiers {
+                shift: true,
+                ..HotkeyModifiers::default()
+            }
+        ));
+        let _ = controller.take_preview();
+
+        assert!(controller.handle_key_release(Key::MetaLeft));
+        assert_eq!(
+            controller.take_preview(),
+            Some(HotkeyCapturePreview {
+                target: HotkeyCaptureTarget::Record,
+                text: "Shift".to_owned(),
             })
         );
     }

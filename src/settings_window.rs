@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{sel, MainThreadOnly};
@@ -63,6 +65,7 @@ pub struct SettingsWindow {
     transformation_api_key_env_hint_field: Retained<NSTextField>,
     transformation_model_field: Retained<NSTextField>,
     transformation_system_prompt_view: Retained<NSTextView>,
+    hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
 
 impl SettingsWindow {
@@ -274,6 +277,7 @@ impl SettingsWindow {
             transformation_api_key_env_hint_field,
             transformation_model_field,
             transformation_system_prompt_view,
+            hotkey_capture_restore_value: RefCell::new(None),
         }
     }
 
@@ -443,11 +447,26 @@ impl SettingsWindow {
     }
 
     pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
+        self.hotkey_capture_restore_value
+            .replace(Some((target, self.hotkey_value(target))));
         self.set_hotkey_capture_state(Some(target));
+        self.set_hotkey_value(target, "");
         self.set_status("Press a key, or Esc to cancel");
     }
 
+    pub fn set_hotkey_capture_preview(&self, target: HotkeyCaptureTarget, value: &str) {
+        self.set_hotkey_value(target, value);
+    }
+
+    pub fn cancel_hotkey_capture(&self) {
+        if let Some((target, value)) = self.hotkey_capture_restore_value.borrow_mut().take() {
+            self.set_hotkey_value(target, &value);
+        }
+        self.set_hotkey_capture_state(None);
+    }
+
     pub fn finish_hotkey_capture(&self) {
+        self.hotkey_capture_restore_value.borrow_mut().take();
         self.set_hotkey_capture_state(None);
     }
 
