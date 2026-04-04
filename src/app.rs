@@ -62,6 +62,7 @@ pub struct Ivars {
     startup_hotkey_permissions: GlobalHotkeyPermissions,
     accessibility_permission_requested: Cell<bool>,
     input_monitoring_permission_requested: Cell<bool>,
+    microphone_permission_requested: Cell<bool>,
     settings_window: OnceCell<SettingsWindow>,
     transformation_models_controller: TransformationModelsController,
     status_item: OnceCell<Retained<NSStatusItem>>,
@@ -314,20 +315,41 @@ define_class!(
             self.sync_hotkey_permissions_ui();
         }
 
+        #[unsafe(method(requestMicrophonePermission:))]
+        fn request_microphone_permission(&self, _sender: Option<&AnyObject>) {
+            let flow = self.current_hotkey_permission_flow();
+            let result = if matches!(
+                flow.microphone_state,
+                permissions::GlobalHotkeyPermissionState::Requested
+            ) {
+                self.open_system_settings_and_activate(permissions::microphone_settings_urls())
+            } else {
+                self.ivars().microphone_permission_requested.set(true);
+                permissions::request_microphone_access()
+            };
+
+            if let Err(error) = result {
+                log::error!("failed to request microphone access: {}", error);
+            }
+            self.sync_hotkey_permissions_ui();
+        }
+
         #[unsafe(method(resetHotkeyPermissions:))]
         fn reset_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
-            if let Err(error) = permissions::reset_global_hotkey_permissions() {
+            if let Err(error) = permissions::reset_application_permissions() {
                 log::error!("failed to reset macOS permissions: {}", error);
             }
 
             self.ivars().accessibility_permission_requested.set(false);
             self.ivars().input_monitoring_permission_requested.set(false);
+            self.ivars().microphone_permission_requested.set(false);
             self.sync_hotkey_permissions_ui();
         }
 
         #[unsafe(method(recheckHotkeyPermissions:))]
         fn recheck_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
             self.sync_hotkey_permissions_ui();
+            self.activate_audio_if_ready();
         }
 
         #[unsafe(method(quitFromPermissionsDialog:))]
@@ -529,6 +551,7 @@ impl AppDelegate {
             startup_hotkey_permissions,
             accessibility_permission_requested: Cell::new(false),
             input_monitoring_permission_requested: Cell::new(false),
+            microphone_permission_requested: Cell::new(false),
             settings_window: OnceCell::new(),
             transformation_models_controller,
             status_item: OnceCell::new(),
@@ -541,6 +564,7 @@ impl AppDelegate {
             self.ivars().startup_hotkey_permissions,
             self.ivars().accessibility_permission_requested.get(),
             self.ivars().input_monitoring_permission_requested.get(),
+            self.ivars().microphone_permission_requested.get(),
         )
     }
 
@@ -550,6 +574,26 @@ impl AppDelegate {
         };
 
         permissions_dialog.sync(&self.current_hotkey_permission_flow());
+    }
+
+    fn activate_audio_if_ready(&self) {
+        let flow = self.current_hotkey_permission_flow();
+        if flow.relaunch_required()
+            || !flow.permissions.hotkey_permissions_granted()
+            || !flow.permissions.microphone_granted
+        {
+            return;
+        }
+
+        if let Err(error) = self.ivars().audio_controller.ensure_input_stream_ready() {
+            log::error!(
+                "failed to activate audio input after microphone grant: {}",
+                error
+            );
+            if let Some(settings_window) = self.ivars().settings_window.get() {
+                settings_window.set_status(&error);
+            }
+        }
     }
 
     fn promote_for_window_presentation(&self) {

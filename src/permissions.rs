@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use block2::RcBlock;
+use objc2_av_foundation::{AVAuthorizationStatus, AVCaptureDevice, AVMediaType, AVMediaTypeAudio};
 use objc2_core_graphics::{CGPreflightListenEventAccess, CGRequestListenEventAccess};
 
 const APP_BUNDLE_IDENTIFIER: &str = "io.github.alexgorbatchev.simple-ptt";
@@ -22,6 +24,7 @@ pub enum GlobalHotkeyPermissionState {
 pub struct GlobalHotkeyPermissions {
     pub accessibility_granted: bool,
     pub input_monitoring_granted: bool,
+    pub microphone_granted: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -29,6 +32,7 @@ pub struct GlobalHotkeyPermissionFlow {
     pub permissions: GlobalHotkeyPermissions,
     pub accessibility_state: GlobalHotkeyPermissionState,
     pub input_monitoring_state: GlobalHotkeyPermissionState,
+    pub microphone_state: GlobalHotkeyPermissionState,
 }
 
 impl GlobalHotkeyPermissions {
@@ -36,11 +40,16 @@ impl GlobalHotkeyPermissions {
         Self {
             accessibility_granted: has_accessibility_access(),
             input_monitoring_granted: has_input_monitoring_access(),
+            microphone_granted: has_microphone_access(),
         }
     }
 
-    pub fn all_granted(self) -> bool {
+    pub fn hotkey_permissions_granted(self) -> bool {
         self.accessibility_granted && self.input_monitoring_granted
+    }
+
+    pub fn all_granted(self) -> bool {
+        self.hotkey_permissions_granted() && self.microphone_granted
     }
 }
 
@@ -50,9 +59,11 @@ impl GlobalHotkeyPermissionFlow {
             permissions: GlobalHotkeyPermissions {
                 accessibility_granted: false,
                 input_monitoring_granted: false,
+                microphone_granted: false,
             },
             accessibility_state: GlobalHotkeyPermissionState::Unknown,
             input_monitoring_state: GlobalHotkeyPermissionState::Unknown,
+            microphone_state: GlobalHotkeyPermissionState::Unknown,
         }
     }
 
@@ -75,17 +86,28 @@ pub fn resolve_global_hotkey_permission_flow(
     startup_permissions: GlobalHotkeyPermissions,
     accessibility_requested: bool,
     input_monitoring_requested: bool,
+    microphone_requested: bool,
 ) -> GlobalHotkeyPermissionFlow {
     build_global_hotkey_permission_flow(
         startup_permissions,
         GlobalHotkeyPermissions::current(),
         accessibility_requested,
         input_monitoring_requested,
+        microphone_requested,
     )
 }
 
 pub fn request_input_monitoring_access() -> Result<bool, String> {
     Ok(CGRequestListenEventAccess())
+}
+
+pub fn request_microphone_access() -> Result<(), String> {
+    let media_type = audio_media_type()?;
+    let completion = RcBlock::new(|_granted| {});
+    unsafe {
+        AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &completion);
+    }
+    Ok(())
 }
 
 pub fn input_monitoring_settings_urls() -> [&'static str; 2] {
@@ -102,9 +124,17 @@ pub fn accessibility_settings_urls() -> [&'static str; 2] {
     ]
 }
 
-pub fn reset_global_hotkey_permissions() -> Result<(), String> {
+pub fn microphone_settings_urls() -> [&'static str; 2] {
+    [
+        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Microphone",
+        "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+    ]
+}
+
+pub fn reset_application_permissions() -> Result<(), String> {
     run_tccutil_reset("Accessibility")?;
     run_tccutil_reset("ListenEvent")?;
+    run_tccutil_reset("Microphone")?;
     Ok(())
 }
 
@@ -142,23 +172,29 @@ fn build_global_hotkey_permission_flow(
     current_permissions: GlobalHotkeyPermissions,
     accessibility_requested: bool,
     input_monitoring_requested: bool,
+    microphone_requested: bool,
 ) -> GlobalHotkeyPermissionFlow {
     GlobalHotkeyPermissionFlow {
         permissions: current_permissions,
-        accessibility_state: resolve_permission_state(
+        accessibility_state: resolve_hotkey_permission_state(
             startup_permissions.accessibility_granted,
             current_permissions.accessibility_granted,
             accessibility_requested,
         ),
-        input_monitoring_state: resolve_permission_state(
+        input_monitoring_state: resolve_hotkey_permission_state(
             startup_permissions.input_monitoring_granted,
             current_permissions.input_monitoring_granted,
             input_monitoring_requested,
         ),
+        microphone_state: resolve_microphone_permission_state(
+            current_permissions.microphone_granted,
+            microphone_authorization_status(),
+            microphone_requested,
+        ),
     }
 }
 
-fn resolve_permission_state(
+fn resolve_hotkey_permission_state(
     granted_at_startup: bool,
     granted_now: bool,
     requested: bool,
@@ -172,6 +208,27 @@ fn resolve_permission_state(
     }
 
     if requested {
+        return GlobalHotkeyPermissionState::Requested;
+    }
+
+    GlobalHotkeyPermissionState::Missing
+}
+
+fn resolve_microphone_permission_state(
+    granted_now: bool,
+    authorization_status: AVAuthorizationStatus,
+    requested: bool,
+) -> GlobalHotkeyPermissionState {
+    if granted_now {
+        return GlobalHotkeyPermissionState::Granted;
+    }
+
+    if requested
+        || matches!(
+            authorization_status,
+            AVAuthorizationStatus::Denied | AVAuthorizationStatus::Restricted
+        )
+    {
         return GlobalHotkeyPermissionState::Requested;
     }
 
@@ -221,13 +278,34 @@ fn has_accessibility_access() -> bool {
     unsafe { AXIsProcessTrusted() }
 }
 
+fn has_microphone_access() -> bool {
+    matches!(
+        microphone_authorization_status(),
+        AVAuthorizationStatus::Authorized
+    )
+}
+
+fn microphone_authorization_status() -> AVAuthorizationStatus {
+    match audio_media_type() {
+        Ok(media_type) => unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) },
+        Err(_) => AVAuthorizationStatus::NotDetermined,
+    }
+}
+
+fn audio_media_type() -> Result<&'static AVMediaType, String> {
+    unsafe { AVMediaTypeAudio }.ok_or_else(|| "AVMediaTypeAudio is unavailable".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
 
+    use objc2_av_foundation::AVAuthorizationStatus;
+
     use super::{
         app_bundle_path_from_executable, build_global_hotkey_permission_flow,
-        GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState, GlobalHotkeyPermissions,
+        resolve_microphone_permission_state, GlobalHotkeyPermissionFlow,
+        GlobalHotkeyPermissionState, GlobalHotkeyPermissions,
     };
 
     #[test]
@@ -242,21 +320,25 @@ mod tests {
             flow.input_monitoring_state,
             GlobalHotkeyPermissionState::Unknown
         );
+        assert_eq!(flow.microphone_state, GlobalHotkeyPermissionState::Unknown);
         assert!(!flow.all_granted());
         assert!(!flow.relaunch_required());
     }
 
     #[test]
-    fn flow_requires_relaunch_when_permissions_were_missing_at_startup() {
+    fn flow_requires_relaunch_when_hotkey_permissions_were_missing_at_startup() {
         let flow = build_global_hotkey_permission_flow(
             GlobalHotkeyPermissions {
                 accessibility_granted: false,
                 input_monitoring_granted: false,
+                microphone_granted: false,
             },
             GlobalHotkeyPermissions {
                 accessibility_granted: true,
                 input_monitoring_granted: true,
+                microphone_granted: true,
             },
+            true,
             true,
             true,
         );
@@ -269,6 +351,7 @@ mod tests {
             flow.input_monitoring_state,
             GlobalHotkeyPermissionState::NeedsRelaunch
         );
+        assert_eq!(flow.microphone_state, GlobalHotkeyPermissionState::Granted);
         assert!(flow.relaunch_required());
     }
 
@@ -278,13 +361,16 @@ mod tests {
             GlobalHotkeyPermissions {
                 accessibility_granted: false,
                 input_monitoring_granted: false,
+                microphone_granted: false,
             },
             GlobalHotkeyPermissions {
                 accessibility_granted: false,
                 input_monitoring_granted: false,
+                microphone_granted: false,
             },
             true,
             false,
+            true,
         );
 
         assert_eq!(
@@ -295,6 +381,10 @@ mod tests {
             flow.input_monitoring_state,
             GlobalHotkeyPermissionState::Missing
         );
+        assert_eq!(
+            flow.microphone_state,
+            GlobalHotkeyPermissionState::Requested
+        );
         assert!(!flow.relaunch_required());
     }
 
@@ -304,11 +394,14 @@ mod tests {
             GlobalHotkeyPermissions {
                 accessibility_granted: true,
                 input_monitoring_granted: true,
+                microphone_granted: true,
             },
             GlobalHotkeyPermissions {
                 accessibility_granted: true,
                 input_monitoring_granted: true,
+                microphone_granted: true,
             },
+            false,
             false,
             false,
         );
@@ -321,8 +414,17 @@ mod tests {
             flow.input_monitoring_state,
             GlobalHotkeyPermissionState::Granted
         );
+        assert_eq!(flow.microphone_state, GlobalHotkeyPermissionState::Granted);
         assert!(flow.all_granted());
         assert!(!flow.relaunch_required());
+    }
+
+    #[test]
+    fn microphone_denied_maps_to_requested_state() {
+        assert_eq!(
+            resolve_microphone_permission_state(false, AVAuthorizationStatus::Denied, false),
+            GlobalHotkeyPermissionState::Requested
+        );
     }
 
     #[test]

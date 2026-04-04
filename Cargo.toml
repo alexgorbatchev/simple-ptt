@@ -70,6 +70,7 @@ objc2-app-kit = { version = "0.3", features = [
 objc2-quartz-core = { version = "0.3", features = ["objc2-core-foundation", "objc2-core-graphics"] }
 objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString"] }
 objc2-core-graphics = { version = "0.3", features = ["CGEvent", "CGEventTypes"] }
+objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 
 # Global hotkey capture and synthetic paste shortcut on macOS
 rdev = { version = "0.5", features = ["unstable_grab"] }

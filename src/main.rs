@@ -106,7 +106,10 @@ fn run_graphical_application() -> Result<(), String> {
         billing::BillingController::new(shared_state.clone(), config_store.clone());
     let transcription_controller =
         transcription::spawn_transcription_thread(shared_state.clone(), config_store.clone());
-    let (audio_controller, initial_audio_error) = if startup_hotkey_permissions.all_granted() {
+    let (audio_controller, initial_audio_error) = if startup_hotkey_permissions
+        .hotkey_permissions_granted()
+        && startup_hotkey_permissions.microphone_granted
+    {
         audio::AudioController::new(
             shared_state.clone(),
             transcription_controller.clone(),
@@ -123,7 +126,7 @@ fn run_graphical_application() -> Result<(), String> {
         )
     };
 
-    if startup_hotkey_permissions.all_granted() {
+    if startup_hotkey_permissions.hotkey_permissions_granted() {
         hotkey::spawn_hotkey_thread(
             shared_state.clone(),
             billing_controller.clone(),

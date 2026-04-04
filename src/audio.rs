@@ -213,6 +213,21 @@ impl AudioController {
         Ok(AudioConfigApplyEffect::AppliedNow)
     }
 
+    pub fn ensure_input_stream_ready(&self) -> Result<bool, String> {
+        let active_stream = self
+            .active_stream
+            .lock()
+            .map_err(|_| "audio stream lock poisoned".to_owned())?;
+        if active_stream.is_some() {
+            return Ok(false);
+        }
+        drop(active_stream);
+
+        let mic_config = self.config_store.current().mic;
+        self.rebuild_stream(&mic_config)?;
+        Ok(true)
+    }
+
     pub fn apply_pending_if_idle(&self) {
         if self.state.is_recording() {
             return;
