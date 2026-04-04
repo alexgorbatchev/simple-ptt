@@ -295,26 +295,6 @@ define_class!(
             self.sync_hotkey_permissions_ui();
         }
 
-        #[unsafe(method(requestInputMonitoringPermission:))]
-        fn request_input_monitoring_permission(&self, _sender: Option<&AnyObject>) {
-            self.deactivate_for_system_settings_transition();
-            let flow = self.current_hotkey_permission_flow();
-            let result = if matches!(
-                flow.input_monitoring_state,
-                permissions::GlobalHotkeyPermissionState::Requested
-            ) {
-                self.open_system_settings_and_activate(permissions::input_monitoring_settings_urls())
-            } else {
-                self.ivars().input_monitoring_permission_requested.set(true);
-                permissions::request_input_monitoring_access().map(|_| ())
-            };
-
-            if let Err(error) = result {
-                log::error!("failed to request Input Monitoring access: {}", error);
-            }
-            self.sync_hotkey_permissions_ui();
-        }
-
         #[unsafe(method(requestMicrophonePermission:))]
         fn request_microphone_permission(&self, _sender: Option<&AnyObject>) {
             let flow = self.current_hotkey_permission_flow();
@@ -569,11 +549,30 @@ impl AppDelegate {
     }
 
     fn sync_hotkey_permissions_ui(&self) {
+        self.ensure_input_monitoring_access_requested();
+
         let Some(permissions_dialog) = self.ivars().permissions_dialog.get() else {
             return;
         };
 
         permissions_dialog.sync(&self.current_hotkey_permission_flow());
+    }
+
+    fn ensure_input_monitoring_access_requested(&self) {
+        let flow = self.current_hotkey_permission_flow();
+        if flow.permissions.input_monitoring_granted
+            || self.ivars().input_monitoring_permission_requested.get()
+        {
+            return;
+        }
+
+        self.ivars().input_monitoring_permission_requested.set(true);
+        if let Err(error) = permissions::request_input_monitoring_access() {
+            log::error!(
+                "failed to request background Input Monitoring access: {}",
+                error
+            );
+        }
     }
 
     fn activate_audio_if_ready(&self) {

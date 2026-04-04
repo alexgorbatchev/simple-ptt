@@ -110,13 +110,6 @@ pub fn request_microphone_access() -> Result<(), String> {
     Ok(())
 }
 
-pub fn input_monitoring_settings_urls() -> [&'static str; 2] {
-    [
-        "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_ListenEvent",
-        "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
-    ]
-}
-
 pub fn accessibility_settings_urls() -> [&'static str; 2] {
     [
         "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",

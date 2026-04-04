@@ -20,13 +20,14 @@ extern "C" {
 }
 
 const WINDOW_HEIGHT: f64 = 250.0;
-const WINDOW_WIDTH: f64 = 680.0;
+const WINDOW_WIDTH: f64 = 570.0;
 const HORIZONTAL_PADDING: f64 = 20.0;
 const BUTTON_HEIGHT: f64 = 30.0;
 const BUTTON_GAP: f64 = 10.0;
 const TOP_BUTTON_ROW_Y: f64 = 54.0;
 const BOTTOM_BUTTON_ROW_Y: f64 = 18.0;
 const LABEL_WIDTH: f64 = WINDOW_WIDTH - (HORIZONTAL_PADDING * 2.0);
+const TWO_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - BUTTON_GAP) / 2.0;
 const THREE_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - (BUTTON_GAP * 2.0)) / 3.0;
 const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
@@ -37,7 +38,6 @@ pub struct PermissionsDialog {
     window: Retained<NSWindow>,
     summary_text_field: Retained<NSTextField>,
     accessibility_button: Retained<NSButton>,
-    input_monitoring_button: Retained<NSButton>,
     microphone_button: Retained<NSButton>,
     completion_button: Retained<NSButton>,
 }
@@ -113,28 +113,10 @@ impl PermissionsDialog {
             &*accessibility_button,
             HORIZONTAL_PADDING,
             TOP_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
+            TWO_BUTTON_ROW_WIDTH,
             BUTTON_HEIGHT,
         );
         root_view.addSubview(&accessibility_button);
-
-        let input_monitoring_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Request Input Monitoring"),
-                Some(target),
-                Some(sel!(requestInputMonitoringPermission:)),
-                mtm,
-            )
-        };
-        input_monitoring_button.setFont(Some(&settings_font()));
-        set_view_frame(
-            &*input_monitoring_button,
-            HORIZONTAL_PADDING + THREE_BUTTON_ROW_WIDTH + BUTTON_GAP,
-            TOP_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
-        );
-        root_view.addSubview(&input_monitoring_button);
 
         let microphone_button = unsafe {
             NSButton::buttonWithTitle_target_action(
@@ -147,9 +129,9 @@ impl PermissionsDialog {
         microphone_button.setFont(Some(&settings_font()));
         set_view_frame(
             &*microphone_button,
-            HORIZONTAL_PADDING + (THREE_BUTTON_ROW_WIDTH * 2.0) + (BUTTON_GAP * 2.0),
+            HORIZONTAL_PADDING + TWO_BUTTON_ROW_WIDTH + BUTTON_GAP,
             TOP_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
+            TWO_BUTTON_ROW_WIDTH,
             BUTTON_HEIGHT,
         );
         root_view.addSubview(&microphone_button);
@@ -216,7 +198,6 @@ impl PermissionsDialog {
             window,
             summary_text_field,
             accessibility_button,
-            input_monitoring_button,
             microphone_button,
             completion_button: quit_button,
         };
@@ -254,13 +235,6 @@ impl PermissionsDialog {
             flow.accessibility_state,
             "Open Accessibility",
             "Open Accessibility",
-        );
-        sync_permission_button(
-            &self.input_monitoring_button,
-            "Input Monitoring",
-            flow.input_monitoring_state,
-            "Request Input Monitoring",
-            "Open Input Monitoring",
         );
         sync_permission_button(
             &self.microphone_button,
@@ -304,21 +278,21 @@ fn permissions_dialog_summary_text(flow: &GlobalHotkeyPermissionFlow) -> String 
     ) {
         return concat!(
             "Finish the remaining grants in macOS, then click Re-check. ",
-            "If a permission button switches to Open, macOS now requires that privacy pane instead of another prompt. ",
-            "Microphone access can start working in the current app session after Re-check. Accessibility and Input Monitoring still commonly require quitting and reopening simple-ptt before the full hotkey flow becomes active. ",
+            "If a visible permission button switches to Open, macOS now requires that privacy pane instead of another prompt. ",
+            "Microphone access can start working in the current app session after Re-check. Global shortcut access may still require quitting and reopening simple-ptt after macOS updates the app trust state. ",
             "If you leave this window, reopen it from the menu bar with Application Permissions…."
         )
         .to_owned();
     }
 
     if flow.all_granted() {
-        return "Accessibility, Input Monitoring, and Microphone are already granted for this app bundle."
-            .to_owned();
+        return "Application permissions are already granted for this app bundle.".to_owned();
     }
 
     concat!(
-        "simple-ptt needs Input Monitoring to listen for the global CGEventTap hotkeys, Accessibility to drive the synthetic paste shortcut, and Microphone access to capture audio. ",
-        "Click each permission button to ask macOS for access. If macOS stops prompting or a grant looks stale, use Reset Permissions and try again. ",
+        "simple-ptt needs Accessibility to drive the synthetic paste shortcut and Microphone access to capture audio. ",
+        "Global shortcut access is checked automatically in the background, so there is no separate Input Monitoring button anymore. ",
+        "If macOS stops prompting or a grant looks stale, use Reset Permissions and try again. ",
         "If you leave this window, reopen it from the menu bar with Application Permissions…."
     )
     .to_owned()
@@ -431,12 +405,28 @@ mod tests {
                 microphone_granted: false,
             },
             accessibility_state: GlobalHotkeyPermissionState::Requested,
-            input_monitoring_state: GlobalHotkeyPermissionState::Missing,
+            input_monitoring_state: GlobalHotkeyPermissionState::Requested,
             microphone_state: GlobalHotkeyPermissionState::Requested,
         });
 
         assert!(text.contains("Re-check"));
         assert!(text.contains("Microphone access can start working in the current app session"));
+    }
+
+    #[test]
+    fn permissions_dialog_summary_explains_hidden_input_monitoring_step() {
+        let text = permissions_dialog_summary_text(&GlobalHotkeyPermissionFlow {
+            permissions: GlobalHotkeyPermissions {
+                accessibility_granted: false,
+                input_monitoring_granted: false,
+                microphone_granted: false,
+            },
+            accessibility_state: GlobalHotkeyPermissionState::Missing,
+            input_monitoring_state: GlobalHotkeyPermissionState::Missing,
+            microphone_state: GlobalHotkeyPermissionState::Missing,
+        });
+
+        assert!(text.contains("no separate Input Monitoring button anymore"));
     }
 
     #[test]
