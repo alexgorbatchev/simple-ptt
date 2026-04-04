@@ -1,7 +1,7 @@
 use std::ffi::c_void;
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, SyncSender, TrySendError};
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -26,7 +26,6 @@ use crate::state::{
 use crate::transformation::{transform_text, TransformationRuntimeConfig};
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
-const COMMAND_QUEUE_CAPACITY: usize = 256;
 const KEY_EVENT_DELAY_MS: u64 = 20;
 const PASTEBOARD_SETTLE_DELAY_MS: u64 = 50;
 
@@ -41,7 +40,7 @@ pub struct DeepgramConfig {
 
 #[derive(Clone)]
 pub struct TranscriptionController {
-    command_tx: SyncSender<Command>,
+    command_tx: Sender<Command>,
     sample_rate: Arc<AtomicU32>,
 }
 
@@ -120,14 +119,8 @@ impl TranscriptionController {
             return;
         }
 
-        match self.command_tx.try_send(Command::AudioChunk(pcm_bytes)) {
-            Ok(()) => {}
-            Err(TrySendError::Full(_)) => {
-                log::debug!("dropping audio chunk because the transcription command queue is full");
-            }
-            Err(TrySendError::Disconnected(_)) => {
-                log::error!("dropping audio chunk because the transcription worker is unavailable");
-            }
+        if let Err(_) = self.command_tx.send(Command::AudioChunk(pcm_bytes)) {
+            log::error!("dropping audio chunk because the transcription worker is unavailable");
         }
     }
 }
@@ -136,7 +129,7 @@ pub fn spawn_transcription_thread(
     state: Arc<AppState>,
     config_store: LiveConfigStore,
 ) -> TranscriptionController {
-    let (command_tx, command_rx) = mpsc::sync_channel(COMMAND_QUEUE_CAPACITY);
+    let (command_tx, command_rx) = mpsc::channel();
     let sample_rate = Arc::new(AtomicU32::new(16000));
     let worker_sample_rate = Arc::clone(&sample_rate);
 
