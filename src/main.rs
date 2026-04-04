@@ -94,9 +94,7 @@ fn run_graphical_application() -> Result<(), String> {
 
     let config_store =
         settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
-    if !app::show_hotkey_permissions_dialog() {
-        return Ok(());
-    }
+    let startup_hotkey_permissions = permissions::GlobalHotkeyPermissions::current();
 
     let hotkey_capture_controller = hotkey_capture::HotkeyCaptureController::new();
     let transformation_models_controller =
@@ -108,19 +106,36 @@ fn run_graphical_application() -> Result<(), String> {
         billing::BillingController::new(shared_state.clone(), config_store.clone());
     let transcription_controller =
         transcription::spawn_transcription_thread(shared_state.clone(), config_store.clone());
-    let audio_controller = audio::AudioController::new(
-        shared_state.clone(),
-        transcription_controller.clone(),
-        config_store.clone(),
-    )?;
+    let (audio_controller, initial_audio_error) = if startup_hotkey_permissions.all_granted() {
+        audio::AudioController::new(
+            shared_state.clone(),
+            transcription_controller.clone(),
+            config_store.clone(),
+        )
+    } else {
+        (
+            audio::AudioController::inactive(
+                shared_state.clone(),
+                transcription_controller.clone(),
+                config_store.clone(),
+            ),
+            None,
+        )
+    };
 
-    hotkey::spawn_hotkey_thread(
-        shared_state.clone(),
-        billing_controller.clone(),
-        transcription_controller,
-        config_store.clone(),
-        hotkey_capture_controller.clone(),
-    );
+    if startup_hotkey_permissions.all_granted() {
+        hotkey::spawn_hotkey_thread(
+            shared_state.clone(),
+            billing_controller.clone(),
+            transcription_controller,
+            config_store.clone(),
+            hotkey_capture_controller.clone(),
+        );
+    } else {
+        log::warn!(
+            "global hotkey thread not started because Accessibility or Input Monitoring is missing at launch; relaunch after granting both permissions"
+        );
+    }
 
     let mtm = MainThreadMarker::new().expect("must run on main thread");
     let ns_app = NSApplication::sharedApplication(mtm);
@@ -128,6 +143,8 @@ fn run_graphical_application() -> Result<(), String> {
         mtm,
         app::overlay_style_from_config(&runtime_config),
         config_store,
+        startup_hotkey_permissions,
+        initial_audio_error,
         hotkey_capture_controller.clone(),
         transformation_models_controller.clone(),
         deepgram_connection_controller.clone(),

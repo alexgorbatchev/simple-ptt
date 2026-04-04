@@ -1,14 +1,16 @@
-use std::cell::OnceCell;
+use std::cell::{Cell, OnceCell};
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
 
+use block2::StackBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSImageScaling, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSWindowDelegate, NSWorkspace,
+    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationOptions,
+    NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu, NSMenuItem,
+    NSStatusBar, NSStatusItem, NSWindowDelegate, NSWorkspace, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
@@ -27,6 +29,8 @@ use crate::hotkey_capture::{
 };
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
 use crate::overlay::{OverlayStyle, OverlayWindow};
+use crate::permissions::{self, GlobalHotkeyPermissions};
+use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
 use crate::settings_window::SettingsWindow;
 use crate::state::{
@@ -44,6 +48,7 @@ const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
     audio_controller: AudioController,
+    initial_audio_error: Option<String>,
     billing_controller: BillingController,
     billing_menu_item: OnceCell<Retained<NSMenuItem>>,
     config_store: LiveConfigStore,
@@ -53,6 +58,10 @@ pub struct Ivars {
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     overlay_window: OnceCell<OverlayWindow>,
+    permissions_dialog: OnceCell<PermissionsDialog>,
+    startup_hotkey_permissions: GlobalHotkeyPermissions,
+    accessibility_permission_requested: Cell<bool>,
+    input_monitoring_permission_requested: Cell<bool>,
     settings_window: OnceCell<SettingsWindow>,
     transformation_models_controller: TransformationModelsController,
     status_item: OnceCell<Retained<NSStatusItem>>,
@@ -72,7 +81,27 @@ define_class!(
         fn did_finish_launching(&self, _notification: &NSNotification) {
             let mtm = MainThreadMarker::from(self);
             let app = NSApplication::sharedApplication(mtm);
-            app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+
+            let config_file_missing = config_file_is_missing(self.ivars().config_store.path());
+            let deepgram_api_key_missing = self
+                .ivars()
+                .config_store
+                .current()
+                .resolve_deepgram_api_key()
+                .is_err();
+            let audio_startup_failed = self.ivars().initial_audio_error.is_some();
+            let startup_permissions_missing = !self.ivars().startup_hotkey_permissions.all_granted();
+            let startup_ui_required = config_file_missing
+                || deepgram_api_key_missing
+                || audio_startup_failed
+                || startup_permissions_missing;
+
+            if startup_ui_required {
+                app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+                app.activate();
+            } else {
+                app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+            }
 
             let status_bar = NSStatusBar::systemStatusBar();
             let status_item = status_bar.statusItemWithLength(NS_VARIABLE_STATUS_ITEM_LENGTH);
@@ -122,6 +151,19 @@ define_class!(
             }
             menu.addItem(&settings_item);
 
+            let permissions_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("Application Permissions…"),
+                    Some(sel!(openPermissions:)),
+                    ns_string!("")
+                )
+            };
+            unsafe {
+                permissions_item.setTarget(Some(self));
+            }
+            menu.addItem(&permissions_item);
+
             let billing_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
@@ -164,17 +206,18 @@ define_class!(
                 .settings_window
                 .set(settings_window)
                 .expect("settings window must only be set once");
+            self.ivars()
+                .permissions_dialog
+                .set(PermissionsDialog::new(self, mtm))
+                .expect("permissions dialog must only be set once");
 
-            let config_file_missing = config_file_is_missing(self.ivars().config_store.path());
-            let deepgram_api_key_missing = self
-                .ivars()
-                .config_store
-                .current()
-                .resolve_deepgram_api_key()
-                .is_err();
+            if config_file_missing || deepgram_api_key_missing || audio_startup_failed {
+                self.present_startup_settings_window();
+            }
 
-            if config_file_missing || deepgram_api_key_missing {
-                self.present_settings_window();
+            if startup_permissions_missing {
+                self.sync_hotkey_permissions_ui();
+                self.present_startup_hotkey_permissions_window();
             }
 
             if !deepgram_api_key_missing && config_file_missing {
@@ -188,6 +231,23 @@ define_class!(
                             "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
                         ),
                         self.ivars().config_store.path().display()
+                    ),
+                );
+            }
+
+            if let Some(audio_error) = self.ivars().initial_audio_error.as_deref() {
+                if let Some(settings_window) = self.ivars().settings_window.get() {
+                    settings_window.set_status(audio_error);
+                }
+                show_modal_alert(
+                    "simple-ptt couldn't start audio input",
+                    &format!(
+                        concat!(
+                            "The app launched so you can fix the microphone settings, but audio capture is currently unavailable.\n\n",
+                            "Open Settings, choose a valid input device, and click Save and Apply.\n\n",
+                            "Error: {}"
+                        ),
+                        audio_error
                     ),
                 );
             }
@@ -214,6 +274,98 @@ define_class!(
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
             self.present_settings_window();
+        }
+
+        #[unsafe(method(openPermissions:))]
+        fn open_permissions(&self, _sender: Option<&AnyObject>) {
+            self.sync_hotkey_permissions_ui();
+            self.present_hotkey_permissions_window();
+        }
+
+        #[unsafe(method(requestAccessibilityPermission:))]
+        fn request_accessibility_permission(&self, _sender: Option<&AnyObject>) {
+            self.ivars().accessibility_permission_requested.set(true);
+            self.deactivate_for_system_settings_transition();
+            if let Err(error) =
+                self.open_system_settings_and_activate(permissions::accessibility_settings_urls())
+            {
+                log::error!("failed to open Accessibility settings: {}", error);
+            }
+            self.sync_hotkey_permissions_ui();
+        }
+
+        #[unsafe(method(requestInputMonitoringPermission:))]
+        fn request_input_monitoring_permission(&self, _sender: Option<&AnyObject>) {
+            self.deactivate_for_system_settings_transition();
+            let flow = self.current_hotkey_permission_flow();
+            let result = if matches!(
+                flow.input_monitoring_state,
+                permissions::GlobalHotkeyPermissionState::Requested
+            ) {
+                self.open_system_settings_and_activate(permissions::input_monitoring_settings_urls())
+            } else {
+                self.ivars().input_monitoring_permission_requested.set(true);
+                permissions::request_input_monitoring_access().map(|_| ())
+            };
+
+            if let Err(error) = result {
+                log::error!("failed to request Input Monitoring access: {}", error);
+            }
+            self.sync_hotkey_permissions_ui();
+        }
+
+        #[unsafe(method(resetHotkeyPermissions:))]
+        fn reset_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
+            if let Err(error) = permissions::reset_global_hotkey_permissions() {
+                log::error!("failed to reset macOS permissions: {}", error);
+            }
+
+            self.ivars().accessibility_permission_requested.set(false);
+            self.ivars().input_monitoring_permission_requested.set(false);
+            self.sync_hotkey_permissions_ui();
+        }
+
+        #[unsafe(method(recheckHotkeyPermissions:))]
+        fn recheck_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
+            self.sync_hotkey_permissions_ui();
+        }
+
+        #[unsafe(method(quitFromPermissionsDialog:))]
+        fn quit_from_permissions_dialog(&self, _sender: Option<&AnyObject>) {
+            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+            let flow = self.current_hotkey_permission_flow();
+
+            if flow.relaunch_required() {
+                if let Err(error) = permissions::relaunch_current_application() {
+                    log::error!("failed to relaunch after permission grant: {}", error);
+                    show_modal_alert(
+                        "simple-ptt couldn't relaunch itself",
+                        &format!(
+                            concat!(
+                                "Permissions are granted, but simple-ptt failed to reopen automatically.\n\n",
+                                "Quit and launch the app again manually.\n\n",
+                                "Error: {}"
+                            ),
+                            error
+                        ),
+                    );
+                    return;
+                }
+
+                app.terminate(None);
+                return;
+            }
+
+            if flow.all_granted() {
+                let Some(permissions_dialog) = self.ivars().permissions_dialog.get() else {
+                    return;
+                };
+                permissions_dialog.hide();
+                self.restore_accessory_activation_policy_if_possible();
+                return;
+            }
+
+            app.terminate(None);
         }
 
         #[unsafe(method(captureRecordHotkey:))]
@@ -254,6 +406,7 @@ define_class!(
 
             self.disable_settings_window_hotkey_blocking();
             settings_window.hide();
+            self.restore_accessory_activation_policy_if_possible();
         }
 
         #[unsafe(method(saveSettings:))]
@@ -342,6 +495,7 @@ define_class!(
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
             self.disable_settings_window_hotkey_blocking();
+            self.restore_accessory_activation_policy_if_possible();
         }
     }
 );
@@ -351,6 +505,8 @@ impl AppDelegate {
         mtm: MainThreadMarker,
         overlay_style: OverlayStyle,
         config_store: LiveConfigStore,
+        startup_hotkey_permissions: GlobalHotkeyPermissions,
+        initial_audio_error: Option<String>,
         hotkey_capture_controller: HotkeyCaptureController,
         transformation_models_controller: TransformationModelsController,
         deepgram_connection_controller: DeepgramConnectionController,
@@ -359,6 +515,7 @@ impl AppDelegate {
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
             audio_controller,
+            initial_audio_error,
             billing_controller,
             billing_menu_item: OnceCell::new(),
             config_store,
@@ -368,11 +525,155 @@ impl AppDelegate {
             active_status_bar_icon: make_status_bar_active_icon(mtm),
             idle_status_bar_icon: make_status_bar_icon(mtm),
             overlay_window: OnceCell::new(),
+            permissions_dialog: OnceCell::new(),
+            startup_hotkey_permissions,
+            accessibility_permission_requested: Cell::new(false),
+            input_monitoring_permission_requested: Cell::new(false),
             settings_window: OnceCell::new(),
             transformation_models_controller,
             status_item: OnceCell::new(),
         });
         unsafe { msg_send![super(this), init] }
+    }
+
+    fn current_hotkey_permission_flow(&self) -> permissions::GlobalHotkeyPermissionFlow {
+        permissions::resolve_global_hotkey_permission_flow(
+            self.ivars().startup_hotkey_permissions,
+            self.ivars().accessibility_permission_requested.get(),
+            self.ivars().input_monitoring_permission_requested.get(),
+        )
+    }
+
+    fn sync_hotkey_permissions_ui(&self) {
+        let Some(permissions_dialog) = self.ivars().permissions_dialog.get() else {
+            return;
+        };
+
+        permissions_dialog.sync(&self.current_hotkey_permission_flow());
+    }
+
+    fn promote_for_window_presentation(&self) {
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+        app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        app.activate();
+    }
+
+    fn restore_accessory_activation_policy_if_possible(&self) {
+        if self.settings_window_is_visible() || self.permissions_dialog_is_visible() {
+            return;
+        }
+
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    }
+
+    fn settings_window_is_visible(&self) -> bool {
+        self.ivars()
+            .settings_window
+            .get()
+            .map(SettingsWindow::is_visible)
+            .unwrap_or(false)
+    }
+
+    fn permissions_dialog_is_visible(&self) -> bool {
+        self.ivars()
+            .permissions_dialog
+            .get()
+            .map(PermissionsDialog::is_visible)
+            .unwrap_or(false)
+    }
+
+    fn present_hotkey_permissions_window(&self) {
+        let Some(permissions_dialog) = self.ivars().permissions_dialog.get() else {
+            return;
+        };
+
+        self.promote_for_window_presentation();
+        permissions_dialog.show(MainThreadMarker::from(self));
+    }
+
+    fn present_startup_hotkey_permissions_window(&self) {
+        let Some(permissions_dialog) = self.ivars().permissions_dialog.get() else {
+            return;
+        };
+
+        self.promote_for_window_presentation();
+        permissions_dialog.show_startup(MainThreadMarker::from(self));
+    }
+
+    fn deactivate_for_system_settings_transition(&self) {
+        let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+        app.deactivate();
+    }
+
+    fn open_system_settings_and_activate(&self, urls: [&str; 2]) -> Result<(), String> {
+        let workspace = NSWorkspace::sharedWorkspace();
+        self.open_system_settings_url_with_workspace(&workspace, urls[0])
+            .or_else(|primary_error| {
+                self.open_system_settings_url_with_workspace(&workspace, urls[1])
+                    .map_err(|fallback_error| {
+                        format!(
+                            "primary URL failed: {}; fallback URL failed: {}",
+                            primary_error, fallback_error
+                        )
+                    })
+            })
+    }
+
+    fn open_system_settings_url_with_workspace(
+        &self,
+        workspace: &NSWorkspace,
+        url: &str,
+    ) -> Result<(), String> {
+        let url_string = NSString::from_str(url);
+        let Some(ns_url) = NSURL::URLWithString(&url_string) else {
+            return Err(format!("invalid System Settings URL: {}", url));
+        };
+
+        let configuration = NSWorkspaceOpenConfiguration::configuration();
+        configuration.setActivates(true);
+        configuration.setHides(false);
+        configuration.setHidesOthers(false);
+        configuration.setPromptsUserIfNeeded(true);
+
+        let launch_result = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<(), String>>));
+        let completion_result = launch_result.clone();
+        let completion = StackBlock::new(
+            move |running_app: *mut objc2_app_kit::NSRunningApplication,
+                  error: *mut objc2_foundation::NSError| {
+                if !error.is_null() {
+                    let error = unsafe { &*error };
+                    completion_result
+                        .borrow_mut()
+                        .replace(Err(error.localizedDescription().to_string()));
+                    return;
+                }
+
+                if running_app.is_null() {
+                    completion_result.borrow_mut().replace(Err(
+                        "System Settings launch returned no application instance".to_owned(),
+                    ));
+                    return;
+                }
+
+                let running_app = unsafe { &*running_app };
+                running_app.unhide();
+                let _ = running_app
+                    .activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+                completion_result.borrow_mut().replace(Ok(()));
+            },
+        );
+
+        workspace.openURL_configuration_completionHandler(
+            &ns_url,
+            &configuration,
+            Some(&completion),
+        );
+
+        let result = launch_result.borrow_mut().take().unwrap_or_else(|| {
+            Err("System Settings launch did not report completion synchronously".to_owned())
+        });
+        result
     }
 
     fn present_settings_window(&self) {
@@ -389,7 +690,26 @@ impl AppDelegate {
             &self.ivars().config_store.path().display().to_string(),
         );
         self.sync_transformation_provider_ui();
+        self.promote_for_window_presentation();
         settings_window.show(MainThreadMarker::from(self));
+    }
+
+    fn present_startup_settings_window(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        self.ivars().hotkey_capture_controller.cancel();
+        settings_window.cancel_hotkey_capture();
+
+        let current_file_config = self.ivars().config_store.current_file();
+        settings_window.load_from_config(
+            &current_file_config,
+            &self.ivars().config_store.path().display().to_string(),
+        );
+        self.sync_transformation_provider_ui();
+        self.promote_for_window_presentation();
+        settings_window.show_startup(MainThreadMarker::from(self));
     }
 
     fn disable_settings_window_hotkey_blocking(&self) {
@@ -975,10 +1295,6 @@ fn show_modal_alert(message_text: &str, informative_text: &str) {
     app.setActivationPolicy(previous_activation_policy);
 }
 
-pub fn show_hotkey_permissions_dialog() -> bool {
-    crate::permissions_dialog::show_hotkey_permissions_dialog()
-}
-
 pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
     show_modal_alert(message_text, informative_text);
 }
@@ -1037,7 +1353,6 @@ mod tests {
         );
         assert_eq!(billing_menu_text("Billing (Apr 2026): $12.34"), None);
     }
-
 }
 
 pub fn setup_status_polling(

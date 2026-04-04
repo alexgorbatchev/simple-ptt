@@ -1,21 +1,18 @@
-use std::cell::{Cell, OnceCell};
-
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::AnyObject;
 use objc2::runtime::AnyObject as RuntimeAnyObject;
-use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
+use objc2::{sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
-    NSApplicationTerminateReply, NSAutoresizingMaskOptions, NSBackingStoreType,
-    NSButton, NSColor, NSEventMask, NSEventModifierFlags, NSFont, NSForegroundColorAttributeName,
-    NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor,
+    NSEventModifierFlags, NSFont, NSForegroundColorAttributeName, NSTextAlignment, NSTextField,
+    NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSDate, NSDictionary, NSAttributedString,
-    NSDefaultRunLoopMode, NSObject, NSPoint, NSRect, NSSize, NSString,
+    ns_string, MainThreadMarker, NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize,
+    NSString,
 };
 
-use crate::permissions::{self, GlobalHotkeyPermissions};
+use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
 use crate::settings_window::settings_font;
 
 extern "C" {
@@ -36,91 +33,17 @@ const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
 const BODY_FONT_SIZE: f64 = 12.0;
 
-struct Ivars {
-    window: OnceCell<Retained<NSWindow>>,
-    summary_text_field: OnceCell<Retained<NSTextField>>,
-    accessibility_button: OnceCell<Retained<NSButton>>,
-    input_monitoring_button: OnceCell<Retained<NSButton>>,
-    quit_requested: Cell<bool>,
+#[derive(Debug)]
+pub struct PermissionsDialog {
+    window: Retained<NSWindow>,
+    summary_text_field: Retained<NSTextField>,
+    accessibility_button: Retained<NSButton>,
+    input_monitoring_button: Retained<NSButton>,
+    completion_button: Retained<NSButton>,
 }
 
-define_class!(
-    #[unsafe(super(NSObject))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "SimplePttPermissionsDialogController"]
-    #[ivars = Ivars]
-    struct PermissionsDialogController;
-
-    unsafe impl NSObjectProtocol for PermissionsDialogController {}
-    unsafe impl NSApplicationDelegate for PermissionsDialogController {
-        #[unsafe(method(applicationShouldTerminate:))]
-        fn application_should_terminate(
-            &self,
-            _sender: &NSApplication,
-        ) -> NSApplicationTerminateReply {
-            self.ivars().quit_requested.set(true);
-            self.hide();
-            NSApplicationTerminateReply::TerminateCancel
-        }
-    }
-
-    impl PermissionsDialogController {
-        #[unsafe(method(requestAccessibility:))]
-        fn request_accessibility(&self, _sender: Option<&AnyObject>) {
-            self.hide();
-            if let Err(error) = permissions::request_accessibility_access() {
-                log::error!("failed to open Accessibility settings: {}", error);
-            }
-            self.sync_status();
-            self.show_after_permission_request();
-        }
-
-        #[unsafe(method(requestInputMonitoring:))]
-        fn request_input_monitoring(&self, _sender: Option<&AnyObject>) {
-            self.hide();
-            if let Err(error) = permissions::request_input_monitoring_access() {
-                log::error!("failed to open Input Monitoring settings: {}", error);
-            }
-            self.sync_status();
-            self.show_after_permission_request();
-        }
-
-        #[unsafe(method(resetPermissions:))]
-        fn reset_permissions(&self, _sender: Option<&AnyObject>) {
-            if let Err(error) = permissions::reset_global_hotkey_permissions() {
-                log::error!("failed to reset macOS permissions: {}", error);
-            }
-            self.sync_status();
-        }
-
-        #[unsafe(method(recheckPermissions:))]
-        fn recheck_permissions(&self, _sender: Option<&AnyObject>) {
-            self.sync_status();
-        }
-
-        #[unsafe(method(quitPermissions:))]
-        fn quit_permissions(&self, _sender: Option<&AnyObject>) {
-            self.ivars().quit_requested.set(true);
-            self.hide();
-        }
-    }
-);
-
-impl PermissionsDialogController {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(Ivars {
-            window: OnceCell::new(),
-            summary_text_field: OnceCell::new(),
-            accessibility_button: OnceCell::new(),
-            input_monitoring_button: OnceCell::new(),
-            quit_requested: Cell::new(false),
-        });
-        let this: Retained<Self> = unsafe { msg_send![super(this), init] };
-        this.build_window(mtm);
-        this
-    }
-
-    fn build_window(&self, mtm: MainThreadMarker) {
+impl PermissionsDialog {
+    pub fn new(target: &AnyObject, mtm: MainThreadMarker) -> Self {
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
@@ -157,19 +80,31 @@ impl PermissionsDialogController {
             TITLE_FONT_SIZE,
             TITLE_FONT_WEIGHT,
         )));
-        set_view_frame(&title_text_field, HORIZONTAL_PADDING, 192.0, LABEL_WIDTH, 22.0);
+        set_view_frame(
+            &title_text_field,
+            HORIZONTAL_PADDING,
+            192.0,
+            LABEL_WIDTH,
+            22.0,
+        );
         root_view.addSubview(&title_text_field);
 
         let summary_text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
         configure_wrapping_label(&summary_text_field, BODY_FONT_SIZE);
-        set_view_frame(&summary_text_field, HORIZONTAL_PADDING, 104.0, LABEL_WIDTH, 78.0);
+        set_view_frame(
+            &summary_text_field,
+            HORIZONTAL_PADDING,
+            104.0,
+            LABEL_WIDTH,
+            78.0,
+        );
         root_view.addSubview(&summary_text_field);
 
         let accessibility_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Grant Accessibility"),
-                Some(self),
-                Some(sel!(requestAccessibility:)),
+                ns_string!("Request Accessibility"),
+                Some(target),
+                Some(sel!(requestAccessibilityPermission:)),
                 mtm,
             )
         };
@@ -185,9 +120,9 @@ impl PermissionsDialogController {
 
         let input_monitoring_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Grant Input Monitoring"),
-                Some(self),
-                Some(sel!(requestInputMonitoring:)),
+                ns_string!("Request Input Monitoring"),
+                Some(target),
+                Some(sel!(requestInputMonitoringPermission:)),
                 mtm,
             )
         };
@@ -204,8 +139,8 @@ impl PermissionsDialogController {
         let reset_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Reset Permissions"),
-                Some(self),
-                Some(sel!(resetPermissions:)),
+                Some(target),
+                Some(sel!(resetHotkeyPermissions:)),
                 mtm,
             )
         };
@@ -222,8 +157,8 @@ impl PermissionsDialogController {
         let recheck_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Re-check"),
-                Some(self),
-                Some(sel!(recheckPermissions:)),
+                Some(target),
+                Some(sel!(recheckHotkeyPermissions:)),
                 mtm,
             )
         };
@@ -240,8 +175,8 @@ impl PermissionsDialogController {
         let quit_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Quit"),
-                Some(self),
-                Some(sel!(quitPermissions:)),
+                Some(target),
+                Some(sel!(quitFromPermissionsDialog:)),
                 mtm,
             )
         };
@@ -259,142 +194,140 @@ impl PermissionsDialogController {
 
         window.setContentView(Some(&root_view));
 
-        self.ivars()
-            .window
-            .set(window)
-            .expect("permissions window must only be set once");
-        self.ivars()
-            .summary_text_field
-            .set(summary_text_field)
-            .expect("summary field must only be set once");
-        self.ivars()
-            .accessibility_button
-            .set(accessibility_button)
-            .expect("accessibility button must only be set once");
-        self.ivars()
-            .input_monitoring_button
-            .set(input_monitoring_button)
-            .expect("input monitoring button must only be set once");
-    }
-
-    fn show(&self, mtm: MainThreadMarker) {
-        let app = NSApplication::sharedApplication(mtm);
-        self.sync_status();
-        app.activate();
-        if let Some(window) = self.ivars().window.get() {
-            window.makeKeyAndOrderFront(None);
-            window.orderFrontRegardless();
-        }
-    }
-
-    fn show_after_permission_request(&self) {
-        if let Some(window) = self.ivars().window.get() {
-            window.orderFront(None);
-        }
-    }
-
-    fn hide(&self) {
-        if let Some(window) = self.ivars().window.get() {
-            window.orderOut(None);
-        }
-    }
-
-    fn quit_requested(&self) -> bool {
-        self.ivars().quit_requested.get()
-    }
-
-    fn sync_status(&self) {
-        let permissions = GlobalHotkeyPermissions::current();
-
-        self.ivars()
-            .summary_text_field
-            .get()
-            .expect("summary field must exist")
-            .setStringValue(&NSString::from_str(&permissions_dialog_summary_text()));
-        sync_permission_button(
-            self.ivars()
-                .accessibility_button
-                .get()
-                .expect("accessibility button must exist"),
-            "Accessibility",
-            permissions.accessibility_granted,
-        );
-        sync_permission_button(
-            self.ivars()
-                .input_monitoring_button
-                .get()
-                .expect("input monitoring button must exist"),
-            "Input Monitoring",
-            permissions.input_monitoring_granted,
-        );
-    }
-}
-
-pub fn show_hotkey_permissions_dialog() -> bool {
-    let mtm = MainThreadMarker::new().expect("must run on main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    let previous_activation_policy = app.activationPolicy();
-    app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
-
-    let controller = PermissionsDialogController::new(mtm);
-    app.setDelegate(Some(ProtocolObject::from_ref(&*controller)));
-    controller.show(mtm);
-
-    let should_continue_startup = loop {
-        let permissions = GlobalHotkeyPermissions::current();
-        if permissions.all_granted() {
-            break true;
-        }
-
-        if controller.quit_requested() {
-            break false;
-        }
-
-        let expiration = NSDate::distantFuture();
-        let Some(event) = app.nextEventMatchingMask_untilDate_inMode_dequeue(
-            NSEventMask::Any,
-            Some(&expiration),
-            unsafe { NSDefaultRunLoopMode },
-            true,
-        ) else {
-            continue;
+        let dialog = Self {
+            window,
+            summary_text_field,
+            accessibility_button,
+            input_monitoring_button,
+            completion_button: quit_button,
         };
-        app.sendEvent(&event);
-        app.updateWindows();
-    };
+        dialog.sync(&GlobalHotkeyPermissionFlow::unknown());
+        dialog
+    }
 
-    controller.hide();
-    app.setDelegate(None);
-    app.setActivationPolicy(previous_activation_policy);
-    should_continue_startup
+    pub fn show(&self, mtm: MainThreadMarker) {
+        let app = NSApplication::sharedApplication(mtm);
+        app.activate();
+        self.window.makeKeyAndOrderFront(None);
+    }
+
+    pub fn show_startup(&self, mtm: MainThreadMarker) {
+        let app = NSApplication::sharedApplication(mtm);
+        app.activate();
+        self.window.makeKeyAndOrderFront(None);
+        self.window.orderFrontRegardless();
+    }
+
+    pub fn hide(&self) {
+        self.window.orderOut(None);
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.window.isVisible()
+    }
+
+    pub fn sync(&self, flow: &GlobalHotkeyPermissionFlow) {
+        self.summary_text_field
+            .setStringValue(&NSString::from_str(&permissions_dialog_summary_text(flow)));
+        sync_permission_button(
+            &self.accessibility_button,
+            "Accessibility",
+            flow.accessibility_state,
+            "Open Accessibility",
+            "Open Accessibility",
+        );
+        sync_permission_button(
+            &self.input_monitoring_button,
+            "Input Monitoring",
+            flow.input_monitoring_state,
+            "Request Input Monitoring",
+            "Open Input Monitoring",
+        );
+        sync_completion_button(&self.completion_button, flow);
+    }
 }
 
-fn permissions_dialog_summary_text() -> String {
+fn permissions_dialog_summary_text(flow: &GlobalHotkeyPermissionFlow) -> String {
+    if matches!(
+        flow.accessibility_state,
+        GlobalHotkeyPermissionState::Unknown
+    ) || matches!(
+        flow.input_monitoring_state,
+        GlobalHotkeyPermissionState::Unknown
+    ) {
+        return "Checking macOS permission status…".to_owned();
+    }
+
+    if flow.relaunch_required() {
+        return concat!(
+            "Permissions are granted. Click Quit and Reopen to restart simple-ptt with working global shortcuts and paste automation. ",
+            "Use Reset Permissions only if macOS gets stuck or stops showing the app in Privacy & Security."
+        )
+        .to_owned();
+    }
+
+    if matches!(
+        flow.accessibility_state,
+        GlobalHotkeyPermissionState::Requested
+    ) || matches!(
+        flow.input_monitoring_state,
+        GlobalHotkeyPermissionState::Requested
+    ) {
+        return concat!(
+            "Finish the remaining grants in System Settings, then click Re-check. ",
+            "If a permission button switches to Open, macOS still needs that pane. ",
+            "Accessibility and Input Monitoring commonly require quitting and reopening simple-ptt before the full hotkey flow becomes active. ",
+            "If you leave this window, reopen it from the menu bar with Application Permissions…."
+        )
+        .to_owned();
+    }
+
+    if flow.all_granted() {
+        return "Accessibility and Input Monitoring are already granted for this app bundle."
+            .to_owned();
+    }
+
     concat!(
-        "Use these buttons to open the matching System Settings panes. After approving access there, click Re-check. Accessibility may not turn green until the app is relaunched because macOS can keep the current process in an untrusted state.\n\n",
-        "If permissions look stuck or prompts stop appearing, click Reset Permissions, then grant access again."
+        "simple-ptt needs Input Monitoring to listen for the global CGEventTap hotkeys and Accessibility to drive the synthetic paste shortcut. ",
+        "Click each Request button to ask macOS for access. If macOS stops prompting or the grant looks stale, use Reset Permissions and try again. ",
+        "If you leave this window, reopen it from the menu bar with Application Permissions…."
     )
     .to_owned()
 }
 
-fn sync_permission_button(button: &NSButton, permission_name: &str, granted: bool) {
-    let title = if granted {
-        format!("{} Granted", permission_name)
-    } else {
-        format!("Grant {}", permission_name)
-    };
-    let title_string = NSString::from_str(&title);
+fn sync_completion_button(button: &NSButton, flow: &GlobalHotkeyPermissionFlow) {
+    let title = permissions_completion_button_title(flow);
+    button.setTitle(&NSString::from_str(title));
+}
 
-    button.setEnabled(!granted);
+fn sync_permission_button(
+    button: &NSButton,
+    permission_name: &str,
+    state: GlobalHotkeyPermissionState,
+    missing_title: &str,
+    requested_title: &str,
+) {
+    let title = permission_button_title(permission_name, state, missing_title, requested_title);
+    let title_string = NSString::from_str(&title);
+    let granted = matches!(
+        state,
+        GlobalHotkeyPermissionState::Granted | GlobalHotkeyPermissionState::NeedsRelaunch
+    );
+
+    button.setEnabled(!granted && !matches!(state, GlobalHotkeyPermissionState::Unknown));
     if granted {
         let bezel_color = NSColor::systemGreenColor();
         let text_color: Retained<RuntimeAnyObject> = NSColor::whiteColor().into();
         let font: Retained<RuntimeAnyObject> = settings_font().into();
-        let attributes = NSDictionary::<objc2_foundation::NSAttributedStringKey, RuntimeAnyObject>::from_retained_objects(
+        let attributes = NSDictionary::<
+            objc2_foundation::NSAttributedStringKey,
+            RuntimeAnyObject,
+        >::from_retained_objects(
             &[unsafe { NSForegroundColorAttributeName }, unsafe { NSFontAttributeName }],
             &[text_color, font],
         );
-        let attributed_title = unsafe { NSAttributedString::new_with_attributes(&title_string, &attributes) };
+        let attributed_title =
+            unsafe { NSAttributedString::new_with_attributes(&title_string, &attributes) };
 
         button.setTitle(&title_string);
         button.setAttributedTitle(&attributed_title);
@@ -408,6 +341,34 @@ fn sync_permission_button(button: &NSButton, permission_name: &str, granted: boo
     button.setBezelColor(None);
 }
 
+fn permissions_completion_button_title(flow: &GlobalHotkeyPermissionFlow) -> &'static str {
+    if flow.relaunch_required() {
+        return "Quit and Reopen";
+    }
+
+    if flow.all_granted() {
+        return "Close";
+    }
+
+    "Quit"
+}
+
+fn permission_button_title(
+    permission_name: &str,
+    state: GlobalHotkeyPermissionState,
+    missing_title: &str,
+    requested_title: &str,
+) -> String {
+    match state {
+        GlobalHotkeyPermissionState::Unknown => format!("Checking {}…", permission_name),
+        GlobalHotkeyPermissionState::Missing => missing_title.to_owned(),
+        GlobalHotkeyPermissionState::Requested => requested_title.to_owned(),
+        GlobalHotkeyPermissionState::Granted | GlobalHotkeyPermissionState::NeedsRelaunch => {
+            format!("{} Granted", permission_name)
+        }
+    }
+}
+
 fn configure_wrapping_label(text_field: &NSTextField, font_size: f64) {
     text_field.setEditable(false);
     text_field.setSelectable(false);
@@ -415,7 +376,9 @@ fn configure_wrapping_label(text_field: &NSTextField, font_size: f64) {
     text_field.setBordered(false);
     text_field.setDrawsBackground(false);
     text_field.setAlignment(NSTextAlignment::Left);
-    text_field.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(font_size, 0.0)));
+    text_field.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(
+        font_size, 0.0,
+    )));
     text_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
 }
 
@@ -425,13 +388,66 @@ fn set_view_frame(view: &NSView, x: f64, y: f64, width: f64, height: f64) {
 
 #[cfg(test)]
 mod tests {
-    use super::permissions_dialog_summary_text;
+    use super::{permissions_completion_button_title, permissions_dialog_summary_text};
+    use crate::permissions::{
+        GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState, GlobalHotkeyPermissions,
+    };
 
     #[test]
-    fn permissions_dialog_summary_text_mentions_recheck_and_relaunch() {
-        let text = permissions_dialog_summary_text();
+    fn permissions_dialog_summary_mentions_recheck_after_request() {
+        let text = permissions_dialog_summary_text(&GlobalHotkeyPermissionFlow {
+            permissions: GlobalHotkeyPermissions {
+                accessibility_granted: false,
+                input_monitoring_granted: false,
+            },
+            accessibility_state: GlobalHotkeyPermissionState::Requested,
+            input_monitoring_state: GlobalHotkeyPermissionState::Missing,
+        });
 
         assert!(text.contains("Re-check"));
-        assert!(text.contains("relaunched"));
+        assert!(text.contains("Open"));
+    }
+
+    #[test]
+    fn permissions_dialog_summary_mentions_relaunch_after_grant() {
+        let text = permissions_dialog_summary_text(&GlobalHotkeyPermissionFlow {
+            permissions: GlobalHotkeyPermissions {
+                accessibility_granted: true,
+                input_monitoring_granted: true,
+            },
+            accessibility_state: GlobalHotkeyPermissionState::NeedsRelaunch,
+            input_monitoring_state: GlobalHotkeyPermissionState::NeedsRelaunch,
+        });
+
+        assert!(text.contains("Quit and Reopen"));
+        assert!(text.contains("paste automation"));
+    }
+
+    #[test]
+    fn permissions_completion_button_switches_to_relaunch_when_needed() {
+        let title = permissions_completion_button_title(&GlobalHotkeyPermissionFlow {
+            permissions: GlobalHotkeyPermissions {
+                accessibility_granted: true,
+                input_monitoring_granted: true,
+            },
+            accessibility_state: GlobalHotkeyPermissionState::NeedsRelaunch,
+            input_monitoring_state: GlobalHotkeyPermissionState::NeedsRelaunch,
+        });
+
+        assert_eq!(title, "Quit and Reopen");
+    }
+
+    #[test]
+    fn permissions_completion_button_switches_to_close_when_everything_is_ready() {
+        let title = permissions_completion_button_title(&GlobalHotkeyPermissionFlow {
+            permissions: GlobalHotkeyPermissions {
+                accessibility_granted: true,
+                input_monitoring_granted: true,
+            },
+            accessibility_state: GlobalHotkeyPermissionState::Granted,
+            input_monitoring_state: GlobalHotkeyPermissionState::Granted,
+        });
+
+        assert_eq!(title, "Close");
     }
 }

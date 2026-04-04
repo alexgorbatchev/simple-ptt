@@ -32,7 +32,7 @@ struct InputDeviceDescriptor {
 }
 
 pub struct AudioController {
-    active_stream: Mutex<ActiveAudioStream>,
+    active_stream: Mutex<Option<ActiveAudioStream>>,
     pending_config: Mutex<Option<MicConfig>>,
     config_store: LiveConfigStore,
     state: Arc<AppState>,
@@ -42,7 +42,7 @@ pub struct AudioController {
 struct ActiveAudioStream {
     configured_audio_device: Option<String>,
     requested_sample_rate: u32,
-    stream: Stream,
+    _stream: Stream,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,31 +126,59 @@ pub fn print_input_devices() -> Result<(), String> {
 }
 
 impl AudioController {
-    pub fn new(
+    pub fn inactive(
         state: Arc<AppState>,
         transcription_controller: TranscriptionController,
         config_store: LiveConfigStore,
-    ) -> Result<Self, String> {
-        let mic_config = config_store.current().mic;
-        let (stream, actual_rate) = build_input_stream(
-            state.clone(),
-            transcription_controller.clone(),
-            config_store.clone(),
-            &mic_config,
-        )?;
-        transcription_controller.set_sample_rate(actual_rate);
-
-        Ok(Self {
-            active_stream: Mutex::new(ActiveAudioStream {
-                configured_audio_device: mic_config.audio_device.clone(),
-                requested_sample_rate: mic_config.sample_rate,
-                stream,
-            }),
+    ) -> Self {
+        Self {
+            active_stream: Mutex::new(None),
             pending_config: Mutex::new(None),
             config_store,
             state,
             transcription_controller,
-        })
+        }
+    }
+
+    pub fn new(
+        state: Arc<AppState>,
+        transcription_controller: TranscriptionController,
+        config_store: LiveConfigStore,
+    ) -> (Self, Option<String>) {
+        let mic_config = config_store.current().mic;
+        let (active_stream, startup_error) = match build_input_stream(
+            state.clone(),
+            transcription_controller.clone(),
+            config_store.clone(),
+            &mic_config,
+        ) {
+            Ok((stream, actual_rate)) => {
+                transcription_controller.set_sample_rate(actual_rate);
+                (
+                    Some(ActiveAudioStream {
+                        configured_audio_device: mic_config.audio_device.clone(),
+                        requested_sample_rate: mic_config.sample_rate,
+                        _stream: stream,
+                    }),
+                    None,
+                )
+            }
+            Err(error) => {
+                log::error!("failed to initialize audio input stream: {}", error);
+                (None, Some(error))
+            }
+        };
+
+        (
+            Self {
+                active_stream: Mutex::new(active_stream),
+                pending_config: Mutex::new(None),
+                config_store,
+                state,
+                transcription_controller,
+            },
+            startup_error,
+        )
     }
 
     pub fn apply_mic_config(
@@ -161,8 +189,13 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        let needs_stream_rebuild = active_stream.requested_sample_rate != mic_config.sample_rate
-            || active_stream.configured_audio_device != mic_config.audio_device;
+        let needs_stream_rebuild = match active_stream.as_ref() {
+            Some(active_stream) => {
+                active_stream.requested_sample_rate != mic_config.sample_rate
+                    || active_stream.configured_audio_device != mic_config.audio_device
+            }
+            None => true,
+        };
         drop(active_stream);
 
         if !needs_stream_rebuild {
@@ -215,9 +248,11 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        active_stream.stream = stream;
-        active_stream.requested_sample_rate = mic_config.sample_rate;
-        active_stream.configured_audio_device = mic_config.audio_device.clone();
+        *active_stream = Some(ActiveAudioStream {
+            configured_audio_device: mic_config.audio_device.clone(),
+            requested_sample_rate: mic_config.sample_rate,
+            _stream: stream,
+        });
         Ok(())
     }
 }
@@ -353,10 +388,7 @@ fn resolve_input_device(
     host: &cpal::Host,
     configured_audio_device: Option<&str>,
 ) -> Result<cpal::Device, String> {
-    let Some(requested_device) = configured_audio_device
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
+    let Some(requested_device) = normalized_configured_audio_device(configured_audio_device) else {
         return host
             .default_input_device()
             .ok_or_else(|| "no default audio input device".to_owned());
@@ -393,6 +425,27 @@ fn resolve_input_device(
         "configured audio_device '{}' was not found",
         requested_device
     ))
+}
+
+fn normalized_configured_audio_device(configured_audio_device: Option<&str>) -> Option<&str> {
+    let requested_device = configured_audio_device
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+
+    if is_system_default_audio_device_value(requested_device) {
+        return None;
+    }
+
+    Some(requested_device)
+}
+
+fn is_system_default_audio_device_value(value: &str) -> bool {
+    let trimmed_value = value.trim();
+    trimmed_value == "System default"
+        || trimmed_value
+            .strip_prefix("System default")
+            .map(|suffix| suffix.starts_with(" (") && suffix.ends_with(')'))
+            .unwrap_or(false)
 }
 
 fn select_input_config(
@@ -560,8 +613,9 @@ fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) ->
 #[cfg(test)]
 mod tests {
     use super::{
-        build_audio_input_device_choices, encode_pcm_mono, normalize_meter_amplitude,
-        smooth_meter_value, AudioInputDeviceChoice, InputDeviceDescriptor,
+        build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
+        normalize_meter_amplitude, normalized_configured_audio_device, smooth_meter_value,
+        AudioInputDeviceChoice, InputDeviceDescriptor,
     };
 
     #[test]
@@ -663,5 +717,30 @@ mod tests {
         let encoded_chunk = encode_pcm_mono(&[0.2f32, 0.5, -0.7, 0.1], 1, 2.0);
 
         assert_eq!(encoded_chunk.clipped_sample_count, 2);
+    }
+
+    #[test]
+    fn decorated_system_default_audio_device_value_normalizes_to_none() {
+        assert_eq!(
+            normalized_configured_audio_device(Some("System default (MacBook Pro Microphone)")),
+            None
+        );
+        assert_eq!(
+            normalized_configured_audio_device(Some("System default")),
+            None
+        );
+        assert_eq!(
+            normalized_configured_audio_device(Some("Shure MV7")),
+            Some("Shure MV7")
+        );
+    }
+
+    #[test]
+    fn decorated_system_default_audio_device_value_is_detected() {
+        assert!(is_system_default_audio_device_value(
+            "System default (MacBook Pro Microphone)"
+        ));
+        assert!(is_system_default_audio_device_value("System default"));
+        assert!(!is_system_default_audio_device_value("0"));
     }
 }

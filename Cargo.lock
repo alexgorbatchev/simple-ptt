@@ -2363,6 +2363,7 @@ dependencies = [
 name = "simple-ptt"
 version = "1.0.0"
 dependencies = [
+ "block2",
  "bytes",
  "cpal",
  "deepgram",

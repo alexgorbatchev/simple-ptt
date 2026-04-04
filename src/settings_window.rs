@@ -4,10 +4,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSAutoresizingMaskOptions, NSBackingStoreType,
-    NSButton, NSColor, NSComboBox, NSControlStateValueOff, NSControlStateValueOn, NSFont,
-    NSFontManager, NSPopUpButton, NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSComboBox,
+    NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager, NSPopUpButton,
+    NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
@@ -418,15 +418,27 @@ impl SettingsWindow {
 
     pub fn show(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
-        app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
         app.activate();
         self.window.makeKeyAndOrderFront(None);
         let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
         self.scroll_to_top();
     }
 
+    pub fn show_startup(&self, mtm: MainThreadMarker) {
+        let app = NSApplication::sharedApplication(mtm);
+        app.activate();
+        self.window.makeKeyAndOrderFront(None);
+        self.window.orderFrontRegardless();
+        let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
+        self.scroll_to_top();
+    }
+
     pub fn hide(&self) {
         self.window.orderOut(None);
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.window.isVisible()
     }
 
     pub fn load_from_config(&self, config: &Config, config_path: &str) {
@@ -705,19 +717,21 @@ impl SettingsWindow {
             .titleOfSelectedItem()
             .map(|selected_title| selected_title.to_string())?;
 
-        self.mic_audio_device_options
+        if let Some(option) = self
+            .mic_audio_device_options
             .borrow()
             .iter()
             .find(|option| option.title == selected_title)
-            .and_then(|option| option.value.clone())
-            .or_else(|| {
-                let trimmed_value = selected_title.trim();
-                if trimmed_value.is_empty() {
-                    None
-                } else {
-                    Some(trimmed_value.to_owned())
-                }
-            })
+        {
+            return option.value.clone();
+        }
+
+        let trimmed_value = selected_title.trim();
+        if trimmed_value.is_empty() {
+            None
+        } else {
+            Some(trimmed_value.to_owned())
+        }
     }
 
     pub fn set_hotkey_value(&self, target: HotkeyCaptureTarget, value: &str) {
@@ -1344,6 +1358,12 @@ fn find_mic_audio_device_option_title<'a>(
     audio_device_options: &'a [MicAudioDeviceOption],
     configured_audio_device: &str,
 ) -> Option<&'a str> {
+    if is_system_default_audio_device_value(configured_audio_device) {
+        return audio_device_options
+            .first()
+            .map(|option| option.title.as_str());
+    }
+
     audio_device_options
         .iter()
         .find(|option| {
@@ -1356,6 +1376,15 @@ fn find_mic_audio_device_option_title<'a>(
                     .unwrap_or(false)
         })
         .map(|option| option.title.as_str())
+}
+
+fn is_system_default_audio_device_value(value: &str) -> bool {
+    let trimmed_value = value.trim();
+    trimmed_value == SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL
+        || trimmed_value
+            .strip_prefix(SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL)
+            .map(|suffix| suffix.starts_with(" (") && suffix.ends_with(')'))
+            .unwrap_or(false)
 }
 
 fn default_audio_device_title(default_device_name: Option<&str>) -> String {
@@ -1592,7 +1621,8 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_audio_device_title, mic_audio_device_popup_state, MicAudioDeviceOption,
+        default_audio_device_title, find_mic_audio_device_option_title,
+        is_system_default_audio_device_value, mic_audio_device_popup_state, MicAudioDeviceOption,
         SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
     };
     use crate::audio::{AudioInputDeviceChoice, AvailableAudioInputDevices};
@@ -1694,5 +1724,33 @@ mod tests {
             ]
         );
         assert_eq!(selected_title, "Missing Mic");
+    }
+
+    #[test]
+    fn system_default_audio_device_value_is_recognized_from_decorated_title() {
+        assert!(is_system_default_audio_device_value(
+            "System default (MacBook Pro Microphone)"
+        ));
+        assert!(is_system_default_audio_device_value("System default"));
+        assert!(!is_system_default_audio_device_value("Shure MV7"));
+    }
+
+    #[test]
+    fn popup_state_maps_legacy_decorated_default_value_back_to_default_option() {
+        let options = vec![
+            MicAudioDeviceOption {
+                title: "System default (MacBook Pro Microphone)".to_owned(),
+                value: None,
+            },
+            MicAudioDeviceOption {
+                title: "Shure MV7".to_owned(),
+                value: Some("Shure MV7".to_owned()),
+            },
+        ];
+
+        assert_eq!(
+            find_mic_audio_device_option_title(&options, "System default (MacBook Pro Microphone)"),
+            Some("System default (MacBook Pro Microphone)")
+        );
     }
 }

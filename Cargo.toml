@@ -61,6 +61,7 @@ objc2-app-kit = { version = "0.3", features = [
     "NSStatusItem",
     "NSText",
     "NSTextField",
+    "block2",
     "NSTextView",
     "NSView",
     "NSWindow",
@@ -95,3 +96,4 @@ toml_edit = "0.22"
 # Logging
 log = "0.4"
 env_logger = "0.11"
+block2 = "0.6"
