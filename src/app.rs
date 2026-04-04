@@ -1062,7 +1062,7 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
         Some(footer_font_size) if footer_font_size.is_finite() && footer_font_size > 0.0 => {
             footer_font_size
         }
-        Some(_) | None => overlay_font_size * 0.6,
+        Some(_) | None => 10.0,
     };
     let transformation_hotkey = config
         .resolve_transformation_config()
