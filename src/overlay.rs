@@ -1,14 +1,15 @@
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
-use objc2::rc::Retained;
+use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSEvent, NSFloatingWindowLevel,
-    NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment, NSTextField, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
+    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
+    NSTextField, NSTextFieldCell, NSActionCell, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2::runtime::NSObject;
 
 use crate::config::UiMeterStyle;
 use crate::state::{
@@ -211,6 +212,13 @@ impl OverlayWindow {
         }
 
         let footer_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        let custom_cell: Retained<VerticallyCenteredTextFieldCell> = unsafe {
+            msg_send![
+                VerticallyCenteredTextFieldCell::alloc(mtm),
+                initTextCell: &*NSString::from_str("")
+            ]
+        };
+        footer_text_field.setCell(Some(custom_cell.as_super()));
         footer_text_field.setDrawsBackground(false);
         footer_text_field.setBordered(false);
         footer_text_field.setBezeled(false);
@@ -229,6 +237,13 @@ impl OverlayWindow {
         }
 
         let footer_hint_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
+        let custom_hint_cell: Retained<VerticallyCenteredTextFieldCell> = unsafe {
+            msg_send![
+                VerticallyCenteredTextFieldCell::alloc(mtm),
+                initTextCell: &*NSString::from_str("")
+            ]
+        };
+        footer_hint_text_field.setCell(Some(custom_hint_cell.as_super()));
         footer_hint_text_field.setDrawsBackground(false);
         footer_hint_text_field.setBordered(false);
         footer_hint_text_field.setBezeled(false);
@@ -956,6 +971,37 @@ fn find_screen_visible_frame_for_point(
 
     None
 }
+
+fn calculate_centered_title_rect(cell: &VerticallyCenteredTextFieldCell, bounds: NSRect) -> NSRect {
+    let mut rect: NSRect = unsafe { msg_send![super(cell), titleRectForBounds: bounds] };
+    if let Some(font) = cell.font() {
+        let font_height = font.ascender() - font.descender();
+        let y_offset = (rect.size.height - font_height) / 2.0;
+        rect.origin.y += y_offset;
+        rect.size.height = font_height;
+    }
+    rect
+}
+
+define_class!(
+    #[unsafe(super(NSTextFieldCell, NSActionCell, NSCell, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "VerticallyCenteredTextFieldCell"]
+    pub struct VerticallyCenteredTextFieldCell;
+
+    impl VerticallyCenteredTextFieldCell {
+        #[unsafe(method(titleRectForBounds:))]
+        fn title_rect_for_bounds(&self, bounds: NSRect) -> NSRect {
+            calculate_centered_title_rect(self, bounds)
+        }
+
+        #[unsafe(method(drawInteriorWithFrame:inView:))]
+        fn draw_interior_with_frame_in_view(&self, cell_frame: NSRect, control_view: &NSView) {
+            let rect = calculate_centered_title_rect(self, cell_frame);
+            let _: () = unsafe { msg_send![super(self), drawInteriorWithFrame: rect, inView: control_view] };
+        }
+    }
+);
 
 fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
     let max_x = rect.origin.x + rect.size.width;
