@@ -18,6 +18,7 @@ use crate::state::{
 const OVERLAY_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
+const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
 const FOOTER_HEIGHT: f64 = 24.0;
 const FOOTER_HINT_GAP: f64 = 12.0;
 const FOOTER_HINT_WIDTH: f64 = 330.0;
@@ -678,7 +679,7 @@ fn resolve_overlay_font(style: &OverlayStyle, font_size: f64) -> Retained<objc2_
         .map(str::trim)
         .filter(|value| !value.is_empty())
     else {
-        return objc2_app_kit::NSFont::systemFontOfSize(normalized_font_size);
+        return default_overlay_font(normalized_font_size);
     };
 
     let ns_font_name = NSString::from_str(font_name);
@@ -686,12 +687,16 @@ fn resolve_overlay_font(style: &OverlayStyle, font_size: f64) -> Retained<objc2_
         Some(font) => font,
         None => {
             log::warn!(
-                "ui.font_name '{}' was not found; falling back to the system font",
+                "ui.font_name '{}' was not found; falling back to the monospaced system font",
                 font_name
             );
-            objc2_app_kit::NSFont::systemFontOfSize(normalized_font_size)
+            default_overlay_font(normalized_font_size)
         }
     }
+}
+
+fn default_overlay_font(font_size: f64) -> Retained<objc2_app_kit::NSFont> {
+    objc2_app_kit::NSFont::monospacedSystemFontOfSize_weight(font_size, DEFAULT_TEXT_FONT_WEIGHT)
 }
 
 fn normalized_font_size(font_size: f64) -> f64 {
