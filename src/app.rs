@@ -445,6 +445,8 @@ define_class!(
                 return;
             }
 
+            crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
+
             let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
                 Ok(effect) => effect,
                 Err(error) => {

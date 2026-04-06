@@ -104,6 +104,7 @@ pub struct SettingsWindow {
     scroll_view: Retained<NSScrollView>,
     path_text_field: Retained<NSTextField>,
     status_text_field: Retained<NSTextField>,
+    ui_start_on_login_checkbox: Retained<NSButton>,
     ui_hotkey_field: Retained<NSTextField>,
     ui_hotkey_capture_button: Retained<NSButton>,
     ui_font_name_popup: Retained<NSPopUpButton>,
@@ -225,6 +226,12 @@ impl SettingsWindow {
         let available_font_family_names = available_font_family_names(mtm);
 
         current_y = add_section_title(&content_view, mtm, current_y, "UI");
+        let ui_start_on_login_checkbox = add_checkbox(
+            &content_view,
+            mtm,
+            &mut current_y,
+            "Start on login",
+        );
         let (ui_hotkey_field, ui_hotkey_capture_button) = add_labeled_text_field_with_button(
             &content_view,
             target,
@@ -378,6 +385,7 @@ impl SettingsWindow {
             scroll_view,
             path_text_field,
             status_text_field,
+            ui_start_on_login_checkbox,
             ui_hotkey_field,
             ui_hotkey_capture_button,
             ui_font_name_popup,
@@ -449,6 +457,12 @@ impl SettingsWindow {
 
         self.path_text_field
             .setStringValue(&NSString::from_str(config_path));
+        self.ui_start_on_login_checkbox
+            .setState(if config.ui.start_on_login {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
         self.ui_hotkey_field
             .setStringValue(&NSString::from_str(&config.ui.hotkey));
         populate_font_name_popup(
@@ -546,6 +560,7 @@ impl SettingsWindow {
     pub fn read_config(&self) -> Result<Config, String> {
         Ok(Config {
             ui: crate::config::UiConfig {
+                start_on_login: self.ui_start_on_login_checkbox.state() == NSControlStateValueOn,
                 hotkey: read_required_string(&self.ui_hotkey_field, "Record hotkey")?,
                 font_name: read_optional_pop_up_button_string(&self.ui_font_name_popup),
                 font_size: read_required_f64(&self.ui_font_size_field, "Font size")?,

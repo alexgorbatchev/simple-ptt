@@ -35,6 +35,9 @@ pub enum UiMeterStyle {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct UiConfig {
+    #[serde(default)]
+    pub start_on_login: bool,
+
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
@@ -53,6 +56,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            start_on_login: false,
             hotkey: default_hotkey(),
             font_name: None,
             font_size: default_overlay_font_size(),
@@ -633,6 +637,11 @@ fn set_unsigned_key(table: &mut Table, key: &str, field_value: impl Into<i64>) {
 
 fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
     let table = ensure_named_table(document, "ui");
+    if ui.start_on_login {
+        table["start_on_login"] = value(true);
+    } else {
+        table.remove("start_on_login");
+    }
     set_required_string_key(table, "hotkey", &[], &ui.hotkey);
     set_optional_string_key(
         table,
