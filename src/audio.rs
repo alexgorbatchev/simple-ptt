@@ -2,6 +2,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use bytes::{Bytes, BytesMut, BufMut};
 
 use crate::config::MicConfig;
 use crate::settings::LiveConfigStore;
@@ -56,7 +57,7 @@ struct EncodedAudioChunk {
     clipped_sample_count: usize,
     mic_level: f32,
     mic_peak: f32,
-    pcm_bytes: Vec<u8>,
+    pcm_bytes: Bytes,
 }
 
 pub fn validate_mic_config(mic_config: &MicConfig) -> Result<(), String> {
@@ -509,6 +510,7 @@ where
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut was_recording = false;
+    let mut pcm_buffer = BytesMut::with_capacity(65536);
 
     device
         .build_input_stream(
@@ -520,6 +522,7 @@ where
                         smoothed_level = 0.0;
                         smoothed_peak = 0.0;
                         was_recording = false;
+                        pcm_buffer.clear();
                     }
                     meter_state.clear_mic_meter();
                     return;
@@ -529,10 +532,11 @@ where
                     smoothed_level = 0.0;
                     smoothed_peak = 0.0;
                     was_recording = true;
+                    pcm_buffer.clear();
                 }
 
                 let current_gain = config_store.current().mic.gain;
-                let encoded_chunk = encode_pcm_mono(data, channels, current_gain);
+                let encoded_chunk = encode_pcm_mono(data, channels, current_gain, &mut pcm_buffer);
                 if encoded_chunk.pcm_bytes.is_empty() {
                     meter_state.clear_mic_meter();
                     return;
@@ -558,7 +562,7 @@ where
         .map_err(|error| format!("failed to build audio input stream: {}", error))
 }
 
-fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32) -> EncodedAudioChunk
+fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32, pcm_buffer: &mut BytesMut) -> EncodedAudioChunk
 where
     T: Sample,
     f32: FromSample<T>,
@@ -568,12 +572,19 @@ where
             clipped_sample_count: 0,
             mic_level: 0.0,
             mic_peak: 0.0,
-            pcm_bytes: Vec::new(),
+            pcm_bytes: Bytes::new(),
         };
     }
 
     let frame_count = data.len() / channels;
-    let mut pcm_bytes = Vec::with_capacity(frame_count * 2);
+    let required_capacity = frame_count * 2;
+    
+    // BytesMut::reserve will allocate if capacity is less than required,
+    // but by reserving a larger chunk we amortize allocations.
+    if pcm_buffer.capacity() < required_capacity {
+        pcm_buffer.reserve(required_capacity.max(65536));
+    }
+
     let mut clipped_sample_count = 0usize;
     let mut peak_amplitude = 0.0f32;
     let mut squared_sum = 0.0f32;
@@ -593,7 +604,7 @@ where
         squared_sum += amplified_sample * amplified_sample;
 
         let linear16_sample = (amplified_sample * i16::MAX as f32) as i16;
-        pcm_bytes.extend_from_slice(&linear16_sample.to_le_bytes());
+        pcm_buffer.put_i16_le(linear16_sample);
     }
 
     let rms_amplitude = if frame_count == 0 {
@@ -606,7 +617,7 @@ where
         clipped_sample_count,
         mic_level: normalize_meter_amplitude(rms_amplitude),
         mic_peak: normalize_meter_amplitude(peak_amplitude),
-        pcm_bytes,
+        pcm_bytes: pcm_buffer.split().freeze(),
     }
 }
 
@@ -627,6 +638,7 @@ fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) ->
 
 #[cfg(test)]
 mod tests {
+    use bytes::BytesMut;
     use super::{
         build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
         normalize_meter_amplitude, normalized_configured_audio_device, smooth_meter_value,
@@ -729,7 +741,8 @@ mod tests {
 
     #[test]
     fn encode_pcm_mono_counts_post_gain_clipped_samples() {
-        let encoded_chunk = encode_pcm_mono(&[0.2f32, 0.5, -0.7, 0.1], 1, 2.0);
+        let mut pcm_buffer = BytesMut::new();
+        let encoded_chunk = encode_pcm_mono(&[0.2f32, 0.5, -0.7, 0.1], 1, 2.0, &mut pcm_buffer);
 
         assert_eq!(encoded_chunk.clipped_sample_count, 2);
     }

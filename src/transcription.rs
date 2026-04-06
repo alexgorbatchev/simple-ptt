@@ -46,7 +46,7 @@ pub struct TranscriptionController {
 
 enum Command {
     StartSession,
-    AudioChunk(Vec<u8>),
+    AudioChunk(bytes::Bytes),
     InsertClipboardText,
     StopSessionAndPaste,
     StopSessionAndTransform,
@@ -114,7 +114,7 @@ impl TranscriptionController {
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
-    pub fn send_audio(&self, pcm_bytes: Vec<u8>) {
+    pub fn send_audio(&self, pcm_bytes: bytes::Bytes) {
         if pcm_bytes.is_empty() {
             return;
         }
@@ -196,7 +196,7 @@ pub fn spawn_transcription_thread(
                             continue;
                         };
 
-                        match session.audio_tx.try_send(Ok(Bytes::from(audio_chunk))) {
+                        match session.audio_tx.try_send(Ok(audio_chunk)) {
                             Ok(()) => {}
                             Err(tokio_mpsc::error::TrySendError::Full(_)) => {
                                 log::debug!("dropping audio chunk because the Deepgram session queue is full");
