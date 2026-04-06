@@ -1301,8 +1301,8 @@ extern "C" {
 struct UiUpdate {
     delegate_addr: usize,
     mic_meter: MicMeterSnapshot,
-    overlay_footer_text: String,
-    overlay_text: String,
+    overlay_footer_text: Arc<str>,
+    overlay_text: Arc<str>,
     overlay_text_opacity: f64,
     state: u8,
 }
@@ -1412,8 +1412,8 @@ pub fn setup_status_polling(
         .name("ui-poller".into())
         .spawn(move || {
             let mut last_mic_meter = MicMeterSnapshot::default();
-            let mut last_overlay_footer_text = String::new();
-            let mut last_overlay_text = String::new();
+            let mut last_overlay_footer_text: Arc<str> = Arc::from("");
+            let mut last_overlay_text: Arc<str> = Arc::from("");
             let mut last_overlay_text_opacity = 1.0;
             let mut last_state = STATE_IDLE;
             loop {
@@ -1424,8 +1424,8 @@ pub fn setup_status_polling(
                 let current_overlay_text = state.overlay_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
                 let ui_changed = current_state != last_state
-                    || current_overlay_footer_text != last_overlay_footer_text
-                    || current_overlay_text != last_overlay_text
+                    || !Arc::ptr_eq(&current_overlay_footer_text, &last_overlay_footer_text)
+                    || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
                     || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
                         > f64::EPSILON;
                 let mic_meter_changed = current_mic_meter != last_mic_meter;
@@ -1451,8 +1451,8 @@ pub fn setup_status_polling(
 
                 last_state = current_state;
                 last_mic_meter = current_mic_meter;
-                last_overlay_footer_text = current_overlay_footer_text.clone();
-                last_overlay_text = current_overlay_text.clone();
+                last_overlay_footer_text = Arc::clone(&current_overlay_footer_text);
+                last_overlay_text = Arc::clone(&current_overlay_text);
                 last_overlay_text_opacity = current_overlay_text_opacity;
 
                 if ui_changed {

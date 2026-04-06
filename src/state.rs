@@ -20,8 +20,8 @@ pub struct AppState {
     clip_event_counter: AtomicU32,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
-    overlay_footer_text: Mutex<String>,
-    overlay_text: Mutex<String>,
+    overlay_footer_text: Mutex<Arc<str>>,
+    overlay_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
     state: AtomicU8,
 }
@@ -33,8 +33,8 @@ impl AppState {
             clip_event_counter: AtomicU32::new(0),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
-            overlay_footer_text: Mutex::new(String::new()),
-            overlay_text: Mutex::new(String::new()),
+            overlay_footer_text: Mutex::new(Arc::from("")),
+            overlay_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             state: AtomicU8::new(STATE_IDLE),
         })
@@ -73,7 +73,7 @@ impl AppState {
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {
         if let Ok(mut current_overlay_text) = self.overlay_text.lock() {
-            *current_overlay_text = overlay_text.into();
+            *current_overlay_text = Arc::from(overlay_text.into());
         }
     }
 
@@ -92,24 +92,24 @@ impl AppState {
         self.overlay_text_opacity.load(Ordering::Relaxed) as f64 / u8::MAX as f64
     }
 
-    pub fn overlay_text(&self) -> String {
+    pub fn overlay_text(&self) -> Arc<str> {
         self.overlay_text
             .lock()
             .map(|overlay_text| overlay_text.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|_| Arc::from(""))
     }
 
     pub fn set_overlay_footer_text(&self, overlay_footer_text: impl Into<String>) {
         if let Ok(mut current_overlay_footer_text) = self.overlay_footer_text.lock() {
-            *current_overlay_footer_text = overlay_footer_text.into();
+            *current_overlay_footer_text = Arc::from(overlay_footer_text.into());
         }
     }
 
-    pub fn overlay_footer_text(&self) -> String {
+    pub fn overlay_footer_text(&self) -> Arc<str> {
         self.overlay_footer_text
             .lock()
             .map(|overlay_footer_text| overlay_footer_text.clone())
-            .unwrap_or_default()
+            .unwrap_or_else(|_| Arc::from(""))
     }
 
     pub fn set_mic_meter(&self, level: f32, peak: f32, clip_detected: bool) {
