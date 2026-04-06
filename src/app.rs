@@ -144,7 +144,7 @@ define_class!(
                     NSMenuItem::alloc(mtm),
                     ns_string!("Settings…"),
                     Some(sel!(openSettings:)),
-                    ns_string!(",")
+                    ns_string!("")
                 )
             };
             unsafe {
