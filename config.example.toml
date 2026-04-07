@@ -1,32 +1,94 @@
+# simple-ptt example configuration
+#
+# Copy this file to ~/.config/simple-ptt/config.toml for normal app launches.
+# Config lookup order is:
+#   1. SIMPLE_PTT_CONFIG
+#   2. $XDG_CONFIG_HOME/simple-ptt/config.toml
+#   3. ~/.config/simple-ptt/config.toml
+#
+# Only [deepgram].api_key is required for basic transcription.
+# Leave optional keys commented out to accept the built-in defaults.
+
 [ui]
+# Optional. Launch the app automatically when you log in.
+# start_on_login = true
+
+# Global hotkey used to start and stop recording.
 hotkey = "F5"
+
+# Optional. Overlay font family.
 # font_name = "Menlo"
+
+# Main transcript font size in the overlay.
 font_size = 12.0
-footer_font_size = 10.0
+
+# Optional. Footer font size for shortcut hints and billing text.
+# footer_font_size = 10.0
+
+# Audio meter style shown while recording.
+# Valid values: "animated-color", "animated-height", "none"
 meter_style = "animated-color"
-# meter_style = "animated-height"
-# meter_style = "none"
 
 [mic]
-# Optional: exact input device name or numeric index from the host input device list.
+# Optional. Exact input device name or numeric index from `just list-devices`.
+# Omit to use the macOS system default input device.
 # audio_device = "MacBook Pro Microphone"
+
+# Recording sample rate in Hz.
 sample_rate = 16000
+
+# Input gain multiplier applied before sending audio upstream.
 gain = 4.0
+
+# Press-and-hold threshold in milliseconds.
+# Shorter presses behave like toggle; longer presses behave like hold-to-talk.
 hold_ms = 300
 
 [deepgram]
+# Required unless DEEPGRAM_API_KEY is set in the environment.
 api_key = "YOUR_DEEPGRAM_API_KEY"
-# project_id = "98bf0e8b-23f6-4c01-b672-604008a47504"
+
+# Optional. Deepgram project ID for month-to-date billing in the overlay footer.
+# Falls back to DEEPGRAM_PROJECT_ID when omitted.
+# project_id = "00000000-0000-0000-0000-000000000000"
+
+# Deepgram streaming language code.
 language = "en-US"
+
+# Deepgram live transcription model.
 model = "nova-3"
+
+# Speech endpointing debounce in milliseconds.
 endpointing_ms = 300
+
+# Finalize an utterance after this much silence in milliseconds.
 utterance_end_ms = 1000
 
 [transformation]
+# Optional section. Leave provider unset to disable LLM cleanup entirely.
+
+# Hotkey used to transform the buffered transcript without auto-pasting it.
 hotkey = "F6"
+
+# If true, stopping a recording with the record hotkey runs transformation first.
 auto = true
-provider = "openai"
-api_key = "YOUR_LLM_API_KEY"
-model = "gpt-5.4-mini"
-# Optional override; omit to use the built-in prompt.
-# system_prompt = "..."
+
+# Supported providers:
+# anthropic, cohere, deepseek, galadriel, gemini, groq, huggingface,
+# hyperbolic, mira, mistral, moonshot, ollama, openai, openrouter,
+# perplexity, together, xai
+# provider = "openai"
+
+# Required for hosted providers unless provider = "ollama".
+# Falls back to the provider-specific environment variable when omitted,
+# for example OPENAI_API_KEY for "openai" or GEMINI_API_KEY for "gemini".
+# api_key = "YOUR_LLM_API_KEY"
+
+# Model name for the selected provider.
+# model = "gpt-5.4-mini"
+
+# Optional override. Omit to use the built-in dictation cleanup prompt.
+# Prefer a TOML multiline string for long prompts.
+# system_prompt = """
+# Rewrite the transcript as concise written instructions.
+# """
