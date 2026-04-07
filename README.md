@@ -17,56 +17,29 @@ A fast, minimal push-to-talk app for macOS with live Deepgram transcription and 
 - **Permissions:** Microphone plus **Accessibility** and/or **Input Monitoring**
 - **Signing:** ad-hoc signed for local distribution, **not** Developer ID-signed or notarized
 
-## Data flow
-
-This app is not offline-first.
-
-- Audio is streamed to **Deepgram** for transcription.
-- If transformation is enabled, buffered transcript text is sent to your configured LLM provider.
-- If you need a fully local workflow, this project is not there today.
-
-## Cost note
-
-Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. A full workday typically lands around **$0.50 to $0.75 USD** in transcription cost, but that is only a rough estimate. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
-
 ## Quick start
 
-### Option 1: Install a release build
+> [!IMPORTANT]
+> The bundled app is ad-hoc signed but **not notarized**. If macOS blocks it on first launch, either allow it in **System Settings > Privacy & Security** or remove quarantine manually:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/simple-ptt.app
+> ```
 
-1. Open the latest GitHub release.
-2. Download the `simple-ptt-vX.Y.Z-macos-arm64.dmg` asset.
-3. Open the disk image.
-4. Drag `simple-ptt.app` into `/Applications`.
-5. Launch it:
-
-```bash
-open -g /Applications/simple-ptt.app
-```
-
-Do **not** launch the app directly from the mounted disk image. Copy it into `Applications` first.
-
-On first launch, `simple-ptt` opens **Settings** if it does not find a usable config yet. Enter your Deepgram API key there and click **Save and Apply**. The app creates `~/.config/simple-ptt/config.toml` for you.
-
-### First run on macOS
-
-Expect the usual macOS prompts for:
-
-- **Microphone**
-- **Accessibility** and/or **Input Monitoring** for the global hotkey and synthetic paste workflow
-
-If either global-hotkey permission is missing, the app now opens a small permissions dialog with buttons to request **Accessibility**, request **Input Monitoring**, and **Re-check** status. Grant both before expecting the global shortcuts to work.
+Expect the usual macOS prompts for: **Microphone** and **Accessibility** for the global hotkey and synthetic paste workflow.
 
 If the app launches but the global shortcuts do nothing, check **Privacy & Security > Input Monitoring** and **Privacy & Security > Accessibility** and make sure `/Applications/simple-ptt.app` is enabled in both places. If you replaced the app bundle with a new ad-hoc-signed build, remove and re-add it there before relaunching; macOS TCC can treat rebuilt ad-hoc-signed bundles as a new identity.
 
-The bundled app is ad-hoc signed but **not notarized**. If macOS blocks it on first launch, either allow it in **System Settings > Privacy & Security** or remove quarantine manually:
+## Cost note
 
-```bash
-xattr -dr com.apple.quarantine /Applications/simple-ptt.app
-```
-
-If the app launches without a configured Deepgram API key, it opens **Settings** and tells you what is missing.
+Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. A full workday typically lands around **$0.50 USD** in transcription cost, but that is only a rough estimate. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
 
 ## How it works
+
+### Data flow
+
+- Audio is streamed to **Deepgram** for transcription.
+- If transformation is enabled, buffered transcript text is sent to your configured LLM provider.
 
 ### Default workflow
 
@@ -90,70 +63,15 @@ If the app launches without a configured Deepgram API key, it opens **Settings**
 2. `$XDG_CONFIG_HOME/simple-ptt/config.toml`
 3. `~/.config/simple-ptt/config.toml`
 
-If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default. Relying on shell environment variables for LaunchServices-launched apps is fragile.
-
-The native **Settings…** window is now the primary setup path. It creates the config file for you and lets you change the common options without editing TOML by hand. Manual editing is still supported if you want it.
-
+If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default.
 
 ### Minimal config
 
-If you prefer to edit the file by hand, this is enough to get transcription working:
+If you prefer to edit the file by hand, this is enough to get transcription working. See [`config.example.toml`](./config.example.toml) for all available options.
 
 ```toml
 [deepgram]
 api_key = "YOUR_DEEPGRAM_API_KEY"
-```
-
-### Common sections
-
-- `[ui]`: record hotkey, overlay font sizes, mic meter style
-- `[mic]`: input device, sample rate, gain, hold threshold
-- `[deepgram]`: API key, language, model, endpoint timing
-- `[transformation]`: transform hotkey, provider, model, prompt override
-
-See [`config.example.toml`](./config.example.toml) for a complete manual-edit example.
-
-### Audio input devices
-
-To list available input devices from an installed app bundle:
-
-```bash
-~/Applications/simple-ptt.app/Contents/MacOS/simple-ptt --list-devices
-```
-
-## Build from source
-
-### Requirements
-
-- Rust toolchain
-- macOS on **Apple Silicon (arm64)**
-
-Build the release binary and bundle it as a macOS app:
-
-```bash
-cargo build --locked --release
-./scripts/build-macos-app.sh target/release/simple-ptt dist/simple-ptt.app
-```
-
-Or use the checked-in helpers:
-
-```bash
-just bundle-release
-just bundle-dmg
-```
-
-That creates:
-
-```text
-dist/simple-ptt.app
-dist/simple-ptt.dmg
-```
-
-If you want it installed into `~/Applications` and launched with the same non-blocking workflow:
-
-```bash
-just install-app
-just start
 ```
 
 ## Development
