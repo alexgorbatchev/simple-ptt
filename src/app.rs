@@ -316,21 +316,14 @@ define_class!(
 
         #[unsafe(method(resetHotkeyPermissions:))]
         fn reset_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
-            if let Err(error) = permissions::reset_application_permissions() {
+            if let Err(error) = permissions::reset_application_permissions_and_relaunch() {
                 log::error!("failed to reset macOS permissions: {}", error);
-                // Don't show alert if it wasn't signed/packaged, etc. We'll try to terminate anyway.
-            }
-
-            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
-            
-            if let Err(error) = permissions::relaunch_current_application() {
-                log::error!("failed to relaunch after permission reset: {}", error);
+                
                 show_modal_alert(
-                    "simple-ptt couldn't relaunch itself after reset",
+                    "simple-ptt couldn't reset permissions properly",
                     &format!(
                         concat!(
-                            "Permissions have been reset, but simple-ptt failed to reopen automatically.\n\n",
-                            "Quit and launch the app again manually to see the changes.\n\n",
+                            "The process manager failed to background the reset script.\n\n",
                             "Error: {}"
                         ),
                         error
@@ -339,6 +332,7 @@ define_class!(
                 return;
             }
 
+            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
             app.terminate(None);
         }
 

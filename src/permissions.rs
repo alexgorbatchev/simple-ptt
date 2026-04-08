@@ -124,10 +124,32 @@ pub fn microphone_settings_urls() -> [&'static str; 2] {
     ]
 }
 
-pub fn reset_application_permissions() -> Result<(), String> {
-    run_tccutil_reset("Accessibility")?;
-    run_tccutil_reset("ListenEvent")?;
-    run_tccutil_reset("Microphone")?;
+pub fn reset_application_permissions_and_relaunch() -> Result<(), String> {
+    let executable_path = std::env::current_exe()
+        .map_err(|error| format!("failed to resolve current executable path: {}", error))?;
+
+    let app_bundle_path = app_bundle_path_from_executable(&executable_path);
+    let target_path = app_bundle_path.as_deref().unwrap_or(&executable_path);
+
+    // tccutil resets are cached by macOS tccd if the process is currently running.
+    // We spawn a detached background script that outlives us, waits 1 second for us 
+    // to cleanly terminate, runs the TCC resets, and then launches a fresh instance.
+    let script = format!(
+        "sleep 1.5; \
+         /usr/bin/tccutil reset Accessibility {0}; \
+         /usr/bin/tccutil reset ListenEvent {0}; \
+         /usr/bin/tccutil reset Microphone {0}; \
+         /usr/bin/open -n \"{1}\"",
+        APP_BUNDLE_IDENTIFIER,
+        target_path.display()
+    );
+
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .spawn()
+        .map_err(|error| format!("failed to spawn background reset script: {}", error))?;
+
     Ok(())
 }
 
@@ -240,27 +262,6 @@ fn app_bundle_path_from_executable(executable_path: &Path) -> Option<PathBuf> {
     }
 
     Some(app_bundle_path.to_path_buf())
-}
-
-fn run_tccutil_reset(service: &str) -> Result<(), String> {
-    let output = Command::new("/usr/bin/tccutil")
-        .args(["reset", service, APP_BUNDLE_IDENTIFIER])
-        .output()
-        .map_err(|error| format!("failed to run tccutil reset {}: {}", service, error))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        return Err(format!(
-            "tccutil reset {} failed with status {}",
-            service, output.status
-        ));
-    }
-
-    Err(format!("tccutil reset {} failed: {}", service, stderr))
 }
 
 fn has_input_monitoring_access() -> bool {

@@ -138,7 +138,7 @@ impl PermissionsDialog {
 
         let reset_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Reset Permissions"),
+                ns_string!("Reset and Relaunch"),
                 Some(target),
                 Some(sel!(resetHotkeyPermissions:)),
                 mtm,
