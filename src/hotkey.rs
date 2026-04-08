@@ -150,7 +150,8 @@ fn handle_key_press(
         }
 
         state.request_abort();
-        state.set_overlay_text("Canceling…");
+        state.dismiss_overlay();
+        state.clear_overlay_text();
         state.set_overlay_text_opacity(1.0);
         press_time.set(None);
         record_hotkey_action.set(None);

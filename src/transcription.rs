@@ -164,6 +164,7 @@ pub fn spawn_transcription_thread(
                         recording_prefix.clear();
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
                         state.clear_abort_request();
+                        state.restore_overlay();
                         state.clear_overlay_text();
                         state.set_overlay_text_opacity(1.0);
                         let current_config = config_store.current();
@@ -632,9 +633,19 @@ fn paste_buffered_text(state: &AppState, buffered_text: &mut String) {
             state.clear_overlay_text();
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_IDLE);
+            state.clear_abort_request();
             log::info!("buffer pasted successfully");
         }
         Err(error) => {
+            if state.consume_abort_request() {
+                log::info!("discarding buffered text because abort was requested during paste");
+                buffered_text.clear();
+                state.clear_overlay_text();
+                state.set_overlay_text_opacity(1.0);
+                state.set_state(STATE_IDLE);
+                return;
+            }
+
             log::error!("failed to copy/paste buffered text: {}", error);
             state.set_overlay_text(buffered_text.clone());
             state.set_overlay_text_opacity(1.0);
@@ -668,6 +679,7 @@ fn transform_buffered_text(
 
     let original_buffer = buffered_text.clone();
     state.clear_abort_request();
+    state.restore_overlay();
     state.set_overlay_text(original_buffer.clone());
     state.set_overlay_text_opacity(0.02);
     state.set_state(STATE_TRANSFORMING);
@@ -679,10 +691,11 @@ fn transform_buffered_text(
     )) {
         Ok(transformed_text) => {
             if state.consume_abort_request() {
-                log::info!("discarding transformed text because abort was requested");
-                state.set_overlay_text(original_buffer.clone());
+                log::info!("discarding transformation result because abort was requested");
+                buffered_text.clear();
+                state.clear_overlay_text();
                 state.set_overlay_text_opacity(1.0);
-                state.set_state(STATE_BUFFER_READY);
+                state.set_state(STATE_IDLE);
                 return;
             }
 
@@ -699,11 +712,15 @@ fn transform_buffered_text(
         }
         Err(error) => {
             if state.consume_abort_request() {
-                log::info!("transformation aborted");
-            } else {
-                log::error!("transformation failed: {}", error);
+                log::info!("discarding buffered text because transformation was aborted");
+                buffered_text.clear();
+                state.clear_overlay_text();
+                state.set_overlay_text_opacity(1.0);
+                state.set_state(STATE_IDLE);
+                return;
             }
 
+            log::error!("transformation failed: {}", error);
             state.set_overlay_text(original_buffer.clone());
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);

@@ -301,15 +301,17 @@ impl OverlayWindow {
         &self,
         mtm: MainThreadMarker,
         state: u8,
+        overlay_dismissed: bool,
         overlay_text: &str,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
-        let should_show = matches!(
-            state,
-            STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
-        );
+        let should_show = !overlay_dismissed
+            && matches!(
+                state,
+                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
+            );
         if !should_show {
             self.hide();
             return;

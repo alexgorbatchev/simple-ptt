@@ -1033,6 +1033,7 @@ impl AppDelegate {
         &self,
         mtm: MainThreadMarker,
         state: u8,
+        overlay_dismissed: bool,
         overlay_text: &str,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
@@ -1049,6 +1050,7 @@ impl AppDelegate {
             self,
             mtm,
             state,
+            overlay_dismissed,
             overlay_text,
             overlay_text_opacity,
             overlay_footer_text,
@@ -1284,6 +1286,7 @@ fn update_overlay_window(
     delegate: &AppDelegate,
     mtm: MainThreadMarker,
     state: u8,
+    overlay_dismissed: bool,
     overlay_text: &str,
     overlay_text_opacity: f64,
     overlay_footer_text: &str,
@@ -1293,6 +1296,7 @@ fn update_overlay_window(
         overlay_window.update(
             mtm,
             state,
+            overlay_dismissed,
             overlay_text,
             overlay_text_opacity,
             overlay_footer_text,
@@ -1313,6 +1317,7 @@ extern "C" {
 struct UiUpdate {
     delegate_addr: usize,
     mic_meter: MicMeterSnapshot,
+    overlay_dismissed: bool,
     overlay_footer_text: Arc<str>,
     overlay_text: Arc<str>,
     overlay_text_opacity: f64,
@@ -1326,6 +1331,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
     delegate.update_ui(
         mtm,
         update.state,
+        update.overlay_dismissed,
         &update.overlay_text,
         update.overlay_text_opacity,
         &update.overlay_footer_text,
@@ -1424,6 +1430,7 @@ pub fn setup_status_polling(
         .name("ui-poller".into())
         .spawn(move || {
             let mut last_mic_meter = MicMeterSnapshot::default();
+            let mut last_overlay_dismissed = false;
             let mut last_overlay_footer_text: Arc<str> = Arc::from("");
             let mut last_overlay_text: Arc<str> = Arc::from("");
             let mut last_overlay_text_opacity = 1.0;
@@ -1435,10 +1442,12 @@ pub fn setup_status_polling(
                 frame_count += 1;
                 let current_state = state.get_state();
                 let current_mic_meter = state.mic_meter_snapshot();
+                let current_overlay_dismissed = state.is_overlay_dismissed();
                 let current_overlay_footer_text = state.overlay_footer_text();
                 let current_overlay_text = state.overlay_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
                 let ui_changed = current_state != last_state
+                    || current_overlay_dismissed != last_overlay_dismissed
                     || !Arc::ptr_eq(&current_overlay_footer_text, &last_overlay_footer_text)
                     || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
                     || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
@@ -1446,7 +1455,8 @@ pub fn setup_status_polling(
                 let mic_meter_changed = current_mic_meter != last_mic_meter;
                 let should_animate_meter = current_state == STATE_RECORDING;
                 let should_animate_overlay =
-                    matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING);
+                    matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING)
+                        && !current_overlay_dismissed;
                 let hotkey_capture_update_pending =
                     hotkey_capture_controller.has_pending_ui_update();
                 let transformation_models_update_pending =
@@ -1472,6 +1482,7 @@ pub fn setup_status_polling(
 
                 last_state = current_state;
                 last_mic_meter = current_mic_meter;
+                last_overlay_dismissed = current_overlay_dismissed;
                 last_overlay_footer_text = Arc::clone(&current_overlay_footer_text);
                 last_overlay_text = Arc::clone(&current_overlay_text);
                 last_overlay_text_opacity = current_overlay_text_opacity;
@@ -1495,6 +1506,7 @@ pub fn setup_status_polling(
                 let update = Box::new(UiUpdate {
                     delegate_addr,
                     mic_meter: current_mic_meter,
+                    overlay_dismissed: current_overlay_dismissed,
                     overlay_footer_text: current_overlay_footer_text,
                     overlay_text: current_overlay_text,
                     overlay_text_opacity: current_overlay_text_opacity,

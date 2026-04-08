@@ -20,6 +20,7 @@ pub struct AppState {
     clip_event_counter: AtomicU32,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
+    overlay_dismissed: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
     overlay_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
@@ -33,6 +34,7 @@ impl AppState {
             clip_event_counter: AtomicU32::new(0),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
+            overlay_dismissed: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
             overlay_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
@@ -69,6 +71,18 @@ impl AppState {
 
     pub fn consume_abort_request(&self) -> bool {
         self.abort_requested.swap(false, Ordering::Relaxed)
+    }
+
+    pub fn dismiss_overlay(&self) {
+        self.overlay_dismissed.store(true, Ordering::Relaxed);
+    }
+
+    pub fn restore_overlay(&self) {
+        self.overlay_dismissed.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_overlay_dismissed(&self) -> bool {
+        self.overlay_dismissed.load(Ordering::Relaxed)
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {
@@ -170,5 +184,18 @@ mod tests {
         state.set_mic_meter(0.3, 0.4, true);
 
         assert_eq!(state.mic_meter_snapshot().clip_event_counter, 2);
+    }
+
+    #[test]
+    fn overlay_dismissal_can_be_toggled() {
+        let state = AppState::new();
+
+        assert!(!state.is_overlay_dismissed());
+
+        state.dismiss_overlay();
+        assert!(state.is_overlay_dismissed());
+
+        state.restore_overlay();
+        assert!(!state.is_overlay_dismissed());
     }
 }
