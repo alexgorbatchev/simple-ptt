@@ -41,7 +41,7 @@ impl BillingController {
         };
 
         self.state
-            .set_overlay_footer_text(format!("{}: refreshing…", footer_label));
+            .set_overlay_footer_text(format!("{}: ...", footer_label));
         let state = Arc::clone(&self.state);
         std::thread::Builder::new()
             .name("billing-refresh".into())
