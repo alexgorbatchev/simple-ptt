@@ -318,12 +318,28 @@ define_class!(
         fn reset_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
             if let Err(error) = permissions::reset_application_permissions() {
                 log::error!("failed to reset macOS permissions: {}", error);
+                // Don't show alert if it wasn't signed/packaged, etc. We'll try to terminate anyway.
             }
 
-            self.ivars().accessibility_permission_requested.set(false);
-            self.ivars().input_monitoring_permission_requested.set(false);
-            self.ivars().microphone_permission_requested.set(false);
-            self.sync_hotkey_permissions_ui();
+            let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
+            
+            if let Err(error) = permissions::relaunch_current_application() {
+                log::error!("failed to relaunch after permission reset: {}", error);
+                show_modal_alert(
+                    "simple-ptt couldn't relaunch itself after reset",
+                    &format!(
+                        concat!(
+                            "Permissions have been reset, but simple-ptt failed to reopen automatically.\n\n",
+                            "Quit and launch the app again manually to see the changes.\n\n",
+                            "Error: {}"
+                        ),
+                        error
+                    ),
+                );
+                return;
+            }
+
+            app.terminate(None);
         }
 
         #[unsafe(method(recheckHotkeyPermissions:))]
