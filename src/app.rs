@@ -1418,8 +1418,11 @@ pub fn setup_status_polling(
             let mut last_overlay_text: Arc<str> = Arc::from("");
             let mut last_overlay_text_opacity = 1.0;
             let mut last_state = STATE_IDLE;
+            let mut frame_count = 0u64;
+
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
+                frame_count += 1;
                 let current_state = state.get_state();
                 let current_mic_meter = state.mic_meter_snapshot();
                 let current_overlay_footer_text = state.overlay_footer_text();
@@ -1440,6 +1443,11 @@ pub fn setup_status_polling(
                     transformation_models_controller.has_pending_ui_update();
                 let deepgram_connection_update_pending =
                     deepgram_connection_controller.has_pending_ui_update();
+                
+                // Always post an update every ~1.5 seconds (about 20 ticks of 75ms)
+                // so we can recheck the current audio input device default if it changed.
+                let background_poll_trigger = (frame_count % 20) == 0;
+
                 if !ui_changed
                     && !mic_meter_changed
                     && !should_animate_meter
@@ -1447,6 +1455,7 @@ pub fn setup_status_polling(
                     && !hotkey_capture_update_pending
                     && !transformation_models_update_pending
                     && !deepgram_connection_update_pending
+                    && !background_poll_trigger
                 {
                     continue;
                 }

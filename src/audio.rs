@@ -42,6 +42,7 @@ pub struct AudioController {
 
 struct ActiveAudioStream {
     configured_audio_device: Option<String>,
+    actual_audio_device_name: Option<String>,
     requested_sample_rate: u32,
     _stream: Stream,
 }
@@ -153,11 +154,12 @@ impl AudioController {
             config_store.clone(),
             &mic_config,
         ) {
-            Ok((stream, actual_rate)) => {
+            Ok((stream, actual_rate, actual_audio_device_name)) => {
                 transcription_controller.set_sample_rate(actual_rate);
                 (
                     Some(ActiveAudioStream {
                         configured_audio_device: mic_config.audio_device.clone(),
+                        actual_audio_device_name,
                         requested_sample_rate: mic_config.sample_rate,
                         _stream: stream,
                     }),
@@ -190,10 +192,22 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
+        
+        // We must rebuild if settings changed, but also if it looks like the default device identity shifted.
         let needs_stream_rebuild = match active_stream.as_ref() {
             Some(active_stream) => {
-                active_stream.requested_sample_rate != mic_config.sample_rate
-                    || active_stream.configured_audio_device != mic_config.audio_device
+                if active_stream.requested_sample_rate != mic_config.sample_rate
+                    || active_stream.configured_audio_device != mic_config.audio_device 
+                {
+                    true
+                } else if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
+                    // Config says we're using "System default". Let's check if the default actually changed (e.g. plugged in new mic).
+                    let host = cpal::default_host();
+                    let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                    current_default_name != active_stream.actual_audio_device_name
+                } else {
+                    false
+                }
             }
             None => true,
         };
@@ -219,14 +233,30 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        if active_stream.is_some() {
-            return Ok(false);
-        }
-        drop(active_stream);
-
+        
         let mic_config = self.config_store.current().mic;
-        self.rebuild_stream(&mic_config)?;
-        Ok(true)
+        
+        let needs_rebuild = if let Some(active_stream) = &*active_stream {
+            if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
+                // Config says we're using "System default". Let's check if the default actually changed
+                let host = cpal::default_host();
+                let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                current_default_name != active_stream.actual_audio_device_name
+            } else {
+                false
+            }
+        } else {
+            true
+        };
+        
+        drop(active_stream);
+        
+        if needs_rebuild {
+            self.rebuild_stream(&mic_config)?;
+            return Ok(true);
+        }
+        
+        Ok(false)
     }
 
     pub fn apply_pending_if_idle(&self) {
@@ -234,25 +264,49 @@ impl AudioController {
             return;
         }
 
+        // Apply any pending config explicitly first
         let pending_config = self
             .pending_config
             .lock()
             .ok()
             .and_then(|mut pending_config| pending_config.take());
-        let Some(pending_config) = pending_config else {
+            
+        if let Some(pending_config) = pending_config {
+            if let Err(error) = self.rebuild_stream(&pending_config) {
+                log::error!("failed to apply deferred audio config: {}", error);
+                if let Ok(mut retry_config) = self.pending_config.lock() {
+                    *retry_config = Some(pending_config);
+                }
+            }
             return;
+        }
+
+        // Even if there's no pending config, if the configured device is "System default", check if the system default actually changed.
+        // E.g. pulling a mic out, or adding one while app is running.
+        let needs_rebuild = {
+            let active_stream = self.active_stream.lock().ok();
+            let current_config_mic = self.config_store.current().mic;
+            match active_stream.as_deref().and_then(|x| x.as_ref()) {
+                Some(active) if normalized_configured_audio_device(current_config_mic.audio_device.as_deref()).is_none() => {
+                    let host = cpal::default_host();
+                    let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                    current_default_name != active.actual_audio_device_name
+                },
+                None => false,
+                _ => false,
+            }
         };
 
-        if let Err(error) = self.rebuild_stream(&pending_config) {
-            log::error!("failed to apply deferred audio config: {}", error);
-            if let Ok(mut retry_config) = self.pending_config.lock() {
-                *retry_config = Some(pending_config);
+        if needs_rebuild {
+            let current_config_mic = self.config_store.current().mic;
+            if let Err(error) = self.rebuild_stream(&current_config_mic) {
+                log::error!("failed to switch to new default audio device: {}", error);
             }
         }
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let (stream, actual_rate) = build_input_stream(
+        let (stream, actual_rate, actual_audio_device_name) = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
@@ -266,6 +320,7 @@ impl AudioController {
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
         *active_stream = Some(ActiveAudioStream {
             configured_audio_device: mic_config.audio_device.clone(),
+            actual_audio_device_name,
             requested_sample_rate: mic_config.sample_rate,
             _stream: stream,
         });
@@ -278,13 +333,14 @@ pub fn build_input_stream(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     mic_config: &MicConfig,
-) -> Result<(Stream, u32), String> {
+) -> Result<(Stream, u32, Option<String>), String> {
     let host = cpal::default_host();
     let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
 
+    let actual_audio_device_name = device.name().ok();
     log::info!(
         "audio input device: {}",
-        device.name().unwrap_or_else(|_| "<unknown>".into())
+        actual_audio_device_name.as_deref().unwrap_or("<unknown>")
     );
 
     let config = select_input_config(&device, mic_config.sample_rate)?;
@@ -321,7 +377,7 @@ pub fn build_input_stream(
         .map_err(|error| format!("failed to start audio stream: {}", error))?;
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
-    Ok((stream, actual_rate))
+    Ok((stream, actual_rate, actual_audio_device_name))
 }
 
 fn build_validation_stream<T>(
