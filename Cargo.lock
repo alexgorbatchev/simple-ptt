@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "simple-ptt"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "auto-launch",
  "block2",
