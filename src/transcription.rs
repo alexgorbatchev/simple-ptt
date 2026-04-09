@@ -534,9 +534,17 @@ pub fn spawn_transcription_thread(
                         }
                     }
                     Command::PasteBuffer => {
+                        let current_ui_text = state.overlay_text().to_string();
+                        if !current_ui_text.is_empty() && current_ui_text != buffered_text {
+                            buffered_text = current_ui_text;
+                        }
                         paste_buffered_text(&state, &mut buffered_text);
                     }
                     Command::TransformBuffer => {
+                        let current_ui_text = state.overlay_text().to_string();
+                        if !current_ui_text.is_empty() && current_ui_text != buffered_text {
+                            buffered_text = current_ui_text;
+                        }
                         let transformation_config =
                             config_store.current().resolve_transformation_config().ok();
                         transform_buffered_text(
