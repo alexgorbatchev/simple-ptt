@@ -38,7 +38,9 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 ### Additional controls
 
 - **Tap vs hold:** short press behaves like toggle; holding past `mic.hold_ms` turns the same hotkey into hold-to-talk.
-- **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it.
+- **Editable overlay:** You can click into the overlay at any time to manually type, fix, or delete words before pasting.
+- **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it. If you press `F6` while dictating, you can keep talking — your audio is buffered and will seamlessly append to the transformed text once the LLM finishes.
+- **Resume dictation:** If you have transformed text (or manually stopped recording), pressing `F5` again will seamlessly resume dictating onto the end of your existing text.
 - **`Escape`:** abort recording, cancel background work, or discard a ready buffer.
 - **`Cmd+V` while recording:** splice the current plain-text clipboard contents into the active transcript.
 
