@@ -135,7 +135,7 @@ fn run_graphical_application() -> Result<(), String> {
         hotkey::spawn_hotkey_thread(
             shared_state.clone(),
             billing_controller.clone(),
-            transcription_controller,
+            transcription_controller.clone(),
             config_store.clone(),
             hotkey_capture_controller.clone(),
         );
@@ -158,6 +158,7 @@ fn run_graphical_application() -> Result<(), String> {
         deepgram_connection_controller.clone(),
         billing_controller,
         audio_controller,
+        shared_state.clone(),
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 

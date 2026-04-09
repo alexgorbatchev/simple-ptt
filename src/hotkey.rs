@@ -351,11 +351,11 @@ fn handle_key_release(
         }
 
         match state.get_state() {
-            STATE_RECORDING => match controller.stop_session_and_transform() {
+            STATE_RECORDING => match controller.stop_session_and_transform_and_resume() {
                 Ok(()) => {
                     state.set_overlay_text_opacity(0.02);
                     state.set_state(STATE_PROCESSING);
-                    log::info!("stopping recording and transforming buffered text");
+                    log::info!("stopping recording, transforming buffered text, and resuming");
                 }
                 Err(error) => {
                     log::error!("failed to stop recording for transformation: {}", error);

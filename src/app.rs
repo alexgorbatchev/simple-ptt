@@ -10,7 +10,8 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationOptions,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu, NSMenuItem,
-    NSStatusBar, NSStatusItem, NSWindowDelegate, NSWorkspace, NSWorkspaceOpenConfiguration,
+    NSStatusBar, NSStatusItem, NSTextDelegate, NSTextViewDelegate, NSWindowDelegate, NSWorkspace,
+    NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
@@ -54,6 +55,7 @@ pub struct Ivars {
     config_store: LiveConfigStore,
     deepgram_connection_controller: DeepgramConnectionController,
     hotkey_capture_controller: HotkeyCaptureController,
+    state: Arc<AppState>,
     overlay_style: OverlayStyle,
     active_status_bar_icon: Retained<objc2_app_kit::NSImage>,
     idle_status_bar_icon: Retained<objc2_app_kit::NSImage>,
@@ -189,9 +191,11 @@ define_class!(
 
             status_item.setMenu(Some(&menu));
 
+            let overlay_window = OverlayWindow::new(mtm, &self.ivars().overlay_style);
+            overlay_window.set_delegate(ProtocolObject::from_ref(self));
             self.ivars()
                 .overlay_window
-                .set(OverlayWindow::new(mtm, &self.ivars().overlay_style))
+                .set(overlay_window)
                 .expect("overlay window must only be set once");
             self.ivars()
                 .status_item
@@ -512,6 +516,17 @@ define_class!(
             self.restore_accessory_activation_policy_if_possible();
         }
     }
+
+    unsafe impl NSTextViewDelegate for AppDelegate {}
+    unsafe impl NSTextDelegate for AppDelegate {
+        #[unsafe(method(textDidChange:))]
+        fn text_did_change(&self, _notification: &NSNotification) {
+            if let Some(overlay_window) = self.ivars().overlay_window.get() {
+                let text = overlay_window.text();
+                self.ivars().state.set_overlay_text(text);
+            }
+        }
+    }
 );
 
 impl AppDelegate {
@@ -526,6 +541,7 @@ impl AppDelegate {
         deepgram_connection_controller: DeepgramConnectionController,
         billing_controller: BillingController,
         audio_controller: AudioController,
+        state: Arc<AppState>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
             audio_controller,
@@ -535,6 +551,7 @@ impl AppDelegate {
             config_store,
             deepgram_connection_controller,
             hotkey_capture_controller,
+            state,
             overlay_style,
             active_status_bar_icon: make_status_bar_active_icon(mtm),
             idle_status_bar_icon: make_status_bar_icon(mtm),

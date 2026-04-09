@@ -57,6 +57,11 @@ impl AppState {
         self.state.load(Ordering::Relaxed)
     }
 
+    pub fn is_recording_or_transforming(&self) -> bool {
+        let state = self.get_state();
+        state == STATE_RECORDING || state == STATE_PROCESSING || state == STATE_TRANSFORMING
+    }
+
     pub fn request_abort(&self) {
         self.abort_requested.store(true, Ordering::Relaxed);
     }

@@ -1,15 +1,17 @@
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
-use objc2::{define_class, msg_send, rc::Retained, ClassType};
-use objc2::MainThreadOnly;
-use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
-    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
-    NSTextField, NSTextFieldCell, NSActionCell, NSView, NSWindowCollectionBehavior, NSWindowStyleMask,
-};
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2::runtime::NSObject;
+use objc2::runtime::ProtocolObject;
+use objc2::MainThreadOnly;
+use objc2::{define_class, msg_send, rc::Retained, ClassType};
+use objc2_app_kit::{
+    NSActionCell, NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
+    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
+    NSTextField, NSTextFieldCell, NSTextView, NSTextViewDelegate, NSView,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
+};
+use objc2_foundation::{MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString};
 
 use crate::config::UiMeterStyle;
 use crate::state::{
@@ -61,6 +63,20 @@ struct ClipIndicatorState {
     last_updated_at: Option<Instant>,
 }
 
+define_class!(
+    #[unsafe(super(NSPanel))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "OverlayPanel"]
+    struct OverlayPanel;
+
+    impl OverlayPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
+
 #[derive(Debug)]
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
@@ -71,7 +87,7 @@ pub struct OverlayWindow {
     meter_bar_levels: RefCell<Vec<f32>>,
     clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: Cell<UiMeterStyle>,
-    text_field: Retained<NSTextField>,
+    text_view: Retained<NSTextView>,
     footer_text_field: Retained<NSTextField>,
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
@@ -85,22 +101,25 @@ impl OverlayWindow {
             NSPoint::new(0.0, 0.0),
             NSSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
         );
-        let panel = NSPanel::initWithContentRect_styleMask_backing_defer_screen(
-            NSPanel::alloc(mtm),
-            panel_rect,
-            NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-            NSBackingStoreType::Buffered,
-            false,
-            NSScreen::mainScreen(mtm).as_deref(),
-        );
+        let panel: Retained<OverlayPanel> = unsafe {
+            msg_send![
+                OverlayPanel::alloc(mtm),
+                initWithContentRect: panel_rect,
+                styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                backing: NSBackingStoreType::Buffered,
+                defer: false,
+                screen: NSScreen::mainScreen(mtm).as_deref()
+            ]
+        };
+        let panel: Retained<NSPanel> = Retained::into_super(panel);
 
         panel.setFloatingPanel(true);
-        panel.setBecomesKeyOnlyIfNeeded(true);
+        panel.setBecomesKeyOnlyIfNeeded(false);
         panel.setWorksWhenModal(true);
         panel.setLevel(NSFloatingWindowLevel);
         panel.setOpaque(false);
         panel.setHasShadow(true);
-        panel.setIgnoresMouseEvents(true);
+        panel.setIgnoresMouseEvents(false);
         panel.setHidesOnDeactivate(false);
         panel.setCollectionBehavior(
             NSWindowCollectionBehavior::MoveToActiveSpace
@@ -134,31 +153,23 @@ impl OverlayWindow {
         scroll_view.setHasVerticalScroller(true);
         scroll_view.setHasHorizontalScroller(false);
 
-        let text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
-        text_field.setDrawsBackground(false);
-        text_field.setBordered(false);
-        text_field.setBezeled(false);
-        text_field.setEditable(false);
-        text_field.setSelectable(false);
-        text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+        let text_view = NSTextView::initWithFrame(
+            NSTextView::alloc(mtm),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(OVERLAY_WIDTH, text_area_height(true, false)),
+            ),
+        );
+        text_view.setTextContainerInset(NSSize::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING));
+        text_view.setDrawsBackground(false);
+        text_view.setEditable(true);
+        text_view.setSelectable(true);
+        text_view.setRichText(false);
+        text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
             0.98, 0.98, 0.99, 1.0,
         )));
-        text_field.setFont(Some(&resolve_overlay_font(style, style.font_size)));
-        text_field.setPreferredMaxLayoutWidth(usable_text_width());
-        text_field.setFrame(NSRect::new(
-            NSPoint::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING),
-            NSSize::new(
-                usable_text_width(),
-                text_area_height(true, false) - (TEXT_VERTICAL_PADDING * 2.0),
-            ),
-        ));
-        text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-
-        if let Some(cell) = text_field.cell() {
-            cell.setAlignment(NSTextAlignment::Left);
-            cell.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
-            cell.setUsesSingleLineMode(false);
-        }
+        text_view.setFont(Some(&resolve_overlay_font(style, style.font_size)));
+        text_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
 
         let separator_view = NSView::initWithFrame(
             NSView::alloc(mtm),
@@ -267,7 +278,7 @@ impl OverlayWindow {
         }
         footer_hint_text_field.setHidden(style.shortcut_hint.is_none());
 
-        scroll_view.setDocumentView(Some(&text_field));
+        scroll_view.setDocumentView(Some(&text_view));
         root_view.addSubview(&scroll_view);
         root_view.addSubview(&meter_container_view);
         root_view.addSubview(&separator_view);
@@ -285,7 +296,7 @@ impl OverlayWindow {
             meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
             clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
             meter_style: Cell::new(style.meter_style),
-            text_field,
+            text_view,
             footer_text_field,
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
@@ -348,6 +359,8 @@ impl OverlayWindow {
         if !self.is_visible.get() {
             self.position_on_mouse_screen(mtm);
             self.panel.orderFrontRegardless();
+            self.panel.makeKeyWindow();
+            self.panel.makeFirstResponder(Some(&self.text_view));
             self.is_visible.set(true);
         }
     }
@@ -363,8 +376,16 @@ impl OverlayWindow {
         self.set_footer_text("");
     }
 
+    pub fn text(&self) -> String {
+        self.text_view.string().to_string()
+    }
+
+    pub fn set_delegate(&self, delegate: &ProtocolObject<dyn NSTextViewDelegate>) {
+        self.text_view.setDelegate(Some(delegate));
+    }
+
     pub fn apply_style(&self, style: &OverlayStyle) {
-        self.text_field
+        self.text_view
             .setFont(Some(&resolve_overlay_font(style, style.font_size)));
         self.footer_text_field
             .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
@@ -405,7 +426,7 @@ impl OverlayWindow {
             self.clear_meter();
             self.clear_clip_indicator();
         }
-        NSView::setNeedsDisplay(&self.text_field, true);
+        NSView::setNeedsDisplay(&self.text_view, true);
         NSView::setNeedsDisplay(&self.footer_text_field, true);
         NSView::setNeedsDisplay(&self.footer_hint_text_field, true);
     }
@@ -431,31 +452,16 @@ impl OverlayWindow {
     }
 
     fn set_text(&self, text: &str) {
-        let ns_text = NSString::from_str(text);
-        self.text_field.setStringValue(&ns_text);
-        self.text_field
-            .setPreferredMaxLayoutWidth(usable_text_width());
+        let current_text = self.text_view.string().to_string();
+        if current_text != text {
+            let ns_text = NSString::from_str(text);
+            self.text_view.setString(&ns_text);
 
-        if let Some(cell) = self.text_field.cell() {
-            let measured_size = cell.cellSizeForBounds(NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(usable_text_width(), f64::MAX),
-            ));
-            let field_height = measured_size.height.max(self.text_content_min_height());
-            self.text_field.setFrame(NSRect::new(
-                NSPoint::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING),
-                NSSize::new(usable_text_width(), field_height),
-            ));
-
-            let clip_view = self.scroll_view.contentView();
-            let visible_height = self.scroll_view.contentSize().height;
-            let scroll_origin_y =
-                (field_height + (TEXT_VERTICAL_PADDING * 2.0) - visible_height).max(0.0);
-            clip_view.scrollToPoint(NSPoint::new(0.0, scroll_origin_y));
-            self.scroll_view.reflectScrolledClipView(&clip_view);
+            // Move cursor to the end
+            let length = text.encode_utf16().count();
+            self.text_view.setSelectedRange(NSRange::new(length, 0));
+            self.text_view.scrollRangeToVisible(NSRange::new(length, 0));
         }
-
-        NSView::setNeedsDisplay(&self.text_field, true);
     }
 
     fn set_text_opacity(&self, target_text_opacity: f64) {
@@ -469,9 +475,9 @@ impl OverlayWindow {
             current_text_opacity + ((clamped_target_opacity - current_text_opacity) * 0.4)
         };
 
-        self.text_field.setAlphaValue(next_text_opacity);
+        self.text_view.setAlphaValue(next_text_opacity);
         self.text_opacity.set(next_text_opacity);
-        NSView::setNeedsDisplay(&self.text_field, true);
+        NSView::setNeedsDisplay(&self.text_view, true);
     }
 
     fn set_footer_text(&self, footer_text: &str) {
@@ -681,10 +687,6 @@ impl OverlayWindow {
             }
         }
     }
-
-    fn text_content_min_height(&self) -> f64 {
-        self.scroll_view.contentSize().height - (TEXT_VERTICAL_PADDING * 2.0)
-    }
 }
 
 fn resolve_overlay_font(style: &OverlayStyle, font_size: f64) -> Retained<objc2_app_kit::NSFont> {
@@ -724,14 +726,8 @@ fn normalized_font_size(font_size: f64) -> f64 {
     }
 }
 
-fn default_overlay_text(state: u8) -> &'static str {
-    match state {
-        STATE_RECORDING => "Listening…",
-        STATE_PROCESSING => "Transcribing…",
-        STATE_BUFFER_READY => "Ready to paste…",
-        STATE_TRANSFORMING => "Transforming…",
-        _ => "",
-    }
+fn default_overlay_text(_state: u8) -> &'static str {
+    ""
 }
 
 fn animated_height_target_level(index: usize, level: f32, peak: f32) -> f32 {

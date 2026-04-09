@@ -1,8 +1,8 @@
+use bytes::{BufMut, Bytes, BytesMut};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use bytes::{Bytes, BytesMut, BufMut};
 
 use crate::config::MicConfig;
 use crate::settings::LiveConfigStore;
@@ -192,18 +192,22 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        
+
         // We must rebuild if settings changed, but also if it looks like the default device identity shifted.
         let needs_stream_rebuild = match active_stream.as_ref() {
             Some(active_stream) => {
                 if active_stream.requested_sample_rate != mic_config.sample_rate
-                    || active_stream.configured_audio_device != mic_config.audio_device 
+                    || active_stream.configured_audio_device != mic_config.audio_device
                 {
                     true
-                } else if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
+                } else if normalized_configured_audio_device(mic_config.audio_device.as_deref())
+                    .is_none()
+                {
                     // Config says we're using "System default". Let's check if the default actually changed (e.g. plugged in new mic).
                     let host = cpal::default_host();
-                    let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                    let current_default_name = host
+                        .default_input_device()
+                        .and_then(|device| device.name().ok());
                     current_default_name != active_stream.actual_audio_device_name
                 } else {
                     false
@@ -233,14 +237,16 @@ impl AudioController {
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        
+
         let mic_config = self.config_store.current().mic;
-        
+
         let needs_rebuild = if let Some(active_stream) = &*active_stream {
             if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
                 // Config says we're using "System default". Let's check if the default actually changed
                 let host = cpal::default_host();
-                let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                let current_default_name = host
+                    .default_input_device()
+                    .and_then(|device| device.name().ok());
                 current_default_name != active_stream.actual_audio_device_name
             } else {
                 false
@@ -248,14 +254,14 @@ impl AudioController {
         } else {
             true
         };
-        
+
         drop(active_stream);
-        
+
         if needs_rebuild {
             self.rebuild_stream(&mic_config)?;
             return Ok(true);
         }
-        
+
         Ok(false)
     }
 
@@ -270,7 +276,7 @@ impl AudioController {
             .lock()
             .ok()
             .and_then(|mut pending_config| pending_config.take());
-            
+
         if let Some(pending_config) = pending_config {
             if let Err(error) = self.rebuild_stream(&pending_config) {
                 log::error!("failed to apply deferred audio config: {}", error);
@@ -287,11 +293,18 @@ impl AudioController {
             let active_stream = self.active_stream.lock().ok();
             let current_config_mic = self.config_store.current().mic;
             match active_stream.as_deref().and_then(|x| x.as_ref()) {
-                Some(active) if normalized_configured_audio_device(current_config_mic.audio_device.as_deref()).is_none() => {
+                Some(active)
+                    if normalized_configured_audio_device(
+                        current_config_mic.audio_device.as_deref(),
+                    )
+                    .is_none() =>
+                {
                     let host = cpal::default_host();
-                    let current_default_name = host.default_input_device().and_then(|device| device.name().ok());
+                    let current_default_name = host
+                        .default_input_device()
+                        .and_then(|device| device.name().ok());
                     current_default_name != active.actual_audio_device_name
-                },
+                }
                 None => false,
                 _ => false,
             }
@@ -572,7 +585,7 @@ where
         .build_input_stream(
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
-                let is_recording = meter_state.is_recording();
+                let is_recording = meter_state.is_recording_or_transforming();
                 if !is_recording {
                     if was_recording {
                         smoothed_level = 0.0;
@@ -618,7 +631,12 @@ where
         .map_err(|error| format!("failed to build audio input stream: {}", error))
 }
 
-fn encode_pcm_mono<T>(data: &[T], channels: usize, gain: f32, pcm_buffer: &mut BytesMut) -> EncodedAudioChunk
+fn encode_pcm_mono<T>(
+    data: &[T],
+    channels: usize,
+    gain: f32,
+    pcm_buffer: &mut BytesMut,
+) -> EncodedAudioChunk
 where
     T: Sample,
     f32: FromSample<T>,
@@ -634,7 +652,7 @@ where
 
     let frame_count = data.len() / channels;
     let required_capacity = frame_count * 2;
-    
+
     // BytesMut::reserve will allocate if capacity is less than required,
     // but by reserving a larger chunk we amortize allocations.
     if pcm_buffer.capacity() < required_capacity {
@@ -694,12 +712,12 @@ fn smooth_meter_value(previous: f32, current: f32, attack: f32, release: f32) ->
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
     use super::{
         build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
         normalize_meter_amplitude, normalized_configured_audio_device, smooth_meter_value,
         AudioInputDeviceChoice, InputDeviceDescriptor,
     };
+    use bytes::BytesMut;
 
     #[test]
     fn build_audio_input_device_choices_prefers_names_for_unique_devices() {
