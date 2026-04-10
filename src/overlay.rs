@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 use std::time::Instant;
 
 use objc2::runtime::NSObject;
@@ -15,7 +16,7 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSStr
 
 use crate::config::UiMeterStyle;
 use crate::state::{
-    DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_PROCESSING,
+    AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
 };
 
@@ -83,6 +84,7 @@ define_class!(
 #[derive(Debug)]
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
+    state: Arc<AppState>,
     scroll_view: Retained<NSScrollView>,
     separator_view: Retained<NSView>,
     meter_container_view: Retained<NSView>,
@@ -100,7 +102,7 @@ pub struct OverlayWindow {
 }
 
 impl OverlayWindow {
-    pub fn new(mtm: MainThreadMarker, style: &OverlayStyle) -> Self {
+    pub fn new(mtm: MainThreadMarker, style: &OverlayStyle, state: Arc<AppState>) -> Self {
         let panel_rect = NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
@@ -308,6 +310,7 @@ impl OverlayWindow {
 
         let overlay_window = Self {
             panel,
+            state,
             scroll_view,
             separator_view,
             meter_container_view,
@@ -385,12 +388,15 @@ impl OverlayWindow {
             self.panel.makeFirstResponder(Some(&self.text_view));
             self.is_visible.set(true);
         }
+
+        self.state.set_overlay_window_visible(true);
     }
 
     pub fn hide(&self) {
         if self.is_visible.replace(false) {
             self.panel.orderOut(None);
         }
+        self.state.set_overlay_window_visible(false);
         self.clear_meter();
         self.clear_clip_indicator();
         self.set_text("");

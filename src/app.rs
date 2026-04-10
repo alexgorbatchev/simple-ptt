@@ -191,7 +191,11 @@ define_class!(
 
             status_item.setMenu(Some(&menu));
 
-            let overlay_window = OverlayWindow::new(mtm, &self.ivars().overlay_style);
+            let overlay_window = OverlayWindow::new(
+                mtm,
+                &self.ivars().overlay_style,
+                Arc::clone(&self.ivars().state),
+            );
             overlay_window.set_delegate(ProtocolObject::from_ref(self));
             self.ivars()
                 .overlay_window

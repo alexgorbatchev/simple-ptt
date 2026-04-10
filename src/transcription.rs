@@ -1,19 +1,22 @@
 use std::ffi::c_void;
 use std::io;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use deepgram::common::options::{Encoding, Endpointing, Options};
 use deepgram::common::stream_response::{Channel, StreamResponse};
 use deepgram::listen::websocket::TranscriptionStream;
 use deepgram::{Deepgram, DeepgramError};
-use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+use objc2::MainThreadMarker;
+use objc2_app_kit::{NSApplication, NSPasteboard, NSPasteboardTypeString, NSWorkspace};
+use objc2_core_foundation::CFRetained;
+use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
 use objc2_foundation::NSString;
-use rdev::{simulate, EventType, Key, SimulateError};
 use tokio::runtime::{Builder, Runtime};
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -27,9 +30,28 @@ use crate::state::{
 use crate::transformation::{transform_text, TransformationRuntimeConfig};
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
+const COMMAND_FLAGGED_V_KEYCODE: u16 = 9;
 const KEY_EVENT_DELAY_MS: u64 = 20;
-const MODIFIER_LATCH_DELAY_MS: u64 = 35;
+const PASTE_HANDOFF_POLL_INTERVAL_MS: u64 = 10;
+const PASTE_HANDOFF_TIMEOUT_MS: u64 = 750;
 const PASTEBOARD_SETTLE_DELAY_MS: u64 = 80;
+
+#[derive(Clone, Copy, Debug)]
+enum PasteStep {
+    WaitForOverlayHide,
+    WaitForAppDeactivation,
+    WriteClipboard,
+    WaitForPasteboardSettle,
+    SendPasteShortcut,
+}
+
+#[derive(Debug, Default)]
+struct PasteDiagnostics {
+    app_active: bool,
+    frontmost_application_name: Option<String>,
+    frontmost_bundle_identifier: Option<String>,
+    overlay_window_visible: bool,
+}
 
 #[derive(Clone, Debug)]
 pub struct DeepgramConfig {
@@ -734,11 +756,7 @@ fn paste_buffered_text(state: &AppState, buffered_text: &mut String) {
     state.set_overlay_text_opacity(1.0);
     state.set_state(STATE_IDLE);
 
-    // Give the UI poller time to pick up STATE_IDLE, hide the overlay,
-    // and let macOS restore keyboard focus to the target application.
-    thread::sleep(Duration::from_millis(150));
-
-    match write_clipboard_and_paste(buffered_text.as_str()) {
+    match run_paste_sequence(state, buffered_text.as_str()) {
         Ok(()) => {
             buffered_text.clear();
             state.clear_abort_request();
@@ -756,6 +774,146 @@ fn paste_buffered_text(state: &AppState, buffered_text: &mut String) {
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);
         }
+    }
+}
+
+fn run_paste_sequence(state: &AppState, text: &str) -> Result<(), String> {
+    log::info!(
+        "paste handoff start: chars={}, diagnostics={}",
+        text.chars().count(),
+        describe_paste_diagnostics(&query_paste_diagnostics(state))
+    );
+
+    for step in [
+        PasteStep::WaitForOverlayHide,
+        PasteStep::WaitForAppDeactivation,
+        PasteStep::WriteClipboard,
+        PasteStep::WaitForPasteboardSettle,
+        PasteStep::SendPasteShortcut,
+    ] {
+        match step {
+            PasteStep::WaitForOverlayHide => {
+                wait_for_paste_condition(state, step, |diagnostics| {
+                    !diagnostics.overlay_window_visible
+                })?;
+            }
+            PasteStep::WaitForAppDeactivation => {
+                wait_for_paste_condition(state, step, |diagnostics| !diagnostics.app_active)?;
+            }
+            PasteStep::WriteClipboard => {
+                write_clipboard_text(text)?;
+                log::info!("paste step=write-clipboard chars={}", text.chars().count());
+            }
+            PasteStep::WaitForPasteboardSettle => {
+                thread::sleep(Duration::from_millis(PASTEBOARD_SETTLE_DELAY_MS));
+            }
+            PasteStep::SendPasteShortcut => {
+                let diagnostics = query_paste_diagnostics(state);
+                log::info!(
+                    "paste step=send-shortcut diagnostics={}",
+                    describe_paste_diagnostics(&diagnostics)
+                );
+                send_paste_shortcut()?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn wait_for_paste_condition(
+    state: &AppState,
+    step: PasteStep,
+    condition: impl Fn(&PasteDiagnostics) -> bool,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_millis(PASTE_HANDOFF_TIMEOUT_MS);
+
+    loop {
+        let diagnostics = query_paste_diagnostics(state);
+        if condition(&diagnostics) {
+            log::info!(
+                "paste step={:?} ready diagnostics={}",
+                step,
+                describe_paste_diagnostics(&diagnostics)
+            );
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            let details = describe_paste_diagnostics(&diagnostics);
+            log::warn!("paste step={:?} timed out diagnostics={}", step, details);
+            return Err(format!(
+                "timed out while preparing paste ({:?}); {}",
+                step, details
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(PASTE_HANDOFF_POLL_INTERVAL_MS));
+    }
+}
+
+fn describe_paste_diagnostics(diagnostics: &PasteDiagnostics) -> String {
+    let frontmost_name = diagnostics
+        .frontmost_application_name
+        .as_deref()
+        .unwrap_or("unknown");
+    let frontmost_bundle = diagnostics
+        .frontmost_bundle_identifier
+        .as_deref()
+        .unwrap_or("unknown");
+
+    format!(
+        "overlay_visible={}, app_active={}, frontmost_name={}, frontmost_bundle={}",
+        diagnostics.overlay_window_visible,
+        diagnostics.app_active,
+        frontmost_name,
+        frontmost_bundle
+    )
+}
+
+struct PasteDiagnosticsRequest {
+    app_active: bool,
+    frontmost_application_name: Option<String>,
+    frontmost_bundle_identifier: Option<String>,
+}
+
+extern "C" fn perform_paste_diagnostics_query(context: *mut c_void) {
+    let request = unsafe { &mut *(context as *mut PasteDiagnosticsRequest) };
+    let mtm = MainThreadMarker::new().expect("paste diagnostics must run on main thread");
+    let app = NSApplication::sharedApplication(mtm);
+    request.app_active = app.isActive();
+
+    let workspace = NSWorkspace::sharedWorkspace();
+    if let Some(frontmost_application) = workspace.frontmostApplication() {
+        request.frontmost_application_name = frontmost_application
+            .localizedName()
+            .map(|name| name.to_string());
+        request.frontmost_bundle_identifier = frontmost_application
+            .bundleIdentifier()
+            .map(|bundle_identifier| bundle_identifier.to_string());
+    }
+}
+
+fn query_paste_diagnostics(state: &AppState) -> PasteDiagnostics {
+    let mut request = Box::new(PasteDiagnosticsRequest {
+        app_active: false,
+        frontmost_application_name: None,
+        frontmost_bundle_identifier: None,
+    });
+
+    unsafe {
+        dispatch_sync_f(
+            &_dispatch_main_q,
+            (&mut *request) as *mut PasteDiagnosticsRequest as *mut c_void,
+            perform_paste_diagnostics_query,
+        );
+    }
+
+    PasteDiagnostics {
+        app_active: request.app_active,
+        frontmost_application_name: request.frontmost_application_name.take(),
+        frontmost_bundle_identifier: request.frontmost_bundle_identifier.take(),
+        overlay_window_visible: state.is_overlay_window_visible(),
     }
 }
 
@@ -990,28 +1148,42 @@ fn join_transcript_parts(recording_prefix: &str, transcript_parts: &[String]) ->
     build_overlay_text(recording_prefix, transcript_parts, None)
 }
 
-fn write_clipboard_and_paste(text: &str) -> Result<(), String> {
-    write_clipboard_text(text)?;
-    thread::sleep(Duration::from_millis(PASTEBOARD_SETTLE_DELAY_MS));
-    send_paste_shortcut()
-}
-
 fn send_paste_shortcut() -> Result<(), String> {
-    send_key_event(EventType::KeyPress(Key::MetaLeft))?;
-    // Some targets occasionally see a bare `v` unless the synthetic Command
-    // press is given a moment to latch before the next key event arrives.
-    thread::sleep(Duration::from_millis(MODIFIER_LATCH_DELAY_MS));
-    send_key_event(EventType::KeyPress(Key::KeyV))?;
-    send_key_event(EventType::KeyRelease(Key::KeyV))?;
-    send_key_event(EventType::KeyRelease(Key::MetaLeft))?;
+    let key_down = create_keyboard_event(COMMAND_FLAGGED_V_KEYCODE, true)?;
+    CGEvent::set_flags(Some(&key_down), CGEventFlags::MaskCommand);
+    CGEvent::post(
+        CGEventTapLocation::AnnotatedSessionEventTap,
+        Some(&key_down),
+    );
+    thread::sleep(Duration::from_millis(KEY_EVENT_DELAY_MS));
+
+    let key_up = create_keyboard_event(COMMAND_FLAGGED_V_KEYCODE, false)?;
+    CGEvent::set_flags(Some(&key_up), CGEventFlags::MaskCommand);
+    CGEvent::post(CGEventTapLocation::AnnotatedSessionEventTap, Some(&key_up));
+    thread::sleep(Duration::from_millis(KEY_EVENT_DELAY_MS));
+
     Ok(())
 }
 
-fn send_key_event(event: EventType) -> Result<(), String> {
-    simulate(&event)
-        .map_err(|SimulateError| format!("failed to synthesize input event: {:?}", event))?;
-    thread::sleep(Duration::from_millis(KEY_EVENT_DELAY_MS));
-    Ok(())
+fn create_keyboard_event(virtual_key: u16, key_down: bool) -> Result<CFRetained<CGEvent>, String> {
+    extern "C-unwind" {
+        fn CGEventCreateKeyboardEvent(
+            source: *const c_void,
+            virtual_key: u16,
+            key_down: bool,
+        ) -> Option<NonNull<CGEvent>>;
+    }
+
+    let event = unsafe { CGEventCreateKeyboardEvent(std::ptr::null(), virtual_key, key_down) }
+        .ok_or_else(|| {
+            format!(
+                "failed to create synthetic keyboard event for keycode {} ({})",
+                virtual_key,
+                if key_down { "down" } else { "up" }
+            )
+        })?;
+
+    Ok(unsafe { CFRetained::from_raw(event) })
 }
 
 struct ClipboardReadRequest {

@@ -34,6 +34,7 @@ pub struct MicMeterSnapshot {
     pub peak: u8,
 }
 
+#[derive(Debug)]
 pub struct AppState {
     abort_requested: AtomicBool,
     clip_event_counter: AtomicU32,
@@ -41,6 +42,7 @@ pub struct AppState {
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
+    overlay_window_visible: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
     overlay_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
@@ -56,6 +58,7 @@ impl AppState {
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
+            overlay_window_visible: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
             overlay_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
@@ -113,6 +116,15 @@ impl AppState {
 
     pub fn is_overlay_dismissed(&self) -> bool {
         self.overlay_dismissed.load(Ordering::Relaxed)
+    }
+
+    pub fn set_overlay_window_visible(&self, visible: bool) {
+        self.overlay_window_visible
+            .store(visible, Ordering::Relaxed);
+    }
+
+    pub fn is_overlay_window_visible(&self) -> bool {
+        self.overlay_window_visible.load(Ordering::Relaxed)
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {
@@ -227,6 +239,19 @@ mod tests {
 
         state.restore_overlay();
         assert!(!state.is_overlay_dismissed());
+    }
+
+    #[test]
+    fn overlay_window_visibility_can_be_toggled() {
+        let state = AppState::new();
+
+        assert!(!state.is_overlay_window_visible());
+
+        state.set_overlay_window_visible(true);
+        assert!(state.is_overlay_window_visible());
+
+        state.set_overlay_window_visible(false);
+        assert!(!state.is_overlay_window_visible());
     }
 
     #[test]
