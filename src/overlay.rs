@@ -15,7 +15,8 @@ use objc2_foundation::{MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSStr
 
 use crate::config::UiMeterStyle;
 use crate::state::{
-    MicMeterSnapshot, STATE_BUFFER_READY, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
+    DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_PROCESSING,
+    STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 const OVERLAY_HEIGHT: f64 = 180.0;
@@ -25,6 +26,8 @@ const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
 const FOOTER_HEIGHT: f64 = 24.0;
 const FOOTER_HINT_GAP: f64 = 12.0;
 const FOOTER_HINT_WIDTH: f64 = 330.0;
+const FOOTER_STATUS_DOT_DIAMETER: f64 = 6.0;
+const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
 const CLIP_INDICATOR_BORDER_WIDTH: f64 = 1.0;
 const CLIP_INDICATOR_CORNER_RADIUS: f64 = 4.0;
 const CLIP_INDICATOR_FADE_IN_SECONDS: f64 = 0.08;
@@ -88,6 +91,7 @@ pub struct OverlayWindow {
     clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: Cell<UiMeterStyle>,
     text_view: Retained<NSTextView>,
+    footer_status_indicator_view: Retained<NSView>,
     footer_text_field: Retained<NSTextField>,
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
@@ -160,7 +164,8 @@ impl OverlayWindow {
                 NSSize::new(OVERLAY_WIDTH, text_area_height(true, false)),
             ),
         );
-        text_view.setTextContainerInset(NSSize::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING));
+        text_view
+            .setTextContainerInset(NSSize::new(TEXT_HORIZONTAL_PADDING, TEXT_VERTICAL_PADDING));
         text_view.setDrawsBackground(false);
         text_view.setEditable(true);
         text_view.setSelectable(true);
@@ -247,6 +252,19 @@ impl OverlayWindow {
             cell.setUsesSingleLineMode(true);
         }
 
+        let footer_status_indicator_view =
+            NSView::initWithFrame(NSView::alloc(mtm), footer_status_indicator_frame());
+        footer_status_indicator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
+        footer_status_indicator_view.setWantsLayer(true);
+        if let Some(layer) = footer_status_indicator_view.layer() {
+            let color = footer_connection_status_color(DeepgramConnectionStatus::Unknown);
+            let color = color.CGColor();
+            layer.setBackgroundColor(Some(&color));
+            layer.setCornerRadius(FOOTER_STATUS_DOT_DIAMETER / 2.0);
+            layer.setMasksToBounds(true);
+        }
+        footer_status_indicator_view.setHidden(true);
+
         let footer_hint_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         let custom_hint_cell: Retained<VerticallyCenteredTextFieldCell> = unsafe {
             msg_send![
@@ -282,6 +300,7 @@ impl OverlayWindow {
         root_view.addSubview(&scroll_view);
         root_view.addSubview(&meter_container_view);
         root_view.addSubview(&separator_view);
+        root_view.addSubview(&footer_status_indicator_view);
         root_view.addSubview(&footer_text_field);
         root_view.addSubview(&footer_hint_text_field);
         panel.setContentView(Some(&root_view));
@@ -297,6 +316,7 @@ impl OverlayWindow {
             clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
             meter_style: Cell::new(style.meter_style),
             text_view,
+            footer_status_indicator_view,
             footer_text_field,
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
@@ -312,6 +332,7 @@ impl OverlayWindow {
         &self,
         mtm: MainThreadMarker,
         state: u8,
+        deepgram_connection_status: DeepgramConnectionStatus,
         overlay_dismissed: bool,
         overlay_text: &str,
         overlay_text_opacity: f64,
@@ -346,6 +367,7 @@ impl OverlayWindow {
         );
         self.set_text(display_text);
         self.set_text_opacity(overlay_text_opacity);
+        self.set_footer_status_indicator(deepgram_connection_status);
         self.set_footer_text(overlay_footer_text);
 
         if meter_is_visible {
@@ -405,6 +427,8 @@ impl OverlayWindow {
         }
         self.footer_text_field
             .setFrame(footer_text_frame(style.shortcut_hint.is_some()));
+        self.footer_status_indicator_view
+            .setFrame(footer_status_indicator_frame());
 
         let footer_text_is_visible = !self
             .footer_text_field
@@ -427,6 +451,7 @@ impl OverlayWindow {
             self.clear_clip_indicator();
         }
         NSView::setNeedsDisplay(&self.text_view, true);
+        NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
         NSView::setNeedsDisplay(&self.footer_text_field, true);
         NSView::setNeedsDisplay(&self.footer_hint_text_field, true);
     }
@@ -486,6 +511,16 @@ impl OverlayWindow {
         NSView::setNeedsDisplay(&self.footer_text_field, true);
     }
 
+    fn set_footer_status_indicator(&self, status: DeepgramConnectionStatus) {
+        if let Some(layer) = self.footer_status_indicator_view.layer() {
+            let color = footer_connection_status_color(status);
+            let color = color.CGColor();
+            layer.setBackgroundColor(Some(&color));
+        }
+
+        NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
+    }
+
     fn update_layout(
         &self,
         footer_is_visible: bool,
@@ -494,6 +529,8 @@ impl OverlayWindow {
         meter_is_visible: bool,
     ) {
         self.separator_view.setHidden(!footer_is_visible);
+        self.footer_status_indicator_view
+            .setHidden(!footer_text_is_visible);
         self.footer_text_field.setHidden(!footer_text_is_visible);
         self.footer_hint_text_field
             .setHidden(!footer_hint_is_visible);
@@ -934,10 +971,25 @@ fn footer_text_frame(has_footer_hint: bool) -> NSRect {
     } else {
         usable_text_width()
     };
+    let footer_text_origin_x =
+        TEXT_HORIZONTAL_PADDING + FOOTER_STATUS_DOT_DIAMETER + FOOTER_STATUS_DOT_GAP;
 
     NSRect::new(
-        NSPoint::new(TEXT_HORIZONTAL_PADDING, 6.0),
-        NSSize::new(footer_text_width.max(0.0), FOOTER_HEIGHT - 8.0),
+        NSPoint::new(footer_text_origin_x, 6.0),
+        NSSize::new(
+            (footer_text_width - FOOTER_STATUS_DOT_DIAMETER - FOOTER_STATUS_DOT_GAP).max(0.0),
+            FOOTER_HEIGHT - 8.0,
+        ),
+    )
+}
+
+fn footer_status_indicator_frame() -> NSRect {
+    NSRect::new(
+        NSPoint::new(
+            TEXT_HORIZONTAL_PADDING - 4.0,
+            5.0 + ((FOOTER_HEIGHT - 8.0 - FOOTER_STATUS_DOT_DIAMETER) / 2.0),
+        ),
+        NSSize::new(FOOTER_STATUS_DOT_DIAMETER, FOOTER_STATUS_DOT_DIAMETER),
     )
 }
 
@@ -953,6 +1005,17 @@ fn footer_hint_frame() -> NSRect {
 
 fn usable_text_width() -> f64 {
     OVERLAY_WIDTH - (TEXT_HORIZONTAL_PADDING * 2.0)
+}
+
+fn footer_connection_status_color(status: DeepgramConnectionStatus) -> Retained<NSColor> {
+    match status {
+        DeepgramConnectionStatus::Connected => {
+            NSColor::colorWithSRGBRed_green_blue_alpha(0.26, 0.86, 0.54, 1.0)
+        }
+        DeepgramConnectionStatus::Unknown | DeepgramConnectionStatus::Disconnected => {
+            NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, 1.0)
+        }
+    }
 }
 
 fn find_screen_visible_frame_for_point(

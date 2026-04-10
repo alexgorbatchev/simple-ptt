@@ -4,7 +4,7 @@ use time::{Date, Month, OffsetDateTime};
 
 use crate::deepgram_api::{fetch_month_to_date_spend, DeepgramApiError};
 use crate::settings::LiveConfigStore;
-use crate::state::AppState;
+use crate::state::{AppState, DeepgramConnectionStatus};
 
 const FOOTER_PERMISSION_DENIED_MESSAGE: &str =
     "Admin- or owner-level project API key required for billing reporting.";
@@ -48,6 +48,7 @@ impl BillingController {
             .spawn(move || {
                 match fetch_month_to_date_spend(&api_key, &project_id, month_start, today) {
                     Ok(month_to_date_spend) => {
+                        state.set_deepgram_connection_status(DeepgramConnectionStatus::Connected);
                         state.set_overlay_footer_text(format!(
                             "{}: {}",
                             footer_label,
@@ -56,6 +57,15 @@ impl BillingController {
                     }
                     Err(error) => {
                         log::warn!("failed to refresh Deepgram billing breakdown: {}", error);
+                        let connection_status = match &error {
+                            DeepgramApiError::PermissionDenied(_) => {
+                                DeepgramConnectionStatus::Connected
+                            }
+                            DeepgramApiError::Unauthorized(_) | DeepgramApiError::Other(_) => {
+                                DeepgramConnectionStatus::Disconnected
+                            }
+                        };
+                        state.set_deepgram_connection_status(connection_status);
                         state.set_overlay_footer_text(match error {
                             DeepgramApiError::PermissionDenied(_) => {
                                 FOOTER_PERMISSION_DENIED_MESSAGE.to_owned()

@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use sha2::{Digest, Sha256};
 
 use crate::deepgram_api::{list_projects, DeepgramProjectSummary};
+use crate::state::DeepgramConnectionStatus;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeepgramCheckRequest {
@@ -40,10 +41,12 @@ impl DeepgramCheckRequest {
 #[derive(Clone, Debug)]
 pub enum DeepgramCheckUpdate {
     ConnectionChecked {
+        connection_status: DeepgramConnectionStatus,
         request: DeepgramCheckRequest,
         message: String,
     },
     ActionFailed {
+        connection_status: DeepgramConnectionStatus,
         request: DeepgramCheckRequest,
         message: String,
     },
@@ -92,10 +95,12 @@ impl DeepgramConnectionController {
     fn check_connection(&self, request: DeepgramCheckRequest) -> DeepgramCheckUpdate {
         match list_projects(&request.resolved_api_key) {
             Ok(projects) => DeepgramCheckUpdate::ConnectionChecked {
+                connection_status: DeepgramConnectionStatus::Connected,
                 message: deepgram_connection_message(&request, &projects),
                 request,
             },
             Err(error) => DeepgramCheckUpdate::ActionFailed {
+                connection_status: DeepgramConnectionStatus::Disconnected,
                 request,
                 message: error.to_string(),
             },

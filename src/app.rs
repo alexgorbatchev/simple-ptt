@@ -35,8 +35,8 @@ use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
 use crate::settings_window::SettingsWindow;
 use crate::state::{
-    AppState, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING,
-    STATE_RECORDING, STATE_TRANSFORMING,
+    AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR,
+    STATE_IDLE, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation_models::{
     TransformationModelAction, TransformationModelUpdate, TransformationModelsController,
@@ -322,7 +322,7 @@ define_class!(
         fn reset_hotkey_permissions(&self, _sender: Option<&AnyObject>) {
             if let Err(error) = permissions::reset_application_permissions_and_relaunch() {
                 log::error!("failed to reset macOS permissions: {}", error);
-                
+
                 show_modal_alert(
                     "simple-ptt couldn't reset permissions properly",
                     &format!(
@@ -974,8 +974,19 @@ impl AppDelegate {
             }
 
             match update {
-                DeepgramCheckUpdate::ConnectionChecked { message, .. }
-                | DeepgramCheckUpdate::ActionFailed { message, .. } => {
+                DeepgramCheckUpdate::ConnectionChecked {
+                    connection_status,
+                    message,
+                    ..
+                }
+                | DeepgramCheckUpdate::ActionFailed {
+                    connection_status,
+                    message,
+                    ..
+                } => {
+                    self.ivars()
+                        .state
+                        .set_deepgram_connection_status(connection_status);
                     settings_window.set_status(&message);
                 }
             }
@@ -1050,6 +1061,7 @@ impl AppDelegate {
         &self,
         mtm: MainThreadMarker,
         state: u8,
+        deepgram_connection_status: DeepgramConnectionStatus,
         overlay_dismissed: bool,
         overlay_text: &str,
         overlay_text_opacity: f64,
@@ -1067,6 +1079,7 @@ impl AppDelegate {
             self,
             mtm,
             state,
+            deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
             overlay_text_opacity,
@@ -1303,6 +1316,7 @@ fn update_overlay_window(
     delegate: &AppDelegate,
     mtm: MainThreadMarker,
     state: u8,
+    deepgram_connection_status: DeepgramConnectionStatus,
     overlay_dismissed: bool,
     overlay_text: &str,
     overlay_text_opacity: f64,
@@ -1313,6 +1327,7 @@ fn update_overlay_window(
         overlay_window.update(
             mtm,
             state,
+            deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
             overlay_text_opacity,
@@ -1333,6 +1348,7 @@ extern "C" {
 
 struct UiUpdate {
     delegate_addr: usize,
+    deepgram_connection_status: DeepgramConnectionStatus,
     mic_meter: MicMeterSnapshot,
     overlay_dismissed: bool,
     overlay_footer_text: Arc<str>,
@@ -1348,6 +1364,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
     delegate.update_ui(
         mtm,
         update.state,
+        update.deepgram_connection_status,
         update.overlay_dismissed,
         &update.overlay_text,
         update.overlay_text_opacity,
@@ -1446,6 +1463,7 @@ pub fn setup_status_polling(
     std::thread::Builder::new()
         .name("ui-poller".into())
         .spawn(move || {
+            let mut last_deepgram_connection_status = DeepgramConnectionStatus::Unknown;
             let mut last_mic_meter = MicMeterSnapshot::default();
             let mut last_overlay_dismissed = false;
             let mut last_overlay_footer_text: Arc<str> = Arc::from("");
@@ -1458,12 +1476,14 @@ pub fn setup_status_polling(
                 std::thread::sleep(std::time::Duration::from_millis(75));
                 frame_count += 1;
                 let current_state = state.get_state();
+                let current_deepgram_connection_status = state.deepgram_connection_status();
                 let current_mic_meter = state.mic_meter_snapshot();
                 let current_overlay_dismissed = state.is_overlay_dismissed();
                 let current_overlay_footer_text = state.overlay_footer_text();
                 let current_overlay_text = state.overlay_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
                 let ui_changed = current_state != last_state
+                    || current_deepgram_connection_status != last_deepgram_connection_status
                     || current_overlay_dismissed != last_overlay_dismissed
                     || !Arc::ptr_eq(&current_overlay_footer_text, &last_overlay_footer_text)
                     || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
@@ -1480,7 +1500,7 @@ pub fn setup_status_polling(
                     transformation_models_controller.has_pending_ui_update();
                 let deepgram_connection_update_pending =
                     deepgram_connection_controller.has_pending_ui_update();
-                
+
                 // Always post an update every ~1.5 seconds (about 20 ticks of 75ms)
                 // so we can recheck the current audio input device default if it changed.
                 let background_poll_trigger = (frame_count % 20) == 0;
@@ -1498,6 +1518,7 @@ pub fn setup_status_polling(
                 }
 
                 last_state = current_state;
+                last_deepgram_connection_status = current_deepgram_connection_status;
                 last_mic_meter = current_mic_meter;
                 last_overlay_dismissed = current_overlay_dismissed;
                 last_overlay_footer_text = Arc::clone(&current_overlay_footer_text);
@@ -1522,6 +1543,7 @@ pub fn setup_status_polling(
 
                 let update = Box::new(UiUpdate {
                     delegate_addr,
+                    deepgram_connection_status: current_deepgram_connection_status,
                     mic_meter: current_mic_meter,
                     overlay_dismissed: current_overlay_dismissed,
                     overlay_footer_text: current_overlay_footer_text,

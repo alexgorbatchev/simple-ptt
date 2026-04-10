@@ -9,6 +9,25 @@ pub const STATE_TRANSFORMING: u8 = 4;
 pub const STATE_ERROR: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(u8)]
+pub enum DeepgramConnectionStatus {
+    #[default]
+    Unknown = 0,
+    Disconnected = 1,
+    Connected = 2,
+}
+
+impl DeepgramConnectionStatus {
+    fn from_raw(value: u8) -> Self {
+        match value {
+            1 => Self::Disconnected,
+            2 => Self::Connected,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MicMeterSnapshot {
     pub clip_event_counter: u32,
     pub level: u8,
@@ -18,6 +37,7 @@ pub struct MicMeterSnapshot {
 pub struct AppState {
     abort_requested: AtomicBool,
     clip_event_counter: AtomicU32,
+    deepgram_connection_status: AtomicU8,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
@@ -32,6 +52,7 @@ impl AppState {
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
+            deepgram_connection_status: AtomicU8::new(DeepgramConnectionStatus::Unknown as u8),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
@@ -46,6 +67,15 @@ impl AppState {
         self.get_state() == STATE_RECORDING
     }
 
+    pub fn set_deepgram_connection_status(&self, status: DeepgramConnectionStatus) {
+        self.deepgram_connection_status
+            .store(status as u8, Ordering::Relaxed);
+    }
+
+    pub fn deepgram_connection_status(&self) -> DeepgramConnectionStatus {
+        DeepgramConnectionStatus::from_raw(self.deepgram_connection_status.load(Ordering::Relaxed))
+    }
+
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
         if state != STATE_RECORDING {
@@ -55,11 +85,6 @@ impl AppState {
 
     pub fn get_state(&self) -> u8 {
         self.state.load(Ordering::Relaxed)
-    }
-
-    pub fn is_recording_or_transforming(&self) -> bool {
-        let state = self.get_state();
-        state == STATE_RECORDING || state == STATE_PROCESSING || state == STATE_TRANSFORMING
     }
 
     pub fn request_abort(&self) {
@@ -162,7 +187,7 @@ fn normalized_meter_value(value: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, STATE_IDLE, STATE_RECORDING};
+    use super::{AppState, DeepgramConnectionStatus, STATE_IDLE, STATE_RECORDING};
 
     #[test]
     fn non_recording_states_clear_the_mic_meter() {
@@ -202,5 +227,27 @@ mod tests {
 
         state.restore_overlay();
         assert!(!state.is_overlay_dismissed());
+    }
+
+    #[test]
+    fn deepgram_connection_status_round_trips() {
+        let state = AppState::new();
+
+        assert_eq!(
+            state.deepgram_connection_status(),
+            DeepgramConnectionStatus::Unknown
+        );
+
+        state.set_deepgram_connection_status(DeepgramConnectionStatus::Connected);
+        assert_eq!(
+            state.deepgram_connection_status(),
+            DeepgramConnectionStatus::Connected
+        );
+
+        state.set_deepgram_connection_status(DeepgramConnectionStatus::Disconnected);
+        assert_eq!(
+            state.deepgram_connection_status(),
+            DeepgramConnectionStatus::Disconnected
+        );
     }
 }
