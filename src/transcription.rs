@@ -21,13 +21,15 @@ use tokio_stream::StreamExt;
 
 use crate::settings::LiveConfigStore;
 use crate::state::{
-    AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_TRANSFORMING, STATE_RECORDING,
+    AppState, DeepgramConnectionStatus, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
+    STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation::{transform_text, TransformationRuntimeConfig};
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
 const KEY_EVENT_DELAY_MS: u64 = 20;
-const PASTEBOARD_SETTLE_DELAY_MS: u64 = 50;
+const MODIFIER_LATCH_DELAY_MS: u64 = 35;
+const PASTEBOARD_SETTLE_DELAY_MS: u64 = 80;
 
 #[derive(Clone, Debug)]
 pub struct DeepgramConfig {
@@ -162,6 +164,16 @@ pub fn spawn_transcription_thread(
                         }
 
                         let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
+                        if state.is_abort_requested() {
+                            log::info!(
+                                "skipping Deepgram start because abort was requested before startup completed"
+                            );
+                            state.clear_overlay_text();
+                            state.set_overlay_text_opacity(1.0);
+                            state.set_state(STATE_IDLE);
+                            continue;
+                        }
+
                         state.clear_abort_request();
                         state.restore_overlay();
                         if recording_prefix.is_empty() {
@@ -174,8 +186,18 @@ pub fn spawn_transcription_thread(
                         let deepgram_config = match resolved_deepgram_config(&current_config) {
                             Ok(deepgram_config) => deepgram_config,
                             Err(error) => {
-                                log::error!("failed to resolve Deepgram config: {}", error);
-                                state.set_state(STATE_ERROR);
+                                if state.is_abort_requested() {
+                                    log::info!(
+                                        "ignoring Deepgram config resolution failure after abort request: {}",
+                                        error
+                                    );
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                } else {
+                                    log::error!("failed to resolve Deepgram config: {}", error);
+                                    state.set_state(STATE_ERROR);
+                                }
                                 continue;
                             }
                         };
@@ -187,11 +209,27 @@ pub fn spawn_transcription_thread(
                             recording_prefix.clone(),
                         ) {
                             Ok(session) => {
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Connected,
+                                );
                                 active_session = Some(session);
                             }
                             Err(error) => {
-                                log::error!("failed to start Deepgram session: {}", error);
-                                state.set_state(STATE_ERROR);
+                                if state.is_abort_requested() {
+                                    log::info!(
+                                        "ignoring Deepgram start failure after abort request: {}",
+                                        error
+                                    );
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                } else {
+                                    log::error!("failed to start Deepgram session: {}", error);
+                                    state.set_deepgram_connection_status(
+                                        DeepgramConnectionStatus::Disconnected,
+                                    );
+                                    state.set_state(STATE_ERROR);
+                                }
                             }
                         }
                     }
@@ -209,6 +247,9 @@ pub fn spawn_transcription_thread(
                                 log::error!("Deepgram session queue closed unexpectedly");
                                 active_session = None;
                                 recording_prefix.clear();
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Disconnected,
+                                );
                                 state.set_state(STATE_ERROR);
                             }
                         }
@@ -320,10 +361,18 @@ pub fn spawn_transcription_thread(
                         }
                     }
                     Command::StopSessionAndPaste => {
-                        state.set_state(STATE_PROCESSING);
+                        let abort_requested = state.is_abort_requested();
+                        if !abort_requested {
+                            state.set_state(STATE_PROCESSING);
+                        }
 
                         let Some(session) = active_session.take() else {
                             log::warn!("received paste-stop request without an active Deepgram session");
+                            if abort_requested {
+                                state.clear_abort_request();
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                            }
                             state.set_state(STATE_IDLE);
                             continue;
                         };
@@ -374,13 +423,21 @@ pub fn spawn_transcription_thread(
                         }
                     }
                     Command::StopSessionAndTransformAndResume => {
-                        state.set_state(STATE_PROCESSING);
+                        let abort_requested = state.is_abort_requested();
+                        if !abort_requested {
+                            state.set_state(STATE_PROCESSING);
+                        }
                         let is_resume = matches!(command, Command::StopSessionAndTransformAndResume);
 
                         let Some(session) = active_session.take() else {
                             log::warn!(
                                 "received transform-stop request without an active Deepgram session"
                             );
+                            if abort_requested {
+                                state.clear_abort_request();
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                            }
                             state.set_state(STATE_IDLE);
                             continue;
                         };
@@ -420,7 +477,7 @@ pub fn spawn_transcription_thread(
                                 if is_resume {
                                     let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
                                     let current_config = config_store.current();
-                                    
+
                                     if !buffered_text.is_empty() {
                                         recording_prefix = buffered_text.clone();
                                         buffered_text.clear();
@@ -438,10 +495,16 @@ pub fn spawn_transcription_thread(
                                         ) {
                                             Ok(session) => {
                                                 active_session = Some(session);
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Connected,
+                                                );
                                                 state.set_state(STATE_RECORDING);
                                             }
                                             Err(error) => {
                                                 log::error!("failed to auto-resume Deepgram session: {}", error);
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Disconnected,
+                                                );
                                                 state.set_state(STATE_ERROR);
                                             }
                                         }
@@ -470,12 +533,20 @@ pub fn spawn_transcription_thread(
                         }
                     }
                     Command::StopSessionAndTransformAndPaste => {
-                        state.set_state(STATE_PROCESSING);
+                        let abort_requested = state.is_abort_requested();
+                        if !abort_requested {
+                            state.set_state(STATE_PROCESSING);
+                        }
 
                         let Some(session) = active_session.take() else {
                             log::warn!(
                                 "received transform-and-paste stop request without an active Deepgram session"
                             );
+                            if abort_requested {
+                                state.clear_abort_request();
+                                state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                            }
                             state.set_state(STATE_IDLE);
                             continue;
                         };
@@ -853,6 +924,7 @@ async fn run_transcription_stream(
                 log::debug!("ignoring unhandled Deepgram message: {:?}", other_message);
             }
             Err(error) => {
+                state.set_deepgram_connection_status(DeepgramConnectionStatus::Disconnected);
                 return Err(format_deepgram_error(error));
             }
         }
@@ -926,6 +998,9 @@ fn write_clipboard_and_paste(text: &str) -> Result<(), String> {
 
 fn send_paste_shortcut() -> Result<(), String> {
     send_key_event(EventType::KeyPress(Key::MetaLeft))?;
+    // Some targets occasionally see a bare `v` unless the synthetic Command
+    // press is given a moment to latch before the next key event arrives.
+    thread::sleep(Duration::from_millis(MODIFIER_LATCH_DELAY_MS));
     send_key_event(EventType::KeyPress(Key::KeyV))?;
     send_key_event(EventType::KeyRelease(Key::KeyV))?;
     send_key_event(EventType::KeyRelease(Key::MetaLeft))?;
