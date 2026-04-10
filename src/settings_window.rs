@@ -226,12 +226,8 @@ impl SettingsWindow {
         let available_font_family_names = available_font_family_names(mtm);
 
         current_y = add_section_title(&content_view, mtm, current_y, "UI");
-        let ui_start_on_login_checkbox = add_checkbox(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Start on login",
-        );
+        let ui_start_on_login_checkbox =
+            add_checkbox(&content_view, mtm, &mut current_y, "Start on login");
         let (ui_hotkey_field, ui_hotkey_capture_button) = add_labeled_text_field_with_button(
             &content_view,
             target,

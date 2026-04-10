@@ -4,7 +4,7 @@ pub fn apply_auto_launch_config(enable: bool) {
     if let Ok(path) = std::env::current_exe() {
         let mut is_app_bundle = false;
         let mut app_path = path.clone();
-        
+
         if let Some(parent1) = app_path.parent() {
             if let Some(parent2) = parent1.parent() {
                 if let Some(parent3) = parent2.parent() {

@@ -132,7 +132,7 @@ pub fn reset_application_permissions_and_relaunch() -> Result<(), String> {
     let target_path = app_bundle_path.as_deref().unwrap_or(&executable_path);
 
     // tccutil resets are cached by macOS tccd if the process is currently running.
-    // We spawn a detached background script that outlives us, waits 1 second for us 
+    // We spawn a detached background script that outlives us, waits 1 second for us
     // to cleanly terminate, runs the TCC resets, and then launches a fresh instance.
     let script = format!(
         "sleep 1.5; \
