@@ -585,7 +585,7 @@ where
         .build_input_stream(
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
-                let is_recording = meter_state.is_recording_or_transforming();
+                let is_recording = meter_state.is_recording();
                 if !is_recording {
                     if was_recording {
                         smoothed_level = 0.0;

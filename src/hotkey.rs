@@ -160,11 +160,12 @@ fn handle_key_press(
 
         match current_state {
             STATE_RECORDING => {
-                if hotkey_config.auto_transform_enabled {
-                    stop_recording_and_transform_and_paste(state, controller, "escape abort");
-                } else {
-                    stop_recording_and_paste(state, controller, "escape abort");
-                }
+                abort_recording(
+                    state,
+                    controller,
+                    hotkey_config.auto_transform_enabled,
+                    "escape abort",
+                );
             }
             STATE_BUFFER_READY => match controller.discard_buffer() {
                 Ok(()) => log::info!("buffer discarded"),
@@ -198,6 +199,8 @@ fn handle_key_press(
             STATE_IDLE | STATE_ERROR => match controller.start_session() {
                 Ok(()) => {
                     billing_controller.refresh_month_to_date_spend();
+                    state.restore_overlay();
+                    state.clear_overlay_text();
                     state.set_overlay_text_opacity(1.0);
                     state.set_state(STATE_RECORDING);
                     log::info!("recording started");
@@ -443,6 +446,34 @@ fn stop_recording_and_transform_and_paste(
         }
         Err(stop_error) => {
             log::error!("failed to stop recording: {}", stop_error);
+            state.set_state(STATE_ERROR);
+        }
+    }
+}
+
+fn abort_recording(
+    state: &AppState,
+    controller: &TranscriptionController,
+    auto_transform_enabled: bool,
+    reason: &str,
+) {
+    if !state.is_recording() {
+        return;
+    }
+
+    let stop_result = if auto_transform_enabled {
+        controller.stop_session_and_transform_and_paste()
+    } else {
+        controller.stop_session_and_paste()
+    };
+
+    match stop_result {
+        Ok(()) => {
+            state.set_state(STATE_IDLE);
+            log::info!("recording aborted ({})", reason);
+        }
+        Err(stop_error) => {
+            log::error!("failed to abort recording: {}", stop_error);
             state.set_state(STATE_ERROR);
         }
     }
