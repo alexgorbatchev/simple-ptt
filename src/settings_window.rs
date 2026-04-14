@@ -334,6 +334,12 @@ impl SettingsWindow {
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
 
+        let right_edge = FIELD_X + FIELD_WIDTH;
+        let save_button_width = 150.0;
+        let save_button_x = right_edge - save_button_width;
+        let close_button_width = 100.0;
+        let close_button_x = save_button_x - 10.0 - close_button_width;
+
         let close_button = unsafe {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Close"),
@@ -345,9 +351,9 @@ impl SettingsWindow {
         close_button.setFont(Some(&settings_font()));
         set_view_frame(
             &*close_button,
-            WINDOW_WIDTH - 280.0,
+            close_button_x,
             BUTTON_BAR_Y,
-            100.0,
+            close_button_width,
             BUTTON_BAR_HEIGHT,
         );
         root_view.addSubview(&close_button);
@@ -363,9 +369,9 @@ impl SettingsWindow {
         save_button.setFont(Some(&settings_font()));
         set_view_frame(
             &*save_button,
-            WINDOW_WIDTH - 170.0,
+            save_button_x,
             BUTTON_BAR_Y,
-            150.0,
+            save_button_width,
             BUTTON_BAR_HEIGHT,
         );
         root_view.addSubview(&save_button);
@@ -375,9 +381,9 @@ impl SettingsWindow {
         status_text_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
         set_view_frame(
             &*status_text_field,
-            20.0,
+            HORIZONTAL_PADDING,
             vertically_centered_label_y(BUTTON_BAR_Y, BUTTON_BAR_HEIGHT),
-            WINDOW_WIDTH - 320.0,
+            close_button_x - HORIZONTAL_PADDING - 20.0,
             FIELD_HEIGHT,
         );
         root_view.addSubview(&status_text_field);
