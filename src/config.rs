@@ -172,7 +172,7 @@ fn default_sample_rate() -> u32 {
 }
 
 fn default_gain() -> f32 {
-    4.0
+    4.5
 }
 
 fn default_hold_ms() -> u64 {

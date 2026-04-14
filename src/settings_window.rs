@@ -6,8 +6,8 @@ use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSComboBox,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager, NSPopUpButton,
-    NSScrollView, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask,
+    NSScrollView, NSSlider, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
+    NSWindowDelegate, NSWindowStyleMask,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 use objc2_quartz_core::CALayer;
@@ -15,6 +15,8 @@ use objc2_quartz_core::CALayer;
 use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
 use crate::config::{Config, UiMeterStyle};
 use crate::hotkey_capture::HotkeyCaptureTarget;
+use crate::state::MicMeterSnapshot;
+use crate::ui_meter::UiMeterView;
 
 const WINDOW_HEIGHT: f64 = 760.0;
 const WINDOW_WIDTH: f64 = 760.0;
@@ -114,7 +116,9 @@ pub struct SettingsWindow {
     mic_audio_device_popup: Retained<NSPopUpButton>,
     mic_audio_device_options: RefCell<Vec<MicAudioDeviceOption>>,
     mic_sample_rate_field: Retained<NSTextField>,
-    mic_gain_field: Retained<NSTextField>,
+    mic_gain_slider: Retained<NSSlider>,
+    mic_gain_label_field: Retained<NSTextField>,
+    ui_meter_view: UiMeterView,
     mic_hold_ms_field: Retained<NSTextField>,
     deepgram_api_key_field: Retained<NSTextField>,
     deepgram_api_key_env_hint_field: Retained<NSTextField>,
@@ -251,9 +255,16 @@ impl SettingsWindow {
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Audio device");
         let mic_sample_rate_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Sample rate");
-        let mic_gain_field = add_labeled_text_field(&content_view, mtm, &mut current_y, "Gain");
         let mic_hold_ms_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Hold ms");
+        let (mic_gain_label_field, mic_gain_slider, ui_meter_view) = add_labeled_slider_with_meter(
+            &content_view,
+            target,
+            mtm,
+            &mut current_y,
+            "Gain",
+            sel!(micGainSliderChanged:),
+        );
 
         current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
         let (
@@ -391,7 +402,9 @@ impl SettingsWindow {
             mic_audio_device_popup,
             mic_audio_device_options: RefCell::new(Vec::new()),
             mic_sample_rate_field,
-            mic_gain_field,
+            mic_gain_slider,
+            mic_gain_label_field,
+            ui_meter_view,
             mic_hold_ms_field,
             deepgram_api_key_field,
             deepgram_api_key_env_hint_field,
@@ -445,6 +458,19 @@ impl SettingsWindow {
         self.window.isVisible()
     }
 
+    pub fn update_meter(&self, mic_meter: MicMeterSnapshot) {
+        self.ui_meter_view.update(mic_meter, 180.0);
+    }
+
+    pub fn mic_gain_slider_value(&self) -> f32 {
+        self.mic_gain_slider.doubleValue() as f32 * 1.5
+    }
+
+    pub fn update_mic_gain_label(&self, gain: f32) {
+        self.mic_gain_label_field
+            .setStringValue(&NSString::from_str(&format!("{:.1}", gain / 1.5)));
+    }
+
     pub fn load_from_config(&self, config: &Config, config_path: &str) {
         let audio_device_status_message = self
             .populate_mic_audio_device_popup(config.mic.audio_device.as_deref())
@@ -480,8 +506,13 @@ impl SettingsWindow {
 
         self.mic_sample_rate_field
             .setStringValue(&NSString::from_str(&config.mic.sample_rate.to_string()));
-        self.mic_gain_field
-            .setStringValue(&NSString::from_str(&config.mic.gain.to_string()));
+        self.mic_gain_slider
+            .setDoubleValue((config.mic.gain / 1.5) as f64);
+        self.mic_gain_label_field
+            .setStringValue(&NSString::from_str(&format!(
+                "{:.1}",
+                config.mic.gain / 1.5
+            )));
         self.mic_hold_ms_field
             .setStringValue(&NSString::from_str(&config.mic.hold_ms.to_string()));
 
@@ -572,7 +603,7 @@ impl SettingsWindow {
             mic: crate::config::MicConfig {
                 audio_device: self.mic_audio_device_value(),
                 sample_rate: read_required_u32(&self.mic_sample_rate_field, "Sample rate")?,
-                gain: read_required_f32(&self.mic_gain_field, "Gain")?,
+                gain: self.mic_gain_slider_value(),
                 hold_ms: read_required_u64(&self.mic_hold_ms_field, "Hold ms")?,
             },
             deepgram: crate::config::DeepgramConfig {
@@ -845,6 +876,65 @@ fn add_labeled_text_field(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     text_field
+}
+
+fn add_labeled_slider_with_meter(
+    content_view: &NSView,
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+    slider_action: objc2::runtime::Sel,
+) -> (Retained<NSTextField>, Retained<NSSlider>, UiMeterView) {
+    let base_y = *current_y - 2.0;
+
+    let label_field = NSTextField::labelWithString(&NSString::from_str(label), mtm);
+    label_field.setFont(Some(&settings_font()));
+    label_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &*label_field,
+        HORIZONTAL_PADDING,
+        vertically_centered_label_y(base_y, FIELD_HEIGHT),
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&label_field);
+
+    let slider =
+        unsafe { NSSlider::sliderWithTarget_action(Some(target), Some(slider_action), mtm) };
+    slider.setMinValue(0.0);
+    slider.setMaxValue(10.0);
+    slider.setContinuous(true);
+    let slider_width = 150.0;
+    set_view_frame(&*slider, FIELD_X, base_y, slider_width, FIELD_HEIGHT);
+    content_view.addSubview(&slider);
+
+    let value_field = NSTextField::labelWithString(&NSString::from_str("3.0"), mtm);
+    value_field.setFont(Some(&settings_font()));
+    let value_width = 40.0;
+    set_view_frame(
+        &*value_field,
+        FIELD_X + slider_width + 10.0,
+        vertically_centered_label_y(base_y, FIELD_HEIGHT),
+        value_width,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&value_field);
+
+    let meter = UiMeterView::new(mtm, UiMeterStyle::AnimatedColor);
+    let meter_height = crate::ui_meter::meter_container_height(UiMeterStyle::AnimatedColor);
+    let meter_width = 180.0;
+    set_view_frame(
+        meter.view(),
+        FIELD_X + slider_width + 10.0 + value_width + 10.0,
+        base_y + (FIELD_HEIGHT - meter_height) / 2.0,
+        meter_width,
+        meter_height,
+    );
+    content_view.addSubview(meter.view());
+
+    *current_y -= FIELD_HEIGHT + ROW_GAP;
+    (value_field, slider, meter)
 }
 
 fn add_labeled_text_field_with_button(
@@ -1591,12 +1681,6 @@ fn read_optional_f64(field: &NSTextField, field_name: &str) -> Result<Option<f64
             .map_err(|error| format!("{} must be a number: {}", field_name, error)),
         None => Ok(None),
     }
-}
-
-fn read_required_f32(field: &NSTextField, field_name: &str) -> Result<f32, String> {
-    read_required_string(field, field_name)?
-        .parse::<f32>()
-        .map_err(|error| format!("{} must be a number: {}", field_name, error))
 }
 
 fn read_required_u32(field: &NSTextField, field_name: &str) -> Result<u32, String> {

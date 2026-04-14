@@ -43,9 +43,11 @@ pub struct AppState {
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
     overlay_window_visible: AtomicBool,
+    settings_window_visible: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
     overlay_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
+    preview_mic_gain: AtomicU32,
     state: AtomicU8,
 }
 
@@ -59,15 +61,31 @@ impl AppState {
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
             overlay_window_visible: AtomicBool::new(false),
+            settings_window_visible: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
             overlay_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
+            preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
         })
     }
 
     pub fn is_recording(&self) -> bool {
         self.get_state() == STATE_RECORDING
+    }
+
+    pub fn set_preview_mic_gain(&self, gain: Option<f32>) {
+        let bits = gain.map(f32::to_bits).unwrap_or(f32::to_bits(f32::NAN));
+        self.preview_mic_gain.store(bits, Ordering::Relaxed);
+    }
+
+    pub fn preview_mic_gain(&self) -> Option<f32> {
+        let val = f32::from_bits(self.preview_mic_gain.load(Ordering::Relaxed));
+        if val.is_nan() {
+            None
+        } else {
+            Some(val)
+        }
     }
 
     pub fn set_deepgram_connection_status(&self, status: DeepgramConnectionStatus) {
@@ -81,7 +99,7 @@ impl AppState {
 
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
-        if state != STATE_RECORDING {
+        if state != STATE_RECORDING && !self.is_settings_window_visible() {
             self.clear_mic_meter();
         }
     }
@@ -125,6 +143,15 @@ impl AppState {
 
     pub fn is_overlay_window_visible(&self) -> bool {
         self.overlay_window_visible.load(Ordering::Relaxed)
+    }
+
+    pub fn set_settings_window_visible(&self, visible: bool) {
+        self.settings_window_visible
+            .store(visible, Ordering::Relaxed);
+    }
+
+    pub fn is_settings_window_visible(&self) -> bool {
+        self.settings_window_visible.load(Ordering::Relaxed)
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {

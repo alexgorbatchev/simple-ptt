@@ -266,6 +266,16 @@ define_class!(
     }
 
     impl AppDelegate {
+        #[unsafe(method(micGainSliderChanged:))]
+        fn mic_gain_slider_changed(&self, _sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+            let gain = settings_window.mic_gain_slider_value();
+            self.ivars().state.set_preview_mic_gain(Some(gain));
+            settings_window.update_mic_gain_label(gain);
+        }
+
         #[unsafe(method(openGitHubRepo:))]
         fn open_github_repo(&self, _sender: Option<&AnyObject>) {
             let github_url = NSString::from_str(GITHUB_REPO_URL);
@@ -767,6 +777,7 @@ impl AppDelegate {
         );
         self.sync_transformation_provider_ui();
         self.promote_for_window_presentation();
+        self.ivars().state.set_settings_window_visible(true);
         settings_window.show(MainThreadMarker::from(self));
     }
 
@@ -785,6 +796,7 @@ impl AppDelegate {
         );
         self.sync_transformation_provider_ui();
         self.promote_for_window_presentation();
+        self.ivars().state.set_settings_window_visible(true);
         settings_window.show_startup(MainThreadMarker::from(self));
     }
 
@@ -793,6 +805,8 @@ impl AppDelegate {
         self.ivars()
             .hotkey_capture_controller
             .set_settings_window_visible(false);
+        self.ivars().state.set_settings_window_visible(false);
+        self.ivars().state.set_preview_mic_gain(None);
 
         if let Some(settings_window) = self.ivars().settings_window.get() {
             settings_window.cancel_hotkey_capture();
@@ -1079,6 +1093,13 @@ impl AppDelegate {
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
         update_billing_menu_item(self, overlay_footer_text);
+
+        if self.ivars().state.is_settings_window_visible() {
+            if let Some(settings_window) = self.ivars().settings_window.get() {
+                settings_window.update_meter(mic_meter);
+            }
+        }
+
         update_overlay_window(
             self,
             mtm,

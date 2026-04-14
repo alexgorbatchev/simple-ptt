@@ -586,7 +586,8 @@ where
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 let is_recording = meter_state.is_recording();
-                if !is_recording {
+                let is_preview = meter_state.is_settings_window_visible();
+                if !is_recording && !is_preview {
                     if was_recording {
                         smoothed_level = 0.0;
                         smoothed_peak = 0.0;
@@ -604,7 +605,9 @@ where
                     pcm_buffer.clear();
                 }
 
-                let current_gain = config_store.current().mic.gain;
+                let current_gain = meter_state
+                    .preview_mic_gain()
+                    .unwrap_or(config_store.current().mic.gain);
                 let encoded_chunk = encode_pcm_mono(data, channels, current_gain, &mut pcm_buffer);
                 if encoded_chunk.pcm_bytes.is_empty() {
                     meter_state.clear_mic_meter();
@@ -621,7 +624,10 @@ where
                     smoothed_peak,
                     encoded_chunk.clipped_sample_count > 0,
                 );
-                controller.send_audio(encoded_chunk.pcm_bytes);
+
+                if is_recording {
+                    controller.send_audio(encoded_chunk.pcm_bytes);
+                }
             },
             |error| {
                 log::error!("audio stream error: {}", error);
