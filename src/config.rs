@@ -93,6 +93,8 @@ impl Default for MicConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct DeepgramConfig {
+    #[serde(default)]
+    pub keyterms: Vec<String>,
     pub api_key: Option<String>,
 
     pub project_id: Option<String>,
@@ -114,6 +116,7 @@ impl Default for DeepgramConfig {
     fn default() -> Self {
         Self {
             api_key: None,
+            keyterms: vec![],
             project_id: None,
             language: default_deepgram_language(),
             model: default_deepgram_model(),
@@ -631,6 +634,19 @@ fn set_float32_key(table: &mut Table, key: &str, field_value: f32) {
     table[key] = value(f64::from(field_value));
 }
 
+
+fn set_string_array_key(table: &mut Table, key: &str, values: &[String]) {
+    if values.is_empty() {
+        table.remove(key);
+    } else {
+        let mut array = toml_edit::Array::new();
+        for v in values {
+            array.push(v);
+        }
+        table[key] = toml_edit::value(array);
+    }
+}
+
 fn set_unsigned_key(table: &mut Table, key: &str, field_value: impl Into<i64>) {
     table[key] = value(field_value.into());
 }
@@ -687,6 +703,7 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
         "utterance_end_ms",
         i64::from(deepgram.utterance_end_ms),
     );
+    set_string_array_key(table, "keyterms", &deepgram.keyterms);
 }
 
 fn write_transformation_table(document: &mut DocumentMut, transformation: &TransformationConfig) {

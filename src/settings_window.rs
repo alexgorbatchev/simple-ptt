@@ -20,7 +20,7 @@ use crate::ui_meter::UiMeterView;
 
 const WINDOW_HEIGHT: f64 = 760.0;
 const WINDOW_WIDTH: f64 = 760.0;
-const CONTENT_HEIGHT: f64 = 1330.0;
+const CONTENT_HEIGHT: f64 = 1380.0;
 const CONTENT_TOP_PADDING: f64 = 28.0;
 const HORIZONTAL_PADDING: f64 = 20.0;
 const LABEL_WIDTH: f64 = 180.0;
@@ -125,6 +125,7 @@ pub struct SettingsWindow {
     deepgram_project_id_field: Retained<NSTextField>,
     deepgram_project_id_env_hint_field: Retained<NSTextField>,
     deepgram_language_field: Retained<NSTextField>,
+    deepgram_keyterms_field: Retained<NSTextField>,
     deepgram_model_popup: Retained<NSPopUpButton>,
     deepgram_endpointing_ms_field: Retained<NSTextField>,
     deepgram_utterance_end_ms_field: Retained<NSTextField>,
@@ -284,6 +285,9 @@ impl SettingsWindow {
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "Project ID");
         let deepgram_language_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Language");
+        let (deepgram_keyterms_field, deepgram_keyterms_hint) =
+            add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "Keyterms");
+        set_hint_text(&deepgram_keyterms_hint, Some("Comma-separated (e.g. 'macOS, GitHub')".to_string()));
         let deepgram_model_popup =
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Model");
         let deepgram_endpointing_ms_field =
@@ -417,6 +421,7 @@ impl SettingsWindow {
             deepgram_project_id_field,
             deepgram_project_id_env_hint_field,
             deepgram_language_field,
+            deepgram_keyterms_field,
             deepgram_model_popup,
             deepgram_endpointing_ms_field,
             deepgram_utterance_end_ms_field,
@@ -544,6 +549,8 @@ impl SettingsWindow {
         );
         self.deepgram_language_field
             .setStringValue(&NSString::from_str(&config.deepgram.language));
+        self.deepgram_keyterms_field
+            .setStringValue(&NSString::from_str(&config.deepgram.keyterms.join(", ")));
         populate_deepgram_model_popup(&self.deepgram_model_popup, &config.deepgram.model);
         self.deepgram_endpointing_ms_field
             .setStringValue(&NSString::from_str(
@@ -616,6 +623,9 @@ impl SettingsWindow {
                 api_key: read_optional_string(&self.deepgram_api_key_field),
                 project_id: read_optional_string(&self.deepgram_project_id_field),
                 language: read_required_string(&self.deepgram_language_field, "Deepgram language")?,
+                keyterms: read_optional_string(&self.deepgram_keyterms_field)
+                    .map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+                    .unwrap_or_default(),
                 model: read_required_pop_up_button_string(
                     &self.deepgram_model_popup,
                     "Deepgram model",

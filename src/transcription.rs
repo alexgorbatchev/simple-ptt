@@ -60,6 +60,7 @@ pub struct DeepgramConfig {
     pub language: String,
     pub endpointing_ms: u16,
     pub utterance_end_ms: u16,
+    pub keyterms: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -674,6 +675,7 @@ fn resolved_deepgram_config(config: &crate::config::Config) -> Result<DeepgramCo
         language: config.deepgram.language.clone(),
         endpointing_ms: config.deepgram.endpointing_ms,
         utterance_end_ms: config.deepgram.utterance_end_ms,
+        keyterms: config.deepgram.keyterms.clone(),
     })
 }
 
@@ -689,15 +691,21 @@ fn start_session(
 
     let mut transcription_stream = runtime.block_on(async move {
         let client = Deepgram::new(&deepgram_config.api_key).map_err(format_deepgram_error)?;
-        let options = Options::builder()
+        let mut options_builder = Options::builder()
             .punctuate(true)
             .smart_format(true)
             .dictation(true)
             .query_params([
                 ("model".to_owned(), deepgram_config.model.clone()),
                 ("language".to_owned(), deepgram_config.language.clone()),
-            ])
-            .build();
+            ]);
+            
+        let keyterm_refs: Vec<&str> = deepgram_config.keyterms.iter().map(String::as_str).collect();
+        if !keyterm_refs.is_empty() {
+            options_builder = options_builder.keyterms(keyterm_refs);
+        }
+            
+        let options = options_builder.build();
 
         client
             .transcription()

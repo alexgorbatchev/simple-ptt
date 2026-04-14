@@ -55,6 +55,9 @@ api_key = "YOUR_DEEPGRAM_API_KEY"
 # Deepgram streaming language code.
 language = "en-US"
 
+# Optional. Provide terminology, jargon, or product names to boost recognition.
+# keyterms = ["macOS", "GitHub"]
+
 # Deepgram live transcription model.
 model = "nova-3"
 

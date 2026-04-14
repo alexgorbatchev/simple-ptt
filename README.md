@@ -44,6 +44,15 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 - **`Escape`:** abort recording, cancel background work, or discard a ready buffer.
 - **`Cmd+V` while recording:** splice the current plain-text clipboard contents into the active transcript.
 
+
+## Features
+
+### LLM text transformation
+Simple PTT can optionally send your dictation through an LLM to remove filler words, correct punctuation, and format technical terms before pasting.
+
+### Deepgram Keyterms
+You can specify custom `keyterms` in the configuration to boost the transcription accuracy for specific vocabulary like product names, technical jargon, or acronyms.
+
 ## Configuration
 
 `simple-ptt` looks for config in this order:
