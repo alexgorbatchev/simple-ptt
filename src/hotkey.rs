@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use self::platform::run_hotkey_event_loop;
 use crate::billing::BillingController;
 use crate::hotkey_binding::{
-    is_modifier_key, parse_hotkey_binding, HotkeyBinding, HotkeyModifiers,
+    is_modifier_key, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
 };
 use crate::hotkey_capture::HotkeyCaptureController;
 use crate::settings::LiveConfigStore;
@@ -35,6 +35,7 @@ pub(super) enum HotkeyEvent {
 
 struct CurrentHotkeyConfig {
     auto_transform_enabled: bool,
+    correction_key: Option<Key>,
     hold_ms: u64,
     record_hotkey: Option<HotkeyBinding>,
     transform_hotkey: Option<HotkeyBinding>,
@@ -56,6 +57,7 @@ pub fn spawn_hotkey_thread(
             let active_modifiers: Cell<HotkeyModifiers> = Cell::new(HotkeyModifiers::default());
             let press_time: Cell<Option<Instant>> = Cell::new(None);
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
+            let correction_key_is_down: Cell<bool> = Cell::new(false);
             let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
             let clipboard_insert_is_down: Cell<bool> = Cell::new(false);
 
@@ -78,6 +80,7 @@ pub fn spawn_hotkey_thread(
                                 &controller,
                                 &press_time,
                                 &record_hotkey_action,
+                                &correction_key_is_down,
                                 &transform_hotkey_is_down,
                                 &clipboard_insert_is_down,
                             )
@@ -96,6 +99,7 @@ pub fn spawn_hotkey_thread(
                                 &controller,
                                 &press_time,
                                 &record_hotkey_action,
+                                &correction_key_is_down,
                                 &transform_hotkey_is_down,
                                 &clipboard_insert_is_down,
                             )
@@ -130,6 +134,7 @@ fn handle_key_press(
     controller: &TranscriptionController,
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
+    correction_key_is_down: &Cell<bool>,
     transform_hotkey_is_down: &Cell<bool>,
     clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
@@ -155,17 +160,28 @@ fn handle_key_press(
         state.set_overlay_text_opacity(1.0);
         press_time.set(None);
         record_hotkey_action.set(None);
+        correction_key_is_down.set(false);
         transform_hotkey_is_down.set(false);
         clipboard_insert_is_down.set(false);
 
         match current_state {
             STATE_RECORDING => {
-                abort_recording(
-                    state,
-                    controller,
-                    hotkey_config.auto_transform_enabled,
-                    "escape abort",
-                );
+                if state.is_overlay_correction_active() {
+                    match controller.stop_correction_session_and_apply() {
+                        Ok(()) => log::info!("aborting correction recording"),
+                        Err(error) => {
+                            log::error!("failed to abort correction recording: {}", error);
+                            state.set_state(STATE_ERROR);
+                        }
+                    }
+                } else {
+                    abort_recording(
+                        state,
+                        controller,
+                        hotkey_config.auto_transform_enabled,
+                        "escape abort",
+                    );
+                }
             }
             STATE_BUFFER_READY => match controller.discard_buffer() {
                 Ok(()) => log::info!("buffer discarded"),
@@ -175,6 +191,53 @@ fn handle_key_press(
                 log::info!("abort requested while background work is in progress");
             }
             _ => {}
+        }
+
+        return true;
+    }
+
+    if hotkey_config.correction_key == Some(key) {
+        if correction_key_is_down.replace(true) {
+            return true;
+        }
+
+        let current_state = state.get_state();
+        if matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING) {
+            correction_key_is_down.set(false);
+            log::info!("ignoring correction while background work is still running");
+            return false;
+        }
+
+        if is_modifier_key(key) && current_modifiers.any() {
+            correction_key_is_down.set(false);
+            return false;
+        }
+
+        match current_state {
+            STATE_RECORDING if state.is_overlay_correction_active() => {
+                return true;
+            }
+            STATE_RECORDING | STATE_BUFFER_READY => match controller.start_correction_session() {
+                Ok(()) => {
+                    billing_controller.refresh_month_to_date_spend();
+                    state.restore_overlay();
+                    state.set_overlay_correction_active(true);
+                    state.clear_overlay_correction_text();
+                    state.set_overlay_text_opacity(1.0);
+                    state.set_state(STATE_RECORDING);
+                    log::info!("correction recording started");
+                }
+                Err(start_error) => {
+                    correction_key_is_down.set(false);
+                    log::error!("failed to start correction: {}", start_error);
+                    state.set_state(STATE_ERROR);
+                }
+            },
+            _ => {
+                correction_key_is_down.set(false);
+                log::info!("ignoring correction because no buffered annotation is available");
+                return false;
+            }
         }
 
         return true;
@@ -255,6 +318,10 @@ fn handle_key_press(
             return false;
         }
 
+        if state.is_overlay_correction_active() {
+            return true;
+        }
+
         if clipboard_insert_is_down.replace(true) {
             return true;
         }
@@ -283,10 +350,34 @@ fn handle_key_release(
     controller: &TranscriptionController,
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
+    correction_key_is_down: &Cell<bool>,
     transform_hotkey_is_down: &Cell<bool>,
     clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
+
+    if hotkey_config.correction_key == Some(key) {
+        let was_down = correction_key_is_down.replace(false);
+        if !was_down {
+            return false;
+        }
+
+        if state.is_overlay_correction_active() {
+            match controller.stop_correction_session_and_apply() {
+                Ok(()) => {
+                    state.set_overlay_correction_active(false);
+                    state.set_state(STATE_PROCESSING);
+                    log::info!("stopping correction and applying it");
+                }
+                Err(error) => {
+                    log::error!("failed to stop correction: {}", error);
+                    state.set_state(STATE_ERROR);
+                }
+            }
+        }
+
+        return true;
+    }
 
     if hotkey_config
         .record_hotkey
@@ -354,6 +445,9 @@ fn handle_key_release(
         }
 
         match state.get_state() {
+            STATE_RECORDING if state.is_overlay_correction_active() => {
+                log::info!("ignoring transform hotkey while correction is recording");
+            }
             STATE_RECORDING => match controller.stop_session_and_transform_and_resume() {
                 Ok(()) => {
                     state.set_overlay_text_opacity(0.02);
@@ -385,6 +479,7 @@ fn handle_key_release(
 
 fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig {
     let config = config_store.current();
+    let correction_key = parse_correction_key(config.ui.correction_key.as_str());
     let record_hotkey = parse_hotkey_binding(&config.ui.hotkey).ok();
     let transform_hotkey = config
         .resolve_transformation_config()
@@ -397,6 +492,7 @@ fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig 
         auto_transform_enabled: config.transformation.auto
             && config.resolve_transformation_config().is_ok(),
         hold_ms: config.mic.hold_ms,
+        correction_key,
         record_hotkey,
         transform_hotkey,
         transformation_hotkey_enabled,
@@ -409,6 +505,10 @@ fn is_clipboard_insert_shortcut(key: Key, current_modifiers: HotkeyModifiers) ->
         && !current_modifiers.shift
         && !current_modifiers.control
         && !current_modifiers.alt
+}
+
+fn parse_correction_key(raw: &str) -> Option<Key> {
+    parse_key(raw.trim())
 }
 
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
@@ -481,7 +581,7 @@ fn abort_recording(
 
 #[cfg(test)]
 mod tests {
-    use super::is_clipboard_insert_shortcut;
+    use super::{is_clipboard_insert_shortcut, parse_correction_key};
     use crate::hotkey_binding::HotkeyModifiers;
     use rdev::Key;
 
@@ -513,5 +613,13 @@ mod tests {
                 ..HotkeyModifiers::default()
             }
         ));
+    }
+
+    #[test]
+    fn correction_key_parses_supported_single_keys() {
+        assert_eq!(parse_correction_key("LeftMeta"), Some(Key::MetaLeft));
+        assert_eq!(parse_correction_key("RightMeta"), Some(Key::MetaRight));
+        assert_eq!(parse_correction_key("F7"), Some(Key::F7));
+        assert_eq!(parse_correction_key("Cmd"), None);
     }
 }

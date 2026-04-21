@@ -109,6 +109,8 @@ pub struct SettingsWindow {
     ui_start_on_login_checkbox: Retained<NSButton>,
     ui_hotkey_field: Retained<NSTextField>,
     ui_hotkey_capture_button: Retained<NSButton>,
+    ui_correction_key_field: Retained<NSTextField>,
+    ui_correction_key_capture_button: Retained<NSButton>,
     ui_font_name_popup: Retained<NSPopUpButton>,
     ui_font_size_field: Retained<NSTextField>,
     ui_footer_font_size_field: Retained<NSTextField>,
@@ -139,6 +141,7 @@ pub struct SettingsWindow {
     transformation_model_refresh_button: Retained<NSButton>,
     transformation_model_check_button: Retained<NSButton>,
     transformation_system_prompt_view: Retained<NSTextView>,
+    transformation_correction_system_prompt_view: Retained<NSTextView>,
     available_font_family_names: Vec<String>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
@@ -242,6 +245,16 @@ impl SettingsWindow {
             "Capture…",
             sel!(captureRecordHotkey:),
         );
+        let (ui_correction_key_field, ui_correction_key_capture_button) =
+            add_labeled_text_field_with_button(
+                &content_view,
+                target,
+                mtm,
+                &mut current_y,
+                "Correction key",
+                "Capture…",
+                sel!(captureCorrectionKey:),
+            );
         let ui_font_name_popup =
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Font name");
         let ui_font_size_field =
@@ -337,6 +350,12 @@ impl SettingsWindow {
         );
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
+        let transformation_correction_system_prompt_view = add_prompt_editor(
+            &content_view,
+            mtm,
+            &mut current_y,
+            "Correction prompt",
+        );
 
         let right_edge = FIELD_X + FIELD_WIDTH;
         let save_button_width = 150.0;
@@ -405,6 +424,8 @@ impl SettingsWindow {
             ui_start_on_login_checkbox,
             ui_hotkey_field,
             ui_hotkey_capture_button,
+            ui_correction_key_field,
+            ui_correction_key_capture_button,
             ui_font_name_popup,
             ui_font_size_field,
             ui_footer_font_size_field,
@@ -435,6 +456,7 @@ impl SettingsWindow {
             transformation_model_refresh_button,
             transformation_model_check_button,
             transformation_system_prompt_view,
+            transformation_correction_system_prompt_view,
             available_font_family_names,
             hotkey_capture_restore_value: RefCell::new(None),
         }
@@ -498,6 +520,8 @@ impl SettingsWindow {
             });
         self.ui_hotkey_field
             .setStringValue(&NSString::from_str(&config.ui.hotkey));
+        self.ui_correction_key_field
+            .setStringValue(&NSString::from_str(&config.ui.correction_key));
         populate_font_name_popup(
             &self.ui_font_name_popup,
             &self.available_font_family_names,
@@ -593,6 +617,10 @@ impl SettingsWindow {
         );
         self.transformation_system_prompt_view
             .setString(&NSString::from_str(&config.transformation.system_prompt));
+        self.transformation_correction_system_prompt_view
+            .setString(&NSString::from_str(
+                &config.transformation.correction_system_prompt,
+            ));
         self.set_status(audio_device_status_message.as_deref().unwrap_or(""));
         self.scroll_to_top();
     }
@@ -602,6 +630,10 @@ impl SettingsWindow {
             ui: crate::config::UiConfig {
                 start_on_login: self.ui_start_on_login_checkbox.state() == NSControlStateValueOn,
                 hotkey: read_required_string(&self.ui_hotkey_field, "Record hotkey")?,
+                correction_key: read_required_string(
+                    &self.ui_correction_key_field,
+                    "Correction key",
+                )?,
                 font_name: read_optional_pop_up_button_string(&self.ui_font_name_popup),
                 font_size: read_required_f64(&self.ui_font_size_field, "Font size")?,
                 footer_font_size: read_optional_f64(
@@ -654,6 +686,10 @@ impl SettingsWindow {
                     "Transformation model",
                 )?,
                 system_prompt: self.transformation_system_prompt_view.string().to_string(),
+                correction_system_prompt: self
+                    .transformation_correction_system_prompt_view
+                    .string()
+                    .to_string(),
             },
         })
     }
@@ -736,6 +772,9 @@ impl SettingsWindow {
     pub fn hotkey_value(&self, target: HotkeyCaptureTarget) -> String {
         match target {
             HotkeyCaptureTarget::Record => self.ui_hotkey_field.stringValue().to_string(),
+            HotkeyCaptureTarget::Correction => {
+                self.ui_correction_key_field.stringValue().to_string()
+            }
             HotkeyCaptureTarget::Transform => {
                 self.transformation_hotkey_field.stringValue().to_string()
             }
@@ -798,6 +837,10 @@ impl SettingsWindow {
                 self.ui_hotkey_field
                     .setStringValue(&NSString::from_str(value));
             }
+            HotkeyCaptureTarget::Correction => {
+                self.ui_correction_key_field
+                    .setStringValue(&NSString::from_str(value));
+            }
             HotkeyCaptureTarget::Transform => {
                 self.transformation_hotkey_field
                     .setStringValue(&NSString::from_str(value));
@@ -809,6 +852,11 @@ impl SettingsWindow {
         set_capture_button_state(
             &self.ui_hotkey_capture_button,
             active_target == Some(HotkeyCaptureTarget::Record),
+            active_target.is_none(),
+        );
+        set_capture_button_state(
+            &self.ui_correction_key_capture_button,
+            active_target == Some(HotkeyCaptureTarget::Correction),
             active_target.is_none(),
         );
         set_capture_button_state(

@@ -41,6 +41,9 @@ pub struct UiConfig {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
+    #[serde(default = "default_correction_key", alias = "instruction_key")]
+    pub correction_key: String,
+
     #[serde(alias = "overlay_font_family")]
     pub font_name: Option<String>,
 
@@ -58,6 +61,7 @@ impl Default for UiConfig {
         Self {
             start_on_login: false,
             hotkey: default_hotkey(),
+            correction_key: default_correction_key(),
             font_name: None,
             font_size: default_overlay_font_size(),
             footer_font_size: None,
@@ -143,6 +147,12 @@ pub struct TransformationConfig {
 
     #[serde(default = "default_transformation_system_prompt")]
     pub system_prompt: String,
+
+    #[serde(
+        default = "default_transformation_correction_system_prompt",
+        alias = "instruction_system_prompt"
+    )]
+    pub correction_system_prompt: String,
 }
 
 impl Default for TransformationConfig {
@@ -154,12 +164,17 @@ impl Default for TransformationConfig {
             api_key: None,
             model: default_transformation_model(),
             system_prompt: default_transformation_system_prompt(),
+            correction_system_prompt: default_transformation_correction_system_prompt(),
         }
     }
 }
 
 fn default_hotkey() -> String {
     "F5".into()
+}
+
+fn default_correction_key() -> String {
+    "LeftMeta".into()
 }
 
 fn default_deepgram_language() -> String {
@@ -231,6 +246,23 @@ fn default_transformation_system_prompt() -> String {
         "), open bracket to [, close bracket to ], open brace to {{, and close brace to }}. Do ",
         "not add new facts, commentary, or formatting beyond what is implied by the input. ",
         "Return only the transformed text."
+    )
+    .into()
+}
+
+fn default_transformation_correction_system_prompt() -> String {
+    concat!(
+        "You are editing an existing annotation using a spoken correction request. The user will ",
+        "provide input with two labeled sections: CURRENT ANNOTATION and CORRECTION REQUEST. ",
+        "Rewrite the current annotation by applying the correction request exactly as intended. ",
+        "Preserve all content that the correction request does not change. Make the smallest ",
+        "coherent edits that satisfy the request. If the request asks for ",
+        "rewording, insertion, deletion, restructuring, emphasis, or formatting changes, apply ",
+        "those changes to the annotation itself rather than commenting on them. Preserve ",
+        "technical jargon, product names, API names, CLI flags, file paths, environment variable ",
+        "names, and programmer vocabulary when clearly intended. Do not add explanations, ",
+        "analysis, surrounding quotes, or commentary. Return only the fully rewritten ",
+        "annotation."
     )
     .into()
 }
@@ -392,6 +424,7 @@ impl Config {
         );
 
         let system_prompt = self.transformation.system_prompt.trim();
+        let correction_system_prompt = self.transformation.correction_system_prompt.trim();
 
         Ok(TransformationRuntimeConfig {
             provider,
@@ -401,6 +434,11 @@ impl Config {
                 default_transformation_system_prompt()
             } else {
                 system_prompt.to_owned()
+            },
+            correction_system_prompt: if correction_system_prompt.is_empty() {
+                default_transformation_correction_system_prompt()
+            } else {
+                correction_system_prompt.to_owned()
             },
         })
     }
@@ -659,6 +697,7 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
         table.remove("start_on_login");
     }
     set_required_string_key(table, "hotkey", &[], &ui.hotkey);
+    set_required_string_key(table, "correction_key", &["instruction_key"], &ui.correction_key);
     set_optional_string_key(
         table,
         "font_name",
@@ -717,6 +756,17 @@ fn write_transformation_table(document: &mut DocumentMut, transformation: &Trans
         table.remove("system_prompt");
     } else {
         set_required_string_key(table, "system_prompt", &[], &transformation.system_prompt);
+    }
+    if transformation.correction_system_prompt.trim().is_empty() {
+        table.remove("correction_system_prompt");
+        table.remove("instruction_system_prompt");
+    } else {
+        set_required_string_key(
+            table,
+            "correction_system_prompt",
+            &["instruction_system_prompt"],
+            &transformation.correction_system_prompt,
+        );
     }
 }
 
@@ -782,6 +832,15 @@ pub fn materialize_runtime_config(config: &Config) -> Config {
         .is_empty()
     {
         runtime_config.transformation.system_prompt = default_transformation_system_prompt();
+    }
+    if runtime_config
+        .transformation
+        .correction_system_prompt
+        .trim()
+        .is_empty()
+    {
+        runtime_config.transformation.correction_system_prompt =
+            default_transformation_correction_system_prompt();
     }
     runtime_config
 }
@@ -858,7 +917,8 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
 
     use super::{
-        default_transformation_system_prompt, materialize_runtime_config, save_config, Config,
+        default_transformation_correction_system_prompt, default_transformation_system_prompt,
+        materialize_runtime_config, save_config, Config,
         UiMeterStyle,
     };
 
@@ -890,10 +950,12 @@ mod tests {
 
         let mut config = Config::default();
         config.ui.hotkey = "F5".to_owned();
+        config.ui.correction_key = "RightMeta".to_owned();
         config.ui.font_name = Some("SF Mono".to_owned());
         config.ui.font_size = 14.0;
         config.ui.footer_font_size = Some(11.0);
         config.ui.meter_style = UiMeterStyle::AnimatedHeight;
+        config.transformation.correction_system_prompt = "Apply the spoken correction.".to_owned();
 
         save_config(&path, &config).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
@@ -904,6 +966,8 @@ mod tests {
         assert!(updated_contents.contains("keep_me = true"));
         assert!(updated_contents.contains("overlay_font_family = \"SF Mono\""));
         assert!(updated_contents.contains("hotkey = \"F5\""));
+        assert!(updated_contents.contains("correction_key = \"RightMeta\""));
+        assert!(updated_contents.contains("correction_system_prompt = \"Apply the spoken correction.\""));
     }
 
     #[test]
@@ -972,5 +1036,14 @@ mod tests {
         assert!(prompt.contains("self-repairs"));
         assert!(prompt.contains("retractions"));
         assert!(prompt.contains("final intended wording"));
+    }
+
+    #[test]
+    fn default_correction_transformation_prompt_mentions_correction_sections() {
+        let prompt = default_transformation_correction_system_prompt();
+
+        assert!(prompt.contains("CURRENT ANNOTATION"));
+        assert!(prompt.contains("CORRECTION REQUEST"));
+        assert!(prompt.contains("Return only the fully rewritten annotation"));
     }
 }

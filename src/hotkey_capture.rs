@@ -9,6 +9,7 @@ use crate::hotkey_binding::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HotkeyCaptureTarget {
     Record,
+    Correction,
     Transform,
 }
 
@@ -240,6 +241,7 @@ pub fn capture_outcome_message(outcome: HotkeyCaptureOutcome) -> Option<String> 
         HotkeyCaptureOutcome::Captured { target, binding } => {
             let target_label = match target {
                 HotkeyCaptureTarget::Record => "record",
+                HotkeyCaptureTarget::Correction => "correction",
                 HotkeyCaptureTarget::Transform => "transform",
             };
             Some(format!(

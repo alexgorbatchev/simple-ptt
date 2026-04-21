@@ -42,6 +42,8 @@ pub struct AppState {
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
+    overlay_correction_active: AtomicBool,
+    overlay_correction_text: Mutex<Arc<str>>,
     overlay_window_visible: AtomicBool,
     settings_window_visible: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
@@ -60,6 +62,8 @@ impl AppState {
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
+            overlay_correction_active: AtomicBool::new(false),
+            overlay_correction_text: Mutex::new(Arc::from("")),
             overlay_window_visible: AtomicBool::new(false),
             settings_window_visible: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
@@ -136,6 +140,14 @@ impl AppState {
         self.overlay_dismissed.load(Ordering::Relaxed)
     }
 
+    pub fn set_overlay_correction_active(&self, active: bool) {
+        self.overlay_correction_active.store(active, Ordering::Relaxed);
+    }
+
+    pub fn is_overlay_correction_active(&self) -> bool {
+        self.overlay_correction_active.load(Ordering::Relaxed)
+    }
+
     pub fn set_overlay_window_visible(&self, visible: bool) {
         self.overlay_window_visible
             .store(visible, Ordering::Relaxed);
@@ -164,6 +176,16 @@ impl AppState {
         self.set_overlay_text(String::new());
     }
 
+    pub fn set_overlay_correction_text(&self, overlay_correction_text: impl Into<String>) {
+        if let Ok(mut current_overlay_correction_text) = self.overlay_correction_text.lock() {
+            *current_overlay_correction_text = Arc::from(overlay_correction_text.into());
+        }
+    }
+
+    pub fn clear_overlay_correction_text(&self) {
+        self.set_overlay_correction_text(String::new());
+    }
+
     pub fn set_overlay_text_opacity(&self, overlay_text_opacity: f64) {
         self.overlay_text_opacity.store(
             normalized_meter_value(overlay_text_opacity as f32),
@@ -179,6 +201,13 @@ impl AppState {
         self.overlay_text
             .lock()
             .map(|overlay_text| overlay_text.clone())
+            .unwrap_or_else(|_| Arc::from(""))
+    }
+
+    pub fn overlay_correction_text(&self) -> Arc<str> {
+        self.overlay_correction_text
+            .lock()
+            .map(|overlay_correction_text| overlay_correction_text.clone())
             .unwrap_or_else(|_| Arc::from(""))
     }
 

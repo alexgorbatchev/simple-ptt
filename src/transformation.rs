@@ -22,6 +22,7 @@ pub struct TransformationRuntimeConfig {
     pub api_key: Option<String>,
     pub model: String,
     pub system_prompt: String,
+    pub correction_system_prompt: String,
 }
 
 pub async fn transform_text(

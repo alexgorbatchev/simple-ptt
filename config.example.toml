@@ -16,6 +16,12 @@
 # Global hotkey used to start and stop recording.
 hotkey = "F5"
 
+# Single key used for correction. Hold this while dictating or while a
+# buffered annotation is visible to speak a correction request for the current text.
+# Use a specific supported key name such as LeftMeta, RightMeta, LeftAlt, RightAlt,
+# Escape, or F7. The Settings window capture button is the easiest way to set it.
+correction_key = "LeftMeta"
+
 # Optional. Overlay font family.
 # font_name = "Menlo"
 
@@ -93,5 +99,13 @@ auto = true
 # Optional override. Omit to use the built-in dictation cleanup prompt.
 # Prefer a TOML multiline string for long prompts.
 # system_prompt = """
-# Rewrite the transcript as concise written instructions.
+# Rewrite the transcript as concise written text.
+# """
+
+# Optional override for correction mode. This prompt is used only when you hold the
+# configured correction key and speak a correction request for the current annotation.
+# correction_system_prompt = """
+# Rewrite the current annotation by applying the spoken correction request.
+# """
+# Apply the spoken correction request to the current annotation and return only the rewritten annotation.
 # """

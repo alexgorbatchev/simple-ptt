@@ -45,6 +45,12 @@ enum PasteStep {
     SendPasteShortcut,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SessionKind {
+    Dictation,
+    Correction,
+}
+
 #[derive(Debug, Default)]
 struct PasteDiagnostics {
     app_active: bool,
@@ -71,8 +77,10 @@ pub struct TranscriptionController {
 
 enum Command {
     StartSession,
+    StartCorrectionSession,
     AudioChunk(bytes::Bytes),
     InsertClipboardText,
+    StopCorrectionSessionAndApply,
     StopSessionAndPaste,
     StopSessionAndTransformAndResume,
     StopSessionAndTransformAndPaste,
@@ -83,6 +91,7 @@ enum Command {
 
 struct ActiveSession {
     audio_tx: tokio_mpsc::Sender<Result<Bytes, io::Error>>,
+    kind: SessionKind,
     task: tokio::task::JoinHandle<Result<String, String>>,
 }
 
@@ -103,6 +112,12 @@ impl TranscriptionController {
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
+    pub fn start_correction_session(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::StartCorrectionSession)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
     pub fn stop_session_and_paste(&self) -> Result<(), String> {
         self.command_tx
             .send(Command::StopSessionAndPaste)
@@ -118,6 +133,12 @@ impl TranscriptionController {
     pub fn stop_session_and_transform_and_paste(&self) -> Result<(), String> {
         self.command_tx
             .send(Command::StopSessionAndTransformAndPaste)
+            .map_err(|_| "transcription worker is not running".to_owned())
+    }
+
+    pub fn stop_correction_session_and_apply(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::StopCorrectionSessionAndApply)
             .map_err(|_| "transcription worker is not running".to_owned())
     }
 
@@ -170,10 +191,12 @@ pub fn spawn_transcription_thread(
             let mut active_session: Option<ActiveSession> = None;
             let mut buffered_text = String::new();
             let mut recording_prefix = String::new();
+            let mut resume_after_correction = false;
 
             while let Ok(command) = command_rx.recv() {
                 match command {
                     Command::StartSession => {
+                        resume_after_correction = false;
                         if active_session.is_some() {
                             log::warn!("ignoring start request because a Deepgram session is already active");
                             continue;
@@ -199,6 +222,8 @@ pub fn spawn_transcription_thread(
 
                         state.clear_abort_request();
                         state.restore_overlay();
+                        state.set_overlay_correction_active(false);
+                        state.clear_overlay_correction_text();
                         if recording_prefix.is_empty() {
                             state.clear_overlay_text();
                         } else {
@@ -229,6 +254,7 @@ pub fn spawn_transcription_thread(
                             state.clone(),
                             &deepgram_config,
                             current_sample_rate,
+                            SessionKind::Dictation,
                             recording_prefix.clone(),
                         ) {
                             Ok(session) => {
@@ -253,6 +279,131 @@ pub fn spawn_transcription_thread(
                                     );
                                     state.set_state(STATE_ERROR);
                                 }
+                            }
+                        }
+                    }
+                    Command::StartCorrectionSession => {
+                        resume_after_correction = false;
+                        if let Some(session) = active_session.take() {
+                            if session.kind != SessionKind::Dictation {
+                                log::warn!(
+                                    "ignoring correction start because a correction session is already active"
+                                );
+                                active_session = Some(session);
+                                continue;
+                            }
+
+                            match finish_session(&runtime, session) {
+                                Ok(transcript) => {
+                                    if state.consume_abort_request() {
+                                        log::info!(
+                                            "discarding transcript because the session was aborted before correction started"
+                                        );
+                                        recording_prefix.clear();
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                        continue;
+                                    }
+
+                                    recording_prefix.clear();
+                                    buffered_text = transcript;
+                                    resume_after_correction = true;
+                                }
+                                Err(error) => {
+                                    if state.consume_abort_request() {
+                                        log::info!(
+                                            "ignoring Deepgram session error after abort request: {}",
+                                            error
+                                        );
+                                        recording_prefix.clear();
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                        continue;
+                                    }
+
+                                    log::error!(
+                                        "failed to checkpoint dictation before correction: {}",
+                                        error
+                                    );
+                                    recording_prefix.clear();
+                                    state.set_state(STATE_ERROR);
+                                    continue;
+                                }
+                            }
+                        }
+
+                        if buffered_text.trim().is_empty() {
+                            buffered_text = state.overlay_text().to_string();
+                        }
+                        if buffered_text.trim().is_empty() {
+                            log::warn!(
+                                "ignoring correction request because no working text is available"
+                            );
+                            state.clear_overlay_correction_text();
+                            state.set_overlay_correction_active(false);
+                            state.set_state(STATE_IDLE);
+                            continue;
+                        }
+
+                        let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
+                        if state.is_abort_requested() {
+                            log::info!(
+                                "skipping correction start because abort was requested before startup completed"
+                            );
+                            state.clear_overlay_correction_text();
+                            state.set_overlay_correction_active(false);
+                            state.set_overlay_text_opacity(1.0);
+                            state.set_state(STATE_BUFFER_READY);
+                            continue;
+                        }
+
+                        state.clear_abort_request();
+                        state.restore_overlay();
+                        state.set_overlay_correction_active(true);
+                        state.clear_overlay_correction_text();
+                        state.set_overlay_text(buffered_text.clone());
+                        state.set_overlay_text_opacity(1.0);
+                        let current_config = config_store.current();
+                        let deepgram_config = match resolved_deepgram_config(&current_config) {
+                            Ok(deepgram_config) => deepgram_config,
+                            Err(error) => {
+                                log::error!(
+                                    "failed to resolve Deepgram config for correction: {}",
+                                    error
+                                );
+                                state.set_overlay_correction_active(false);
+                                state.set_state(STATE_ERROR);
+                                continue;
+                            }
+                        };
+
+                        match start_session(
+                            &runtime,
+                            state.clone(),
+                            &deepgram_config,
+                            current_sample_rate,
+                            SessionKind::Correction,
+                            String::new(),
+                        ) {
+                            Ok(session) => {
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Connected,
+                                );
+                                state.set_state(STATE_RECORDING);
+                                active_session = Some(session);
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "failed to start correction session: {}",
+                                    error
+                                );
+                                state.set_overlay_correction_active(false);
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Disconnected,
+                                );
+                                state.set_state(STATE_ERROR);
                             }
                         }
                     }
@@ -284,6 +435,14 @@ pub fn spawn_transcription_thread(
                             );
                             continue;
                         };
+
+                        if session.kind != SessionKind::Dictation {
+                            log::warn!(
+                                "ignoring clipboard insert because correction is currently recording"
+                            );
+                            active_session = Some(session);
+                            continue;
+                        }
 
                         match finish_session(&runtime, session) {
                             Ok(transcript) => {
@@ -350,6 +509,7 @@ pub fn spawn_transcription_thread(
                                     state.clone(),
                                     &deepgram_config,
                                     current_sample_rate,
+                                    SessionKind::Dictation,
                                     recording_prefix.clone(),
                                 ) {
                                     Ok(session) => {
@@ -378,6 +538,219 @@ pub fn spawn_transcription_thread(
                                 );
                                 recording_prefix.clear();
                                 state.clear_overlay_text();
+                                state.set_overlay_text_opacity(1.0);
+                                state.set_state(STATE_ERROR);
+                            }
+                        }
+                    }
+                    Command::StopCorrectionSessionAndApply => {
+                        let should_resume_after_correction = resume_after_correction;
+                        resume_after_correction = false;
+                        let abort_requested = state.is_abort_requested();
+                        if !abort_requested {
+                            state.set_state(STATE_PROCESSING);
+                        }
+
+                        let Some(session) = active_session.take() else {
+                            log::warn!(
+                                "received correction stop request without an active Deepgram session"
+                            );
+                            state.set_overlay_correction_active(false);
+                            state.clear_overlay_correction_text();
+                            state.set_state(if buffered_text.trim().is_empty() {
+                                STATE_IDLE
+                            } else {
+                                STATE_BUFFER_READY
+                            });
+                            continue;
+                        };
+
+                        if session.kind != SessionKind::Correction {
+                            log::warn!(
+                                "ignoring correction stop request because the active session is normal dictation"
+                            );
+                            active_session = Some(session);
+                            continue;
+                        }
+
+                        match finish_session(&runtime, session) {
+                            Ok(correction_text) => {
+                                if state.consume_abort_request() {
+                                    log::info!("discarding correction because the session was aborted");
+                                    state.set_overlay_correction_active(false);
+                                    state.clear_overlay_correction_text();
+                                    state.set_overlay_text(buffered_text.clone());
+                                    state.set_overlay_text_opacity(1.0);
+                                    if should_resume_after_correction {
+                                        match restart_dictation_session(
+                                            &runtime,
+                                            state.clone(),
+                                            &config_store,
+                                            worker_sample_rate.load(Ordering::Relaxed),
+                                            &mut buffered_text,
+                                            &mut recording_prefix,
+                                        ) {
+                                            Ok(session) => {
+                                                active_session = Some(session);
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Connected,
+                                                );
+                                                state.set_state(STATE_RECORDING);
+                                            }
+                                            Err(error) => {
+                                                log::error!(
+                                                    "failed to resume dictation after correction abort: {}",
+                                                    error
+                                                );
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Disconnected,
+                                                );
+                                                state.set_state(STATE_ERROR);
+                                            }
+                                        }
+                                    } else {
+                                        state.set_state(STATE_BUFFER_READY);
+                                    }
+                                    continue;
+                                }
+
+                                state.set_overlay_correction_active(false);
+                                if correction_text.trim().is_empty() {
+                                    log::info!(
+                                        "correction session completed without a final transcript"
+                                    );
+                                    state.clear_overlay_correction_text();
+                                    state.set_overlay_text(buffered_text.clone());
+                                    state.set_overlay_text_opacity(1.0);
+                                    if should_resume_after_correction {
+                                        match restart_dictation_session(
+                                            &runtime,
+                                            state.clone(),
+                                            &config_store,
+                                            worker_sample_rate.load(Ordering::Relaxed),
+                                            &mut buffered_text,
+                                            &mut recording_prefix,
+                                        ) {
+                                            Ok(session) => {
+                                                active_session = Some(session);
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Connected,
+                                                );
+                                                state.set_state(STATE_RECORDING);
+                                            }
+                                            Err(error) => {
+                                                log::error!(
+                                                    "failed to resume dictation after empty correction: {}",
+                                                    error
+                                                );
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Disconnected,
+                                                );
+                                                state.set_state(STATE_ERROR);
+                                            }
+                                        }
+                                    } else {
+                                        state.set_state(STATE_BUFFER_READY);
+                                    }
+                                    continue;
+                                }
+
+                                let transformation_config =
+                                    config_store.current().resolve_transformation_config().ok();
+                                transform_buffered_text_with_correction(
+                                    &runtime,
+                                    state.clone(),
+                                    &transformation_config,
+                                    &mut buffered_text,
+                                    correction_text.as_str(),
+                                );
+                                if should_resume_after_correction {
+                                    match state.get_state() {
+                                        STATE_BUFFER_READY => {
+                                            match restart_dictation_session(
+                                                &runtime,
+                                                state.clone(),
+                                                &config_store,
+                                                worker_sample_rate.load(Ordering::Relaxed),
+                                                &mut buffered_text,
+                                                &mut recording_prefix,
+                                            ) {
+                                                Ok(session) => {
+                                                    active_session = Some(session);
+                                                    state.set_deepgram_connection_status(
+                                                        DeepgramConnectionStatus::Connected,
+                                                    );
+                                                    state.set_state(STATE_RECORDING);
+                                                }
+                                                Err(error) => {
+                                                    log::error!(
+                                                        "failed to resume dictation after correction: {}",
+                                                        error
+                                                    );
+                                                    state.set_deepgram_connection_status(
+                                                        DeepgramConnectionStatus::Disconnected,
+                                                    );
+                                                    state.set_state(STATE_ERROR);
+                                                }
+                                            }
+                                        }
+                                        STATE_ERROR | STATE_IDLE => {}
+                                        other_state => {
+                                            log::warn!(
+                                                "correction finished in unexpected state {}; leaving dictation stopped",
+                                                other_state
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                if state.consume_abort_request() {
+                                    log::info!(
+                                        "ignoring correction session error after abort request: {}",
+                                        error
+                                    );
+                                    state.set_overlay_correction_active(false);
+                                    state.clear_overlay_correction_text();
+                                    state.set_overlay_text(buffered_text.clone());
+                                    state.set_overlay_text_opacity(1.0);
+                                    if should_resume_after_correction {
+                                        match restart_dictation_session(
+                                            &runtime,
+                                            state.clone(),
+                                            &config_store,
+                                            worker_sample_rate.load(Ordering::Relaxed),
+                                            &mut buffered_text,
+                                            &mut recording_prefix,
+                                        ) {
+                                            Ok(session) => {
+                                                active_session = Some(session);
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Connected,
+                                                );
+                                                state.set_state(STATE_RECORDING);
+                                            }
+                                            Err(error) => {
+                                                log::error!(
+                                                    "failed to resume dictation after correction session error: {}",
+                                                    error
+                                                );
+                                                state.set_deepgram_connection_status(
+                                                    DeepgramConnectionStatus::Disconnected,
+                                                );
+                                                state.set_state(STATE_ERROR);
+                                            }
+                                        }
+                                    } else {
+                                        state.set_state(STATE_BUFFER_READY);
+                                    }
+                                    continue;
+                                }
+
+                                log::error!("correction session failed: {}", error);
+                                state.set_overlay_correction_active(false);
+                                state.clear_overlay_correction_text();
+                                state.set_overlay_text(buffered_text.clone());
                                 state.set_overlay_text_opacity(1.0);
                                 state.set_state(STATE_ERROR);
                             }
@@ -514,6 +887,7 @@ pub fn spawn_transcription_thread(
                                             state.clone(),
                                             &deepgram_config,
                                             current_sample_rate,
+                                            SessionKind::Dictation,
                                             recording_prefix.clone(),
                                         ) {
                                             Ok(session) => {
@@ -628,17 +1002,11 @@ pub fn spawn_transcription_thread(
                         }
                     }
                     Command::PasteBuffer => {
-                        let current_ui_text = state.overlay_text().to_string();
-                        if !current_ui_text.is_empty() && current_ui_text != buffered_text {
-                            buffered_text = current_ui_text;
-                        }
+                        buffered_text = state.overlay_text().to_string();
                         paste_buffered_text(&state, &mut buffered_text);
                     }
                     Command::TransformBuffer => {
-                        let current_ui_text = state.overlay_text().to_string();
-                        if !current_ui_text.is_empty() && current_ui_text != buffered_text {
-                            buffered_text = current_ui_text;
-                        }
+                        buffered_text = state.overlay_text().to_string();
                         let transformation_config =
                             config_store.current().resolve_transformation_config().ok();
                         transform_buffered_text(
@@ -654,6 +1022,8 @@ pub fn spawn_transcription_thread(
                         recording_prefix.clear();
                         state.clear_abort_request();
                         state.clear_overlay_text();
+                        state.clear_overlay_correction_text();
+                        state.set_overlay_correction_active(false);
                         state.set_overlay_text_opacity(1.0);
                         state.set_state(STATE_IDLE);
                     }
@@ -679,11 +1049,40 @@ fn resolved_deepgram_config(config: &crate::config::Config) -> Result<DeepgramCo
     })
 }
 
+fn restart_dictation_session(
+    runtime: &Runtime,
+    state: Arc<AppState>,
+    config_store: &LiveConfigStore,
+    sample_rate: u32,
+    buffered_text: &mut String,
+    recording_prefix: &mut String,
+) -> Result<ActiveSession, String> {
+    let current_config = config_store.current();
+
+    if !buffered_text.is_empty() {
+        *recording_prefix = buffered_text.clone();
+        buffered_text.clear();
+    } else {
+        recording_prefix.clear();
+    }
+
+    let deepgram_config = resolved_deepgram_config(&current_config)?;
+    start_session(
+        runtime,
+        state,
+        &deepgram_config,
+        sample_rate,
+        SessionKind::Dictation,
+        recording_prefix.clone(),
+    )
+}
+
 fn start_session(
     runtime: &Runtime,
     state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
+    session_kind: SessionKind,
     recording_prefix: String,
 ) -> Result<ActiveSession, String> {
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
@@ -726,18 +1125,24 @@ fn start_session(
     })?;
 
     log::info!(
-        "Deepgram session started (request_id={}, sample_rate={}Hz, model={}, language={})",
+        "Deepgram session started (request_id={}, sample_rate={}Hz, model={}, language={}, kind={:?})",
         transcription_stream.request_id(),
         sample_rate,
         config.model,
-        config.language
+        config.language,
+        session_kind,
     );
 
     let task = runtime.spawn(async move {
-        run_transcription_stream(&mut transcription_stream, state, recording_prefix).await
+        run_transcription_stream(&mut transcription_stream, state, session_kind, recording_prefix)
+            .await
     });
 
-    Ok(ActiveSession { audio_tx, task })
+    Ok(ActiveSession {
+        audio_tx,
+        kind: session_kind,
+        task,
+    })
 }
 
 fn finish_session(runtime: &Runtime, session: ActiveSession) -> Result<String, String> {
@@ -755,12 +1160,16 @@ fn paste_buffered_text(state: &AppState, buffered_text: &mut String) {
     if buffered_text.trim().is_empty() {
         log::warn!("ignoring paste request because no buffered text is available");
         state.clear_overlay_text();
+        state.clear_overlay_correction_text();
+        state.set_overlay_correction_active(false);
         state.set_overlay_text_opacity(1.0);
         state.set_state(STATE_IDLE);
         return;
     }
 
     state.clear_overlay_text();
+    state.clear_overlay_correction_text();
+    state.set_overlay_correction_active(false);
     state.set_overlay_text_opacity(1.0);
     state.set_state(STATE_IDLE);
 
@@ -932,9 +1341,58 @@ fn transform_buffered_text(
     buffered_text: &mut String,
     paste_after_transform: bool,
 ) {
+    let original_buffer = buffered_text.clone();
+    run_buffer_transformation(
+        runtime,
+        state,
+        transformation_config,
+        buffered_text,
+        original_buffer.as_str(),
+        original_buffer.as_str(),
+        paste_after_transform,
+    );
+}
+
+fn transform_buffered_text_with_correction(
+    runtime: &Runtime,
+    state: Arc<AppState>,
+    transformation_config: &Option<TransformationRuntimeConfig>,
+    buffered_text: &mut String,
+    correction_text: &str,
+) {
+    let original_buffer = buffered_text.clone();
+    let transform_input = build_correction_transform_input(
+        original_buffer.as_str(),
+        correction_text,
+    );
+    let correction_config = transformation_config
+        .as_ref()
+        .map(transformation_correction_runtime_config);
+    run_buffer_transformation(
+        runtime,
+        state,
+        &correction_config,
+        buffered_text,
+        original_buffer.as_str(),
+        transform_input.as_str(),
+        false,
+    );
+}
+
+fn run_buffer_transformation(
+    runtime: &Runtime,
+    state: Arc<AppState>,
+    transformation_config: &Option<TransformationRuntimeConfig>,
+    buffered_text: &mut String,
+    original_buffer: &str,
+    transform_input: &str,
+    paste_after_transform: bool,
+) {
     if buffered_text.trim().is_empty() {
         log::warn!("ignoring transformation request because no buffered text is available");
         state.clear_overlay_text();
+        state.clear_overlay_correction_text();
+        state.set_overlay_correction_active(false);
         state.set_overlay_text_opacity(1.0);
         state.set_state(STATE_IDLE);
         return;
@@ -942,23 +1400,26 @@ fn transform_buffered_text(
 
     let Some(transform_config) = transformation_config.clone() else {
         log::warn!("ignoring transformation request because transformation config is incomplete");
-        state.set_overlay_text(buffered_text.clone());
+        state.set_overlay_correction_active(false);
+        state.clear_overlay_correction_text();
+        state.set_overlay_text(original_buffer.to_owned());
         state.set_overlay_text_opacity(1.0);
         state.set_state(STATE_BUFFER_READY);
         return;
     };
 
-    let original_buffer = buffered_text.clone();
     state.clear_abort_request();
     state.restore_overlay();
-    state.set_overlay_text(original_buffer.clone());
+    state.set_overlay_correction_active(false);
+    state.clear_overlay_correction_text();
+    state.set_overlay_text(original_buffer.to_owned());
     state.set_overlay_text_opacity(0.02);
     state.set_state(STATE_TRANSFORMING);
 
     match runtime.block_on(transform_text(
         state.clone(),
         &transform_config,
-        original_buffer.as_str(),
+        transform_input,
     )) {
         Ok(transformed_text) => {
             if state.consume_abort_request() {
@@ -995,7 +1456,7 @@ fn transform_buffered_text(
             }
 
             log::error!("transformation failed: {}", error);
-            state.set_overlay_text(original_buffer.clone());
+            state.set_overlay_text(original_buffer.to_owned());
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);
         }
@@ -1005,12 +1466,13 @@ fn transform_buffered_text(
 async fn run_transcription_stream(
     stream: &mut TranscriptionStream,
     state: Arc<AppState>,
+    session_kind: SessionKind,
     mut recording_prefix: String,
 ) -> Result<String, String> {
     let mut interim_transcript = String::new();
     let mut transcript_parts: Vec<String> = Vec::new();
     let mut last_final_transcript = String::new();
-    let mut last_pushed_text = state.overlay_text().to_string();
+    let mut last_pushed_text = session_overlay_text(&state, session_kind);
 
     while let Some(message) = stream.next().await {
         match message {
@@ -1025,7 +1487,7 @@ async fn run_transcription_stream(
                     continue;
                 }
 
-                let current_ui_text = state.overlay_text().to_string();
+                let current_ui_text = session_overlay_text(&state, session_kind);
                 if current_ui_text != last_pushed_text {
                     let mut new_prefix = current_ui_text.clone();
                     if !new_prefix.is_empty() && !new_prefix.ends_with(|c: char| c.is_whitespace())
@@ -1059,7 +1521,7 @@ async fn run_transcription_stream(
                                 None,
                             );
                             last_pushed_text = new_text.clone();
-                            state.set_overlay_text(new_text);
+                            set_session_overlay_text(&state, session_kind, new_text);
                         }
                     }
                     continue;
@@ -1074,7 +1536,7 @@ async fn run_transcription_stream(
                         Some(interim_transcript.as_str()),
                     );
                     last_pushed_text = new_text.clone();
-                    state.set_overlay_text(new_text);
+                    set_session_overlay_text(&state, session_kind, new_text);
                 }
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
@@ -1096,7 +1558,7 @@ async fn run_transcription_stream(
         }
     }
 
-    let final_ui_text = state.overlay_text().to_string();
+    let final_ui_text = session_overlay_text(&state, session_kind);
     let final_transcript = if final_ui_text != last_pushed_text {
         final_ui_text
     } else {
@@ -1104,9 +1566,43 @@ async fn run_transcription_stream(
     };
 
     if !state.is_abort_requested() {
-        state.set_overlay_text(final_transcript.clone());
+        set_session_overlay_text(&state, session_kind, final_transcript.clone());
     }
     Ok(final_transcript)
+}
+
+fn transformation_correction_runtime_config(
+    config: &TransformationRuntimeConfig,
+) -> TransformationRuntimeConfig {
+    let mut config = config.clone();
+    config.system_prompt = config.correction_system_prompt.clone();
+    config
+}
+
+fn build_correction_transform_input(working_text: &str, correction_text: &str) -> String {
+    format!(
+        "CURRENT ANNOTATION:\n{}\n\nCORRECTION REQUEST:\n{}",
+        working_text.trim(),
+        correction_text.trim()
+    )
+}
+
+fn session_overlay_text(state: &AppState, session_kind: SessionKind) -> String {
+    match session_kind {
+        SessionKind::Dictation => state.overlay_text().to_string(),
+        SessionKind::Correction => state.overlay_correction_text().to_string(),
+    }
+}
+
+fn set_session_overlay_text(
+    state: &AppState,
+    session_kind: SessionKind,
+    text: impl Into<String>,
+) {
+    match session_kind {
+        SessionKind::Dictation => state.set_overlay_text(text),
+        SessionKind::Correction => state.set_overlay_correction_text(text),
+    }
 }
 
 fn extract_transcript(channel: &Channel) -> String {
@@ -1272,7 +1768,7 @@ fn format_deepgram_error(error: DeepgramError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{append_text_segment, build_overlay_text};
+    use super::{append_text_segment, build_correction_transform_input, build_overlay_text};
 
     #[test]
     fn append_text_segment_joins_non_empty_segments_with_single_spaces() {
@@ -1293,5 +1789,16 @@ mod tests {
         );
 
         assert_eq!(overlay_text, "hello copied-url spoken right now ");
+    }
+
+    #[test]
+    fn build_correction_transform_input_wraps_annotation_and_correction_request() {
+        let prompt_input =
+            build_correction_transform_input("  draft note  ", "  tighten the ending  ");
+
+        assert_eq!(
+            prompt_input,
+            "CURRENT ANNOTATION:\ndraft note\n\nCORRECTION REQUEST:\ntighten the ending"
+        );
     }
 }

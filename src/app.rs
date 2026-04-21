@@ -23,7 +23,7 @@ use crate::config::{self, Config};
 use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
 };
-use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding};
+use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding, parse_key};
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
     HotkeyCaptureTarget,
@@ -406,6 +406,11 @@ define_class!(
         #[unsafe(method(captureTransformHotkey:))]
         fn capture_transform_hotkey(&self, _sender: Option<&AnyObject>) {
             self.begin_hotkey_capture(HotkeyCaptureTarget::Transform);
+        }
+
+        #[unsafe(method(captureCorrectionKey:))]
+        fn capture_correction_key(&self, _sender: Option<&AnyObject>) {
+            self.begin_hotkey_capture(HotkeyCaptureTarget::Correction);
         }
 
         #[unsafe(method(transformationProviderChanged:))]
@@ -1055,14 +1060,19 @@ impl AppDelegate {
                     return;
                 };
 
-                let other_target = match target {
-                    HotkeyCaptureTarget::Record => HotkeyCaptureTarget::Transform,
-                    HotkeyCaptureTarget::Transform => HotkeyCaptureTarget::Record,
-                };
-                let other_hotkey = settings_window.hotkey_value(other_target);
-                if parse_hotkey_binding(other_hotkey.as_str()).ok() == Some(binding) {
+                let conflicting_target = [
+                    HotkeyCaptureTarget::Record,
+                    HotkeyCaptureTarget::Correction,
+                    HotkeyCaptureTarget::Transform,
+                ]
+                .into_iter()
+                .filter(|candidate| *candidate != target)
+                .find(|candidate| settings_window.hotkey_value(*candidate) == captured_name);
+                if conflicting_target.is_some() {
                     settings_window.cancel_hotkey_capture();
-                    settings_window.set_status("Record and transform hotkeys must be different.");
+                    settings_window.set_status(
+                        "Record, correction, and transform triggers must be different.",
+                    );
                     return;
                 }
 
@@ -1082,6 +1092,8 @@ impl AppDelegate {
         deepgram_connection_status: DeepgramConnectionStatus,
         overlay_dismissed: bool,
         overlay_text: &str,
+        overlay_correction_text: &str,
+        overlay_correction_active: bool,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
@@ -1107,6 +1119,8 @@ impl AppDelegate {
             deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
+            overlay_correction_text,
+            overlay_correction_active,
             overlay_text_opacity,
             overlay_footer_text,
             mic_meter,
@@ -1137,12 +1151,16 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
         .resolve_transformation_config()
         .ok()
         .map(|_| config.transformation.hotkey.as_str());
+    let correction_key_label = correction_key_hint_label(config.ui.correction_key.as_str());
     let shortcut_hint = Some(match transformation_hotkey {
         Some(hotkey) => format!(
-            "<{}> transform <{}> paste <Cmd+V> insert <ESC> cancel",
-            hotkey, config.ui.hotkey
+            "<Hold {}> correction <{}> transform <{}> paste <Cmd+V> insert <ESC> cancel",
+            correction_key_label, hotkey, config.ui.hotkey
         ),
-        None => format!("<{}> paste <Cmd+V> insert <ESC> cancel", config.ui.hotkey),
+        None => format!(
+            "<Hold {}> correction <{}> paste <Cmd+V> insert <ESC> cancel",
+            correction_key_label, config.ui.hotkey
+        ),
     });
 
     OverlayStyle {
@@ -1157,6 +1175,11 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
 fn validate_settings_config(config: &Config) -> Result<(), String> {
     let record_hotkey = parse_hotkey_binding(config.ui.hotkey.as_str())
         .map_err(|error| format!("record hotkey is invalid: {}", error))?;
+    let correction_key = parse_correction_key(config.ui.correction_key.as_str())?;
+
+    if hotkey_uses_key(record_hotkey, correction_key) {
+        return Err("record hotkey and correction key must be different".to_owned());
+    }
 
     if !config.ui.font_size.is_finite() || config.ui.font_size <= 0.0 {
         return Err("Font size must be a positive number".to_owned());
@@ -1183,11 +1206,50 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
             if record_hotkey == transform_hotkey {
                 return Err("record and transform hotkeys must be different".to_owned());
             }
+            if hotkey_uses_key(transform_hotkey, correction_key) {
+                return Err("transform hotkey and correction key must be different".to_owned());
+            }
             config.resolve_transformation_config()?;
         }
     }
 
     Ok(())
+}
+
+fn parse_correction_key(raw: &str) -> Result<rdev::Key, String> {
+    parse_key(raw.trim()).ok_or_else(|| {
+        "correction key must be a single supported key such as LeftMeta, RightMeta, LeftAlt, or F7"
+            .to_owned()
+    })
+}
+
+fn correction_key_hint_label(raw: &str) -> String {
+    match raw.trim() {
+        value if value.eq_ignore_ascii_case("LeftMeta")
+            || value.eq_ignore_ascii_case("RightMeta") => "Cmd".to_owned(),
+        value if value.eq_ignore_ascii_case("LeftAlt")
+            || value.eq_ignore_ascii_case("RightAlt") => "Alt".to_owned(),
+        value if value.eq_ignore_ascii_case("LeftControl")
+            || value.eq_ignore_ascii_case("RightControl") => "Ctrl".to_owned(),
+        value if value.eq_ignore_ascii_case("LeftShift")
+            || value.eq_ignore_ascii_case("RightShift") => "Shift".to_owned(),
+        value if value.eq_ignore_ascii_case("Escape") => "Esc".to_owned(),
+        value => value.to_owned(),
+    }
+}
+
+fn hotkey_uses_key(binding: crate::hotkey_binding::HotkeyBinding, key: rdev::Key) -> bool {
+    if binding.key == key {
+        return true;
+    }
+
+    match key {
+        rdev::Key::ShiftLeft | rdev::Key::ShiftRight => binding.modifiers.shift,
+        rdev::Key::ControlLeft | rdev::Key::ControlRight => binding.modifiers.control,
+        rdev::Key::Alt | rdev::Key::AltGr => binding.modifiers.alt,
+        rdev::Key::MetaLeft | rdev::Key::MetaRight => binding.modifiers.meta,
+        _ => false,
+    }
 }
 
 fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retained<NSMenu> {
@@ -1344,6 +1406,8 @@ fn update_overlay_window(
     deepgram_connection_status: DeepgramConnectionStatus,
     overlay_dismissed: bool,
     overlay_text: &str,
+    overlay_correction_text: &str,
+    overlay_correction_active: bool,
     overlay_text_opacity: f64,
     overlay_footer_text: &str,
     mic_meter: MicMeterSnapshot,
@@ -1355,6 +1419,8 @@ fn update_overlay_window(
             deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
+            overlay_correction_text,
+            overlay_correction_active,
             overlay_text_opacity,
             overlay_footer_text,
             mic_meter,
@@ -1377,6 +1443,8 @@ struct UiUpdate {
     mic_meter: MicMeterSnapshot,
     overlay_dismissed: bool,
     overlay_footer_text: Arc<str>,
+    overlay_correction_active: bool,
+    overlay_correction_text: Arc<str>,
     overlay_text: Arc<str>,
     overlay_text_opacity: f64,
     state: u8,
@@ -1392,6 +1460,8 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         update.deepgram_connection_status,
         update.overlay_dismissed,
         &update.overlay_text,
+        &update.overlay_correction_text,
+        update.overlay_correction_active,
         update.overlay_text_opacity,
         &update.overlay_footer_text,
         update.mic_meter,
@@ -1421,7 +1491,10 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{billing_menu_text, config_file_is_missing, overlay_style_from_config};
+    use super::{
+        billing_menu_text, config_file_is_missing, overlay_style_from_config,
+        validate_settings_config,
+    };
     use crate::config::Config;
 
     #[test]
@@ -1448,7 +1521,7 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Cmd> correction <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
@@ -1461,7 +1534,31 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Cmd> correction <F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn overlay_style_uses_configured_correction_key_label() {
+        let mut config = Config::default();
+        config.ui.correction_key = "RightAlt".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<Hold Alt> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn validate_settings_rejects_correction_key_that_overlaps_record_hotkey() {
+        let mut config = Config::default();
+        config.ui.hotkey = "Cmd+F5".to_owned();
+
+        assert_eq!(
+            validate_settings_config(&config).unwrap_err(),
+            "record hotkey and correction key must be different"
         );
     }
 
@@ -1492,6 +1589,8 @@ pub fn setup_status_polling(
             let mut last_mic_meter = MicMeterSnapshot::default();
             let mut last_overlay_dismissed = false;
             let mut last_overlay_footer_text: Arc<str> = Arc::from("");
+            let mut last_overlay_correction_active = false;
+            let mut last_overlay_correction_text: Arc<str> = Arc::from("");
             let mut last_overlay_text: Arc<str> = Arc::from("");
             let mut last_overlay_text_opacity = 1.0;
             let mut last_state = STATE_IDLE;
@@ -1505,12 +1604,19 @@ pub fn setup_status_polling(
                 let current_mic_meter = state.mic_meter_snapshot();
                 let current_overlay_dismissed = state.is_overlay_dismissed();
                 let current_overlay_footer_text = state.overlay_footer_text();
+                let current_overlay_correction_active = state.is_overlay_correction_active();
+                let current_overlay_correction_text = state.overlay_correction_text();
                 let current_overlay_text = state.overlay_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
                 let ui_changed = current_state != last_state
                     || current_deepgram_connection_status != last_deepgram_connection_status
                     || current_overlay_dismissed != last_overlay_dismissed
                     || !Arc::ptr_eq(&current_overlay_footer_text, &last_overlay_footer_text)
+                    || current_overlay_correction_active != last_overlay_correction_active
+                    || !Arc::ptr_eq(
+                        &current_overlay_correction_text,
+                        &last_overlay_correction_text,
+                    )
                     || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
                     || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
                         > f64::EPSILON;
@@ -1547,6 +1653,8 @@ pub fn setup_status_polling(
                 last_mic_meter = current_mic_meter;
                 last_overlay_dismissed = current_overlay_dismissed;
                 last_overlay_footer_text = Arc::clone(&current_overlay_footer_text);
+                last_overlay_correction_active = current_overlay_correction_active;
+                last_overlay_correction_text = Arc::clone(&current_overlay_correction_text);
                 last_overlay_text = Arc::clone(&current_overlay_text);
                 last_overlay_text_opacity = current_overlay_text_opacity;
 
@@ -1572,6 +1680,8 @@ pub fn setup_status_polling(
                     mic_meter: current_mic_meter,
                     overlay_dismissed: current_overlay_dismissed,
                     overlay_footer_text: current_overlay_footer_text,
+                    overlay_correction_active: current_overlay_correction_active,
+                    overlay_correction_text: current_overlay_correction_text,
                     overlay_text: current_overlay_text,
                     overlay_text_opacity: current_overlay_text_opacity,
                     state: current_state,
