@@ -213,9 +213,16 @@ fn handle_key_press(
             return false;
         }
 
+        let has_annotation_text = !state.overlay_text().trim().is_empty();
+
         match current_state {
             STATE_RECORDING if state.is_overlay_correction_active() => {
                 return true;
+            }
+            STATE_RECORDING | STATE_BUFFER_READY if !has_annotation_text => {
+                correction_key_is_down.set(false);
+                log::info!("ignoring correction because no narrated annotation is available");
+                return false;
             }
             STATE_RECORDING | STATE_BUFFER_READY => match controller.start_correction_session() {
                 Ok(()) => {
