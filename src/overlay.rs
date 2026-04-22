@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
-use objc2::runtime::NSObject;
+use objc2::runtime::{AnyObject, NSObject};
 use objc2::runtime::ProtocolObject;
 use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
@@ -20,7 +20,10 @@ use crate::state::{
 };
 use crate::ui_meter::{self, UiMeterView};
 
-const OVERLAY_HEIGHT: f64 = 180.0;
+const CORRECTION_OVERLAY_MIN_HEIGHT: f64 = 92.0;
+const CORRECTION_OVERLAY_MAX_HEIGHT_RATIO: f64 = 0.26;
+const MAIN_OVERLAY_MAX_HEIGHT_RATIO: f64 = 0.48;
+const MAIN_OVERLAY_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
@@ -32,13 +35,15 @@ const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
 const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
 const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
+const METER_TEXT_GAP: f64 = 4.0;
 const METER_SECTION_BOTTOM_PADDING: f64 = 5.0;
 const METER_SECTION_HEIGHT: f64 = 30.8;
 const OVERLAY_CORNER_RADIUS: f64 = 9.0;
+const PANEL_STACK_GAP: f64 = 10.0;
 const SEPARATOR_HEIGHT: f64 = 1.0;
-const SPLIT_DIVIDER_HEIGHT: f64 = 1.0;
 const TEXT_HORIZONTAL_PADDING: f64 = 18.0;
 const TEXT_VERTICAL_PADDING: f64 = 16.0;
+const TEXT_LAYOUT_MEASUREMENT_HEIGHT: f64 = 100_000.0;
 
 #[derive(Clone, Debug)]
 pub struct OverlayStyle {
@@ -66,8 +71,8 @@ define_class!(
 #[derive(Debug)]
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
+    correction_panel: Retained<NSPanel>,
     state: Arc<AppState>,
-    correction_divider_view: Retained<NSView>,
     correction_scroll_view: Retained<NSScrollView>,
     correction_text_view: Retained<NSTextView>,
     separator_view: Retained<NSView>,
@@ -84,90 +89,48 @@ pub struct OverlayWindow {
 
 impl OverlayWindow {
     pub fn new(mtm: MainThreadMarker, style: &OverlayStyle, state: Arc<AppState>) -> Self {
-        let panel_rect = NSRect::new(
+        let main_panel_rect = NSRect::new(
             NSPoint::new(0.0, 0.0),
-            NSSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+            NSSize::new(OVERLAY_WIDTH, MAIN_OVERLAY_MIN_HEIGHT),
         );
-        let panel: Retained<OverlayPanel> = unsafe {
-            msg_send![
-                OverlayPanel::alloc(mtm),
-                initWithContentRect: panel_rect,
-                styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-                backing: NSBackingStoreType::Buffered,
-                defer: false,
-                screen: NSScreen::mainScreen(mtm).as_deref()
-            ]
-        };
-        let panel: Retained<NSPanel> = Retained::into_super(panel);
-
-        panel.setFloatingPanel(true);
-        panel.setBecomesKeyOnlyIfNeeded(false);
-        panel.setWorksWhenModal(true);
-        panel.setLevel(NSFloatingWindowLevel);
-        panel.setOpaque(false);
-        panel.setHasShadow(true);
-        panel.setIgnoresMouseEvents(false);
-        panel.setHidesOnDeactivate(false);
-        panel.setCollectionBehavior(
-            NSWindowCollectionBehavior::MoveToActiveSpace
-                | NSWindowCollectionBehavior::Transient
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+        let (panel, root_view) = make_overlay_panel(mtm, main_panel_rect, false);
+        let (correction_panel, correction_root_view) = make_overlay_panel(
+            mtm,
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(OVERLAY_WIDTH, CORRECTION_OVERLAY_MIN_HEIGHT),
+            ),
+            true,
         );
-        panel.setBackgroundColor(Some(&NSColor::clearColor()));
-
-        let root_view = NSView::initWithFrame(NSView::alloc(mtm), panel_rect);
-        root_view.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
-        root_view.setWantsLayer(true);
-        if let Some(layer) = root_view.layer() {
-            let background_color =
-                NSColor::colorWithSRGBRed_green_blue_alpha(0.08, 0.08, 0.09, 0.92);
-            let background_cg_color = background_color.CGColor();
-            layer.setBackgroundColor(Some(&background_cg_color));
-            layer.setCornerRadius(OVERLAY_CORNER_RADIUS);
-            layer.setMasksToBounds(true);
-        }
 
         let working_scroll_view =
-            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), text_view_frame(true, false));
+            NSScrollView::initWithFrame(
+                NSScrollView::alloc(mtm),
+                main_text_view_frame(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
+            );
         configure_scroll_view(&working_scroll_view);
+        let working_text_view =
+            make_text_view(
+                mtm,
+                style,
+                main_text_area_height(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
+                true,
+            );
 
-        let working_text_view = make_text_view(mtm, style, text_area_height(true, false), true);
-
-        let correction_scroll_view =
-            NSScrollView::initWithFrame(NSScrollView::alloc(mtm), split_lower_text_view_frame(true, false));
+        let correction_scroll_view = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            correction_text_view_frame(CORRECTION_OVERLAY_MIN_HEIGHT),
+        );
         configure_scroll_view(&correction_scroll_view);
-        correction_scroll_view.setHidden(true);
-
         let correction_text_view =
-            make_text_view(mtm, style, split_section_height(true, false), false);
+            make_text_view(mtm, style, CORRECTION_OVERLAY_MIN_HEIGHT, false);
         correction_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
             0.82, 0.86, 0.94, 1.0,
         )));
 
-        let correction_divider_view = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            split_divider_frame(true, false),
-        );
-        correction_divider_view.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
-        );
-        correction_divider_view.setWantsLayer(true);
-        correction_divider_view.setHidden(true);
-        if let Some(layer) = correction_divider_view.layer() {
-            let divider_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.08);
-            let divider_cg_color = divider_color.CGColor();
-            layer.setBackgroundColor(Some(&divider_cg_color));
-        }
-
         let separator_view = NSView::initWithFrame(
             NSView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(0.0, FOOTER_HEIGHT),
-                NSSize::new(OVERLAY_WIDTH, SEPARATOR_HEIGHT),
-            ),
+            separator_frame(MAIN_OVERLAY_MIN_HEIGHT),
         );
         separator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         separator_view.setWantsLayer(true);
@@ -256,20 +219,19 @@ impl OverlayWindow {
         working_scroll_view.setDocumentView(Some(&working_text_view));
         correction_scroll_view.setDocumentView(Some(&correction_text_view));
         root_view.addSubview(&working_scroll_view);
-        root_view.addSubview(&correction_divider_view);
-        root_view.addSubview(&correction_scroll_view);
         root_view.addSubview(ui_meter_view.view());
         root_view.addSubview(&separator_view);
         root_view.addSubview(&footer_status_indicator_view);
         root_view.addSubview(&footer_text_field);
         root_view.addSubview(&footer_hint_text_field);
-        panel.setContentView(Some(&root_view));
+        correction_root_view.addSubview(&correction_scroll_view);
         panel.orderOut(None);
+        correction_panel.orderOut(None);
 
         let overlay_window = Self {
             panel,
+            correction_panel,
             state,
-            correction_divider_view,
             correction_scroll_view,
             correction_text_view,
             separator_view,
@@ -318,18 +280,20 @@ impl OverlayWindow {
         let footer_text_is_visible = !overlay_footer_text.trim().is_empty();
         let footer_hint_is_visible = self.footer_hint.borrow().is_some();
         let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
-        let split_is_visible = overlay_correction_active;
+        let correction_is_visible = overlay_correction_active;
         let meter_is_visible =
             state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None;
-        self.update_layout(
+
+        self.set_working_text(display_text);
+        self.set_correction_text(overlay_correction_text);
+        self.layout_panels(
+            mtm,
+            correction_is_visible,
             footer_is_visible,
             footer_text_is_visible,
             footer_hint_is_visible,
-            split_is_visible,
             meter_is_visible,
         );
-        self.set_working_text(display_text);
-        self.set_correction_text(overlay_correction_text);
         self.set_working_text_opacity(overlay_text_opacity);
         self.set_footer_status_indicator(deepgram_connection_status);
         self.set_footer_text(overlay_footer_text);
@@ -341,11 +305,15 @@ impl OverlayWindow {
         }
 
         if !self.is_visible.get() {
-            self.position_on_mouse_screen(mtm);
+            if correction_is_visible {
+                self.correction_panel.orderFrontRegardless();
+            }
             self.panel.orderFrontRegardless();
             self.panel.makeKeyWindow();
             self.panel.makeFirstResponder(Some(&self.working_text_view));
             self.is_visible.set(true);
+        } else if correction_is_visible {
+            self.correction_panel.orderFrontRegardless();
         }
 
         self.state.set_overlay_window_visible(true);
@@ -354,6 +322,7 @@ impl OverlayWindow {
     pub fn hide(&self) {
         if self.is_visible.replace(false) {
             self.panel.orderOut(None);
+            self.correction_panel.orderOut(None);
         }
         self.state.set_overlay_window_visible(false);
         self.ui_meter_view.clear(meter_cluster_width());
@@ -397,27 +366,10 @@ impl OverlayWindow {
         self.footer_status_indicator_view
             .setFrame(footer_status_indicator_frame());
 
-        let footer_text_is_visible = !self
-            .footer_text_field
-            .stringValue()
-            .to_string()
-            .trim()
-            .is_empty();
-        let footer_hint_is_visible = style.shortcut_hint.is_some();
-        let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
-        let split_is_visible = self.state.is_overlay_correction_active();
-        let meter_is_visible =
-            self.is_visible.get() && self.ui_meter_view.style() != UiMeterStyle::None;
-        self.update_layout(
-            footer_is_visible,
-            footer_text_is_visible,
-            footer_hint_is_visible,
-            split_is_visible,
-            meter_is_visible,
-        );
-        if !meter_is_visible {
+        if !self.is_visible.get() {
             self.ui_meter_view.clear(meter_cluster_width());
         }
+
         NSView::setNeedsDisplay(&self.working_text_view, true);
         NSView::setNeedsDisplay(&self.correction_text_view, true);
         NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
@@ -425,24 +377,108 @@ impl OverlayWindow {
         NSView::setNeedsDisplay(&self.footer_hint_text_field, true);
     }
 
-    fn position_on_mouse_screen(&self, mtm: MainThreadMarker) {
-        let mouse_location = NSEvent::mouseLocation();
+    fn layout_panels(
+        &self,
+        mtm: MainThreadMarker,
+        correction_is_visible: bool,
+        footer_is_visible: bool,
+        footer_text_is_visible: bool,
+        footer_hint_is_visible: bool,
+        meter_is_visible: bool,
+    ) {
+        let visible_frame = self.selected_visible_frame(mtm);
+        let meter_style = self.ui_meter_view.style();
+        let main_content_height = measured_text_height(&self.working_text_view);
+        let correction_content_height = correction_is_visible
+            .then(|| measured_text_height(&self.correction_text_view))
+            .unwrap_or(CORRECTION_OVERLAY_MIN_HEIGHT);
+        let main_height = main_panel_height(
+            main_content_height,
+            footer_is_visible,
+            meter_is_visible,
+            meter_style,
+            visible_frame.size.height,
+        );
+        let correction_height = correction_is_visible.then(|| {
+            correction_panel_height(
+                correction_content_height,
+                visible_frame.size.height,
+            )
+        });
+
+        let current_main_origin_y = self.is_visible.get().then(|| self.panel.frame().origin.y);
+        let (main_frame, correction_frame) = stacked_panel_frames(
+            visible_frame,
+            main_height,
+            correction_height,
+            current_main_origin_y,
+        );
+
+        self.panel.setFrame_display(main_frame, true);
+        self.separator_view.setHidden(!footer_is_visible);
+        self.footer_status_indicator_view
+            .setHidden(!footer_text_is_visible);
+        self.footer_text_field.setHidden(!footer_text_is_visible);
+        self.footer_hint_text_field
+            .setHidden(!footer_hint_is_visible);
+        self.working_scroll_view.setFrame(main_text_view_frame(
+            footer_is_visible,
+            meter_is_visible,
+            meter_style,
+            main_height,
+        ));
+        self.resize_text_view(
+            &self.working_scroll_view,
+            &self.working_text_view,
+            main_text_area_height(footer_is_visible, meter_is_visible, meter_style, main_height),
+        );
+        self.separator_view.setFrame(separator_frame(main_height));
+        self.ui_meter_view.set_frame(meter_container_frame(
+            footer_is_visible,
+            self.ui_meter_view.style(),
+        ));
+        self.ui_meter_view.set_hidden(!meter_is_visible);
+
+        match correction_frame {
+            Some(frame) => {
+                self.correction_panel.setFrame_display(frame, true);
+                self.correction_scroll_view
+                    .setFrame(correction_text_view_frame(frame.size.height));
+                self.resize_text_view(
+                    &self.correction_scroll_view,
+                    &self.correction_text_view,
+                    frame.size.height,
+                );
+                self.correction_panel.orderFrontRegardless();
+            }
+            None => {
+                self.correction_panel.orderOut(None);
+            }
+        }
+    }
+
+    fn selected_visible_frame(&self, mtm: MainThreadMarker) -> NSRect {
         let screens = NSScreen::screens(mtm);
-        let selected_frame = find_screen_visible_frame_for_point(&screens, mouse_location)
+        if self.is_visible.get() {
+            let current_frame = self.panel.frame();
+            let current_center = NSPoint::new(
+                current_frame.origin.x + (current_frame.size.width / 2.0),
+                current_frame.origin.y + (current_frame.size.height / 2.0),
+            );
+            if let Some(frame) = find_screen_visible_frame_for_point(&screens, current_center) {
+                return frame;
+            }
+        }
+
+        let mouse_location = NSEvent::mouseLocation();
+        find_screen_visible_frame_for_point(&screens, mouse_location)
             .or_else(|| NSScreen::mainScreen(mtm).map(|screen| screen.visibleFrame()))
             .unwrap_or_else(|| {
                 NSRect::new(
                     NSPoint::new(0.0, 0.0),
-                    NSSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
+                    NSSize::new(OVERLAY_WIDTH, MAIN_OVERLAY_MIN_HEIGHT),
                 )
-            });
-
-        let frame_origin = NSPoint::new(
-            selected_frame.origin.x + (selected_frame.size.width - OVERLAY_WIDTH) / 2.0,
-            selected_frame.origin.y + (selected_frame.size.height - OVERLAY_HEIGHT) / 2.0,
-        );
-        let centered_frame = NSRect::new(frame_origin, NSSize::new(OVERLAY_WIDTH, OVERLAY_HEIGHT));
-        self.panel.setFrame_display(centered_frame, true);
+            })
     }
 
     fn set_working_text(&self, text: &str) {
@@ -468,6 +504,20 @@ impl OverlayWindow {
             self.correction_text_view
                 .scrollRangeToVisible(NSRange::new(length, 0));
         }
+    }
+
+    fn resize_text_view(
+        &self,
+        scroll_view: &NSScrollView,
+        text_view: &NSTextView,
+        visible_height: f64,
+    ) {
+        let document_height = measured_text_height(text_view).max(visible_height);
+        scroll_view.setHasVerticalScroller(document_height > (visible_height + 1.0));
+        text_view.setFrame(NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(OVERLAY_WIDTH, document_height),
+        ));
     }
 
     fn set_working_text_opacity(&self, target_text_opacity: f64) {
@@ -501,40 +551,55 @@ impl OverlayWindow {
 
         NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
     }
+}
 
-    fn update_layout(
-        &self,
-        footer_is_visible: bool,
-        footer_text_is_visible: bool,
-        footer_hint_is_visible: bool,
-        split_is_visible: bool,
-        meter_is_visible: bool,
-    ) {
-        self.separator_view.setHidden(!footer_is_visible);
-        self.footer_status_indicator_view
-            .setHidden(!footer_text_is_visible);
-        self.footer_text_field.setHidden(!footer_text_is_visible);
-        self.footer_hint_text_field
-            .setHidden(!footer_hint_is_visible);
-        self.working_scroll_view.setFrame(if split_is_visible {
-            split_upper_text_view_frame(footer_is_visible, meter_is_visible)
-        } else {
-            text_view_frame(footer_is_visible, meter_is_visible)
-        });
-        self.correction_scroll_view.setFrame(split_lower_text_view_frame(
-            footer_is_visible,
-            meter_is_visible,
-        ));
-        self.correction_divider_view
-            .setFrame(split_divider_frame(footer_is_visible, meter_is_visible));
-        self.correction_scroll_view.setHidden(!split_is_visible);
-        self.correction_divider_view.setHidden(!split_is_visible);
-        self.ui_meter_view.set_frame(meter_container_frame(
-            footer_is_visible,
-            self.ui_meter_view.style(),
-        ));
-        self.ui_meter_view.set_hidden(!meter_is_visible);
+fn make_overlay_panel(
+    mtm: MainThreadMarker,
+    panel_rect: NSRect,
+    ignores_mouse_events: bool,
+) -> (Retained<NSPanel>, Retained<NSView>) {
+    let panel: Retained<OverlayPanel> = unsafe {
+        msg_send![
+            OverlayPanel::alloc(mtm),
+            initWithContentRect: panel_rect,
+            styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+            backing: NSBackingStoreType::Buffered,
+            defer: false,
+            screen: NSScreen::mainScreen(mtm).as_deref()
+        ]
+    };
+    let panel: Retained<NSPanel> = Retained::into_super(panel);
+
+    panel.setFloatingPanel(true);
+    panel.setBecomesKeyOnlyIfNeeded(false);
+    panel.setWorksWhenModal(true);
+    panel.setLevel(NSFloatingWindowLevel);
+    panel.setOpaque(false);
+    panel.setHasShadow(true);
+    panel.setIgnoresMouseEvents(ignores_mouse_events);
+    panel.setHidesOnDeactivate(false);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::MoveToActiveSpace
+            | NSWindowCollectionBehavior::Transient
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+
+    let root_view = NSView::initWithFrame(NSView::alloc(mtm), panel_rect);
+    root_view.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    root_view.setWantsLayer(true);
+    if let Some(layer) = root_view.layer() {
+        let background_color = NSColor::colorWithSRGBRed_green_blue_alpha(0.08, 0.08, 0.09, 0.92);
+        let background_cg_color = background_color.CGColor();
+        layer.setBackgroundColor(Some(&background_cg_color));
+        layer.setCornerRadius(OVERLAY_CORNER_RADIUS);
+        layer.setMasksToBounds(true);
     }
+    panel.setContentView(Some(&root_view));
+
+    (panel, root_view)
 }
 
 fn configure_scroll_view(scroll_view: &NSScrollView) {
@@ -542,8 +607,11 @@ fn configure_scroll_view(scroll_view: &NSScrollView) {
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
     scroll_view.setDrawsBackground(false);
-    scroll_view.setHasVerticalScroller(true);
+    scroll_view.setHasVerticalScroller(false);
     scroll_view.setHasHorizontalScroller(false);
+    unsafe {
+        let _: () = msg_send![scroll_view, setAutohidesScrollers: true];
+    }
 }
 
 fn make_text_view(
@@ -610,6 +678,96 @@ fn default_overlay_text(_state: u8) -> &'static str {
     ""
 }
 
+fn measured_text_height(text_view: &NSTextView) -> f64 {
+    let Some(text_container): Option<Retained<AnyObject>> = (unsafe { msg_send![text_view, textContainer] }) else {
+        return TEXT_VERTICAL_PADDING * 2.0;
+    };
+    let Some(layout_manager): Option<Retained<AnyObject>> = (unsafe { msg_send![text_view, layoutManager] }) else {
+        return TEXT_VERTICAL_PADDING * 2.0;
+    };
+
+    let line_fragment_padding: f64 = unsafe { msg_send![&*text_container, lineFragmentPadding] };
+    let container_width = (usable_text_width() - (line_fragment_padding * 2.0)).max(1.0);
+    unsafe {
+        let _: () = msg_send![&*text_container, setContainerSize: NSSize::new(container_width, TEXT_LAYOUT_MEASUREMENT_HEIGHT)];
+        let _: NSRange = msg_send![&*layout_manager, glyphRangeForTextContainer: &*text_container];
+        let used_rect: NSRect = msg_send![&*layout_manager, usedRectForTextContainer: &*text_container];
+        (TEXT_VERTICAL_PADDING * 2.0) + used_rect.size.height.ceil().max(1.0)
+    }
+}
+
+fn main_panel_height(
+    text_height: f64,
+    footer_is_visible: bool,
+    meter_is_visible: bool,
+    meter_style: UiMeterStyle,
+    screen_height: f64,
+) -> f64 {
+    let reserved_height = bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
+    let min_text_area_height = (MAIN_OVERLAY_MIN_HEIGHT - reserved_height).max(0.0);
+    let desired_text_area_height = text_height.max(min_text_area_height);
+    let max_height = (screen_height * MAIN_OVERLAY_MAX_HEIGHT_RATIO).max(MAIN_OVERLAY_MIN_HEIGHT);
+
+    (reserved_height + desired_text_area_height)
+        .max(MAIN_OVERLAY_MIN_HEIGHT)
+        .min(max_height)
+}
+
+fn correction_panel_height(text_height: f64, screen_height: f64) -> f64 {
+    let max_height =
+        (screen_height * CORRECTION_OVERLAY_MAX_HEIGHT_RATIO).max(CORRECTION_OVERLAY_MIN_HEIGHT);
+
+    text_height
+        .max(CORRECTION_OVERLAY_MIN_HEIGHT)
+        .min(max_height)
+}
+
+fn stacked_panel_frames(
+    visible_frame: NSRect,
+    main_height: f64,
+    correction_height: Option<f64>,
+    current_main_origin_y: Option<f64>,
+) -> (NSRect, Option<NSRect>) {
+    let visible_max_y = visible_frame.origin.y + visible_frame.size.height;
+    let centered_origin_x = visible_frame.origin.x + ((visible_frame.size.width - OVERLAY_WIDTH) / 2.0);
+    let stacked_height = main_height
+        + correction_height
+            .map(|height| height + PANEL_STACK_GAP)
+            .unwrap_or(0.0);
+
+    let mut main_origin_y = current_main_origin_y.unwrap_or_else(|| {
+        visible_frame.origin.y + ((visible_frame.size.height - stacked_height) / 2.0)
+    });
+    main_origin_y = main_origin_y.max(visible_frame.origin.y);
+    main_origin_y = main_origin_y.min(visible_max_y - main_height);
+
+    let mut correction_origin_y = correction_height.map(|_| main_origin_y + main_height + PANEL_STACK_GAP);
+    if let (Some(correction_height), Some(current_correction_origin_y)) =
+        (correction_height, correction_origin_y.as_mut())
+    {
+        let overflow = (*current_correction_origin_y + correction_height) - visible_max_y;
+        if overflow > 0.0 {
+            let available_shift = main_origin_y - visible_frame.origin.y;
+            let shift = overflow.min(available_shift);
+            main_origin_y -= shift;
+            *current_correction_origin_y -= shift;
+        }
+    }
+
+    let main_frame = NSRect::new(
+        NSPoint::new(centered_origin_x, main_origin_y),
+        NSSize::new(OVERLAY_WIDTH, main_height),
+    );
+    let correction_frame = correction_height.zip(correction_origin_y).map(|(height, origin_y)| {
+        NSRect::new(
+            NSPoint::new(centered_origin_x, origin_y),
+            NSSize::new(OVERLAY_WIDTH, height),
+        )
+    });
+
+    (main_frame, correction_frame)
+}
+
 fn meter_cluster_width() -> f64 {
     (usable_text_width() * METER_CLUSTER_WIDTH_FACTOR)
         .clamp(METER_CLUSTER_MIN_WIDTH, METER_CLUSTER_MAX_WIDTH)
@@ -623,14 +781,18 @@ fn footer_total_height() -> f64 {
     FOOTER_HEIGHT + SEPARATOR_HEIGHT
 }
 
-fn bottom_reserved_height(footer_is_visible: bool, meter_is_visible: bool) -> f64 {
+fn bottom_reserved_height(
+    footer_is_visible: bool,
+    meter_is_visible: bool,
+    meter_style: UiMeterStyle,
+) -> f64 {
     let footer_height = if footer_is_visible {
         footer_total_height()
     } else {
         0.0
     };
     let meter_height = if meter_is_visible {
-        METER_SECTION_HEIGHT
+        meter_reserved_height(meter_style)
     } else {
         0.0
     };
@@ -638,51 +800,51 @@ fn bottom_reserved_height(footer_is_visible: bool, meter_is_visible: bool) -> f6
     footer_height + meter_height
 }
 
-fn text_area_height(footer_is_visible: bool, meter_is_visible: bool) -> f64 {
-    OVERLAY_HEIGHT - bottom_reserved_height(footer_is_visible, meter_is_visible)
+fn main_text_area_height(
+    footer_is_visible: bool,
+    meter_is_visible: bool,
+    meter_style: UiMeterStyle,
+    panel_height: f64,
+) -> f64 {
+    panel_height - bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style)
 }
 
-fn text_view_frame(footer_is_visible: bool, meter_is_visible: bool) -> NSRect {
-    let origin_y = bottom_reserved_height(footer_is_visible, meter_is_visible);
+fn main_text_view_frame(
+    footer_is_visible: bool,
+    meter_is_visible: bool,
+    meter_style: UiMeterStyle,
+    panel_height: f64,
+) -> NSRect {
+    let origin_y = bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
 
     NSRect::new(
         NSPoint::new(0.0, origin_y),
         NSSize::new(
             OVERLAY_WIDTH,
-            text_area_height(footer_is_visible, meter_is_visible),
+            main_text_area_height(footer_is_visible, meter_is_visible, meter_style, panel_height),
         ),
     )
 }
 
-fn split_section_height(footer_is_visible: bool, meter_is_visible: bool) -> f64 {
-    ((text_area_height(footer_is_visible, meter_is_visible) - SPLIT_DIVIDER_HEIGHT) / 2.0).max(0.0)
+fn meter_reserved_height(meter_style: UiMeterStyle) -> f64 {
+    match meter_style {
+        UiMeterStyle::AnimatedColor => {
+            ui_meter::meter_container_height(meter_style)
+                + METER_SECTION_BOTTOM_PADDING
+                + METER_TEXT_GAP
+        }
+        UiMeterStyle::AnimatedHeight | UiMeterStyle::None => METER_SECTION_HEIGHT,
+    }
 }
 
-fn split_lower_text_view_frame(footer_is_visible: bool, meter_is_visible: bool) -> NSRect {
-    let origin_y = bottom_reserved_height(footer_is_visible, meter_is_visible);
-    NSRect::new(
-        NSPoint::new(0.0, origin_y),
-        NSSize::new(OVERLAY_WIDTH, split_section_height(footer_is_visible, meter_is_visible)),
-    )
+fn correction_text_view_frame(panel_height: f64) -> NSRect {
+    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(OVERLAY_WIDTH, panel_height))
 }
 
-fn split_divider_frame(footer_is_visible: bool, meter_is_visible: bool) -> NSRect {
-    let lower_frame = split_lower_text_view_frame(footer_is_visible, meter_is_visible);
+fn separator_frame(_panel_height: f64) -> NSRect {
     NSRect::new(
-        NSPoint::new(0.0, lower_frame.origin.y + lower_frame.size.height),
-        NSSize::new(OVERLAY_WIDTH, SPLIT_DIVIDER_HEIGHT),
-    )
-}
-
-fn split_upper_text_view_frame(footer_is_visible: bool, meter_is_visible: bool) -> NSRect {
-    let divider_frame = split_divider_frame(footer_is_visible, meter_is_visible);
-    let upper_height = (text_area_height(footer_is_visible, meter_is_visible)
-        - split_section_height(footer_is_visible, meter_is_visible)
-        - SPLIT_DIVIDER_HEIGHT)
-        .max(0.0);
-    NSRect::new(
-        NSPoint::new(0.0, divider_frame.origin.y + divider_frame.size.height),
-        NSSize::new(OVERLAY_WIDTH, upper_height),
+        NSPoint::new(0.0, FOOTER_HEIGHT),
+        NSSize::new(OVERLAY_WIDTH, SEPARATOR_HEIGHT),
     )
 }
 
