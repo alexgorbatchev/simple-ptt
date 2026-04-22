@@ -19,7 +19,7 @@ Expect the usual macOS prompts for: **Microphone** and **Accessibility** for the
 
 ## Deepgram Costs
 
-Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. A full workday typically lands around **$0.50 USD** in transcription cost. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
+Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. As a rough example, **10 hours of speech-to-text should cost less than $5 USD**, which covers close to a month of personal usage for this workflow. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
 
 ## How it works
 
