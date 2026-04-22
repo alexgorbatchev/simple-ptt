@@ -16,6 +16,12 @@ use crate::state::AppState;
 
 const TRANSFORMATION_FADE_SETTLE_DELAY_MS: u64 = 150;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TransformationPreviewMode<'a> {
+    ReplaceOverlay,
+    InlineCorrection { original_text: &'a str },
+}
+
 #[derive(Clone, Debug)]
 pub struct TransformationRuntimeConfig {
     pub provider: String,
@@ -29,6 +35,7 @@ pub async fn transform_text(
     state: Arc<AppState>,
     config: &TransformationRuntimeConfig,
     input_text: &str,
+    preview_mode: TransformationPreviewMode<'_>,
 ) -> Result<String, String> {
     let normalized_provider = normalize_provider_name(&config.provider);
 
@@ -46,6 +53,7 @@ pub async fn transform_text(
                     .build(),
                 input_text,
                 Arc::clone(&state),
+                preview_mode,
             )
             .await
         }};
@@ -112,6 +120,7 @@ async fn stream_agent_response<M>(
     agent: Agent<M>,
     input_text: &str,
     state: Arc<AppState>,
+    preview_mode: TransformationPreviewMode<'_>,
 ) -> Result<String, String>
 where
     M: CompletionModel + 'static,
@@ -137,20 +146,42 @@ where
 
                 if !saw_text {
                     transformed_text.clear();
-                    state.set_overlay_text(String::new());
+                    match preview_mode {
+                        TransformationPreviewMode::ReplaceOverlay => {
+                            state.set_overlay_text(String::new());
+                        }
+                        TransformationPreviewMode::InlineCorrection { original_text } => {
+                            state.set_overlay_text(original_text.to_owned());
+                            state.clear_overlay_correction_text();
+                        }
+                    }
                     state.set_overlay_text_opacity(1.0);
                     saw_text = true;
                 }
 
                 transformed_text.push_str(&text);
-                state.set_overlay_text(transformed_text.clone());
+                match preview_mode {
+                    TransformationPreviewMode::ReplaceOverlay => {
+                        state.set_overlay_text(transformed_text.clone());
+                    }
+                    TransformationPreviewMode::InlineCorrection { .. } => {
+                        state.set_overlay_correction_text(transformed_text.clone());
+                    }
+                }
             }
             MultiTurnStreamItem::FinalResponse(final_response) => {
                 if transformed_text.trim().is_empty() {
                     let response_text = final_response.response().trim();
                     if !response_text.is_empty() {
                         transformed_text = response_text.to_owned();
-                        state.set_overlay_text(transformed_text.clone());
+                        match preview_mode {
+                            TransformationPreviewMode::ReplaceOverlay => {
+                                state.set_overlay_text(transformed_text.clone());
+                            }
+                            TransformationPreviewMode::InlineCorrection { .. } => {
+                                state.set_overlay_correction_text(transformed_text.clone());
+                            }
+                        }
                         state.set_overlay_text_opacity(1.0);
                     }
                 }

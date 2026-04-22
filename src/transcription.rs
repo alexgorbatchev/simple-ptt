@@ -27,7 +27,9 @@ use crate::state::{
     AppState, DeepgramConnectionStatus, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
     STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
-use crate::transformation::{transform_text, TransformationRuntimeConfig};
+use crate::transformation::{
+    transform_text, TransformationPreviewMode, TransformationRuntimeConfig,
+};
 
 const AUDIO_QUEUE_CAPACITY: usize = 32;
 const COMMAND_FLAGGED_V_KEYCODE: u16 = 9;
@@ -1349,6 +1351,7 @@ fn transform_buffered_text(
         buffered_text,
         original_buffer.as_str(),
         original_buffer.as_str(),
+        TransformationPreviewMode::ReplaceOverlay,
         paste_after_transform,
     );
 }
@@ -1375,6 +1378,9 @@ fn transform_buffered_text_with_correction(
         buffered_text,
         original_buffer.as_str(),
         transform_input.as_str(),
+        TransformationPreviewMode::InlineCorrection {
+            original_text: original_buffer.as_str(),
+        },
         false,
     );
 }
@@ -1386,6 +1392,7 @@ fn run_buffer_transformation(
     buffered_text: &mut String,
     original_buffer: &str,
     transform_input: &str,
+    preview_mode: TransformationPreviewMode<'_>,
     paste_after_transform: bool,
 ) {
     if buffered_text.trim().is_empty() {
@@ -1413,19 +1420,24 @@ fn run_buffer_transformation(
     state.set_overlay_correction_active(false);
     state.clear_overlay_correction_text();
     state.set_overlay_text(original_buffer.to_owned());
-    state.set_overlay_text_opacity(0.02);
+    state.set_overlay_text_opacity(match preview_mode {
+        TransformationPreviewMode::ReplaceOverlay => 0.02,
+        TransformationPreviewMode::InlineCorrection { .. } => 1.0,
+    });
     state.set_state(STATE_TRANSFORMING);
 
     match runtime.block_on(transform_text(
         state.clone(),
         &transform_config,
         transform_input,
+        preview_mode,
     )) {
         Ok(transformed_text) => {
             if state.consume_abort_request() {
                 log::info!("discarding transformation result because abort was requested");
                 buffered_text.clear();
                 state.clear_overlay_text();
+                state.clear_overlay_correction_text();
                 state.set_overlay_text_opacity(1.0);
                 state.set_state(STATE_IDLE);
                 return;
@@ -1435,6 +1447,7 @@ fn run_buffer_transformation(
             if !buffered_text.is_empty() && !buffered_text.ends_with(|c: char| c.is_whitespace()) {
                 buffered_text.push(' ');
             }
+            state.clear_overlay_correction_text();
             if paste_after_transform {
                 log::info!("buffer transformed successfully; pasting result");
                 paste_buffered_text(&state, buffered_text);
@@ -1450,12 +1463,14 @@ fn run_buffer_transformation(
                 log::info!("discarding buffered text because transformation was aborted");
                 buffered_text.clear();
                 state.clear_overlay_text();
+                state.clear_overlay_correction_text();
                 state.set_overlay_text_opacity(1.0);
                 state.set_state(STATE_IDLE);
                 return;
             }
 
             log::error!("transformation failed: {}", error);
+            state.clear_overlay_correction_text();
             state.set_overlay_text(original_buffer.to_owned());
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);

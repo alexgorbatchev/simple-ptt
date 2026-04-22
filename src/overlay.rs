@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::sync::Arc;
 
 use objc2::runtime::{AnyObject, NSObject};
@@ -7,11 +8,15 @@ use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
     NSActionCell, NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
-    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
-    NSTextField, NSTextFieldCell, NSTextView, NSTextViewDelegate, NSView,
+    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSUnderlineStyle,
+    NSUnderlineStyleAttributeName, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
+    NSTextViewDelegate, NSView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRange, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect, NSSize,
+    NSString,
+};
 
 use crate::config::UiMeterStyle;
 use crate::state::{
@@ -284,8 +289,17 @@ impl OverlayWindow {
         let meter_is_visible =
             state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None;
 
-        self.set_working_text(display_text);
-        self.set_correction_text(overlay_correction_text);
+        let inline_correction_preview = (state == STATE_TRANSFORMING
+            && !overlay_correction_active
+            && !overlay_correction_text.trim().is_empty())
+            .then_some(overlay_correction_text);
+
+        self.set_working_text(display_text, inline_correction_preview);
+        self.set_correction_text(if correction_is_visible {
+            overlay_correction_text
+        } else {
+            ""
+        });
         self.layout_panels(
             mtm,
             correction_is_visible,
@@ -326,7 +340,7 @@ impl OverlayWindow {
         }
         self.state.set_overlay_window_visible(false);
         self.ui_meter_view.clear(meter_cluster_width());
-        self.set_working_text("");
+        self.set_working_text("", None);
         self.set_correction_text("");
         self.set_working_text_opacity(1.0);
         self.set_footer_text("");
@@ -399,12 +413,21 @@ impl OverlayWindow {
             meter_style,
             visible_frame.size.height,
         );
+        let main_reserved_height =
+            bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
+        let main_min_text_area_height = (MAIN_OVERLAY_MIN_HEIGHT - main_reserved_height).max(0.0);
+        let main_desired_height = main_reserved_height + main_content_height.max(main_min_text_area_height);
+        let main_is_clamped = main_height + 1.0 < main_desired_height;
         let correction_height = correction_is_visible.then(|| {
             correction_panel_height(
                 correction_content_height,
                 visible_frame.size.height,
             )
         });
+        let correction_desired_height = correction_content_height.max(CORRECTION_OVERLAY_MIN_HEIGHT);
+        let correction_is_clamped = correction_height
+            .map(|height| height + 1.0 < correction_desired_height)
+            .unwrap_or(false);
 
         let current_main_origin_y = self.is_visible.get().then(|| self.panel.frame().origin.y);
         let (main_frame, correction_frame) = stacked_panel_frames(
@@ -431,6 +454,7 @@ impl OverlayWindow {
             &self.working_scroll_view,
             &self.working_text_view,
             main_text_area_height(footer_is_visible, meter_is_visible, meter_style, main_height),
+            main_is_clamped,
         );
         self.separator_view.setFrame(separator_frame(main_height));
         self.ui_meter_view.set_frame(meter_container_frame(
@@ -448,6 +472,7 @@ impl OverlayWindow {
                     &self.correction_scroll_view,
                     &self.correction_text_view,
                     frame.size.height,
+                    correction_is_clamped,
                 );
                 self.correction_panel.orderFrontRegardless();
             }
@@ -481,7 +506,12 @@ impl OverlayWindow {
             })
     }
 
-    fn set_working_text(&self, text: &str) {
+    fn set_working_text(&self, text: &str, inline_correction_preview: Option<&str>) {
+        if let Some(preview_text) = inline_correction_preview {
+            self.set_working_text_with_preview(text, preview_text);
+            return;
+        }
+
         let current_text = self.working_text_view.string().to_string();
         if current_text != text {
             let ns_text = NSString::from_str(text);
@@ -493,6 +523,51 @@ impl OverlayWindow {
             self.working_text_view
                 .scrollRangeToVisible(NSRange::new(length, 0));
         }
+    }
+
+    fn set_working_text_with_preview(&self, original_text: &str, preview_text: &str) {
+        let Some(rendered_preview) = build_inline_correction_preview(original_text, preview_text)
+        else {
+            self.set_working_text(original_text, None);
+            return;
+        };
+
+        let ns_text = NSString::from_str(&rendered_preview.text);
+        let typing_attributes = self.working_text_view.typingAttributes();
+        let base_attributed_text = unsafe {
+            objc2_foundation::NSAttributedString::new_with_attributes(&ns_text, &typing_attributes)
+        };
+        let attributed_text = NSMutableAttributedString::from_attributed_nsstring(&base_attributed_text);
+        let underline_style = NSNumber::new_isize(NSUnderlineStyle::Single.bits() as isize);
+
+        for range in &rendered_preview.underlined_byte_ranges {
+            let location = utf16_offset(&rendered_preview.text, range.start);
+            let length = rendered_preview.text[range.start..range.end].encode_utf16().count();
+            if length == 0 {
+                continue;
+            }
+
+            unsafe {
+                attributed_text.addAttribute_value_range(
+                    NSUnderlineStyleAttributeName,
+                    underline_style.as_ref(),
+                    NSRange::new(location, length),
+                );
+            }
+        }
+
+        if let Some(text_storage) = unsafe { self.working_text_view.textStorage() } {
+            text_storage.beginEditing();
+            text_storage.setAttributedString(&attributed_text);
+            text_storage.endEditing();
+        } else {
+            self.working_text_view.setString(&ns_text);
+        }
+
+        let length = rendered_preview.text.encode_utf16().count();
+        self.working_text_view.setSelectedRange(NSRange::new(length, 0));
+        self.working_text_view
+            .scrollRangeToVisible(NSRange::new(length, 0));
     }
 
     fn set_correction_text(&self, text: &str) {
@@ -511,9 +586,10 @@ impl OverlayWindow {
         scroll_view: &NSScrollView,
         text_view: &NSTextView,
         visible_height: f64,
+        shows_vertical_scroller: bool,
     ) {
         let document_height = measured_text_height(text_view).max(visible_height);
-        scroll_view.setHasVerticalScroller(document_height > (visible_height + 1.0));
+        scroll_view.setHasVerticalScroller(shows_vertical_scroller);
         text_view.setFrame(NSRect::new(
             NSPoint::new(0.0, 0.0),
             NSSize::new(OVERLAY_WIDTH, document_height),
@@ -550,6 +626,218 @@ impl OverlayWindow {
         }
 
         NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct InlinePreviewRender {
+    text: String,
+    underlined_byte_ranges: Vec<Range<usize>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TokenSpan {
+    byte_range: Range<usize>,
+}
+
+fn build_inline_correction_preview(
+    original_text: &str,
+    preview_text: &str,
+) -> Option<InlinePreviewRender> {
+    let original_tokens = non_whitespace_tokens(original_text);
+    let preview_tokens = non_whitespace_tokens(preview_text);
+
+    if original_tokens.is_empty() && preview_tokens.is_empty() {
+        return None;
+    }
+
+    let shared_prefix_len =
+        shared_prefix_len(original_text, &original_tokens, preview_text, &preview_tokens);
+    let shared_suffix_len = shared_suffix_len(
+        original_text,
+        &original_tokens,
+        preview_text,
+        &preview_tokens,
+        shared_prefix_len,
+    );
+    let original_has_divergence = shared_prefix_len + shared_suffix_len < original_tokens.len();
+    let preview_has_divergence = shared_prefix_len + shared_suffix_len < preview_tokens.len();
+
+    let prefix_end = original_tokens
+        .get(shared_prefix_len)
+        .map(|token| token.byte_range.start)
+        .unwrap_or(original_text.len());
+    let mut rendered_text = original_text[..prefix_end].to_owned();
+    let mut underlined_byte_ranges = Vec::new();
+
+    if shared_prefix_len > 0 {
+        underlined_byte_ranges.push(original_tokens[shared_prefix_len - 1].byte_range.clone());
+    }
+
+    if preview_has_divergence {
+        let preview_segment_start = if shared_prefix_len < original_tokens.len() || shared_prefix_len == 0 {
+            preview_tokens[shared_prefix_len].byte_range.start
+        } else {
+            preview_tokens[shared_prefix_len - 1].byte_range.end
+        };
+        let preview_segment_end = if shared_suffix_len > 0 {
+            preview_tokens[preview_tokens.len() - shared_suffix_len]
+                .byte_range
+                .start
+        } else {
+            preview_text.len()
+        };
+        let preview_insert_offset = rendered_text.len();
+        rendered_text.push_str(&preview_text[preview_segment_start..preview_segment_end]);
+
+        let first_preview_token = &preview_tokens[shared_prefix_len];
+        let last_preview_token = &preview_tokens[preview_tokens.len() - shared_suffix_len - 1];
+        underlined_byte_ranges.push(
+            (preview_insert_offset + (first_preview_token.byte_range.start - preview_segment_start))
+                ..(preview_insert_offset + (last_preview_token.byte_range.end - preview_segment_start)),
+        );
+    }
+
+    if shared_suffix_len > 0 {
+        let suffix_start = original_tokens[original_tokens.len() - shared_suffix_len]
+            .byte_range
+            .start;
+        rendered_text.push_str(&original_text[suffix_start..]);
+    } else if original_has_divergence {
+        let preserved_tail_start = original_tokens[shared_prefix_len].byte_range.end;
+        rendered_text.push_str(&original_text[preserved_tail_start..]);
+    }
+
+    Some(InlinePreviewRender {
+        text: rendered_text,
+        underlined_byte_ranges,
+    })
+}
+
+fn non_whitespace_tokens(text: &str) -> Vec<TokenSpan> {
+    let mut tokens = Vec::new();
+    let mut current_start = None;
+
+    for (index, ch) in text.char_indices() {
+        if ch.is_whitespace() {
+            if let Some(start) = current_start.take() {
+                tokens.push(TokenSpan {
+                    byte_range: start..index,
+                });
+            }
+        } else if current_start.is_none() {
+            current_start = Some(index);
+        }
+    }
+
+    if let Some(start) = current_start {
+        tokens.push(TokenSpan {
+            byte_range: start..text.len(),
+        });
+    }
+
+    tokens
+}
+
+fn shared_prefix_len(
+    original_text: &str,
+    original_tokens: &[TokenSpan],
+    preview_text: &str,
+    preview_tokens: &[TokenSpan],
+) -> usize {
+    original_tokens
+        .iter()
+        .zip(preview_tokens)
+        .take_while(|(original, preview)| {
+            original_text[original.byte_range.clone()] == preview_text[preview.byte_range.clone()]
+        })
+        .count()
+}
+
+fn shared_suffix_len(
+    original_text: &str,
+    original_tokens: &[TokenSpan],
+    preview_text: &str,
+    preview_tokens: &[TokenSpan],
+    shared_prefix_len: usize,
+) -> usize {
+    let max_original_suffix = original_tokens.len().saturating_sub(shared_prefix_len);
+    let max_preview_suffix = preview_tokens.len().saturating_sub(shared_prefix_len);
+    let max_suffix_len = max_original_suffix.min(max_preview_suffix);
+    let mut shared_suffix_len = 0;
+
+    while shared_suffix_len < max_suffix_len {
+        let original = &original_tokens[original_tokens.len() - shared_suffix_len - 1];
+        let preview = &preview_tokens[preview_tokens.len() - shared_suffix_len - 1];
+        if original_text[original.byte_range.clone()] != preview_text[preview.byte_range.clone()] {
+            break;
+        }
+        shared_suffix_len += 1;
+    }
+
+    shared_suffix_len
+}
+
+fn utf16_offset(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset].encode_utf16().count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_inline_correction_preview;
+
+    #[test]
+    fn renders_inline_replacement_with_suffix_anchor() {
+        let preview =
+            build_inline_correction_preview("the quick brown fox jumps", "the quick red fox jumps")
+                .expect("preview should render");
+
+        assert_eq!(preview.text, "the quick red fox jumps");
+        assert_eq!(
+            underlined_segments(&preview.text, &preview.underlined_byte_ranges),
+            vec!["quick", "red"]
+        );
+    }
+
+    #[test]
+    fn preserves_tail_while_stream_has_not_reanchored() {
+        let preview = build_inline_correction_preview("the quick brown fox jumps", "the quick red")
+            .expect("preview should render");
+
+        assert_eq!(preview.text, "the quick red fox jumps");
+        assert_eq!(
+            underlined_segments(&preview.text, &preview.underlined_byte_ranges),
+            vec!["quick", "red"]
+        );
+    }
+
+    #[test]
+    fn preserves_spacing_for_insertions_at_end() {
+        let preview =
+            build_inline_correction_preview("hello", "hello world").expect("preview should render");
+
+        assert_eq!(preview.text, "hello world");
+        assert_eq!(
+            underlined_segments(&preview.text, &preview.underlined_byte_ranges),
+            vec!["hello", "world"]
+        );
+    }
+
+    #[test]
+    fn handles_pure_deletions() {
+        let preview =
+            build_inline_correction_preview("hello old world", "hello world")
+                .expect("preview should render");
+
+        assert_eq!(preview.text, "hello world");
+        assert_eq!(
+            underlined_segments(&preview.text, &preview.underlined_byte_ranges),
+            vec!["hello"]
+        );
+    }
+
+    fn underlined_segments<'a>(text: &'a str, ranges: &[std::ops::Range<usize>]) -> Vec<&'a str> {
+        ranges.iter().map(|range| &text[range.clone()]).collect()
     }
 }
 
