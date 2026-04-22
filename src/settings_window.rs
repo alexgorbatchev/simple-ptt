@@ -360,18 +360,21 @@ impl SettingsWindow {
         let right_edge = FIELD_X + FIELD_WIDTH;
         let save_button_width = 150.0;
         let save_button_x = right_edge - save_button_width;
-        let close_button_width = 100.0;
+        let close_button_width = 120.0;
         let close_button_x = save_button_x - 10.0 - close_button_width;
 
         let close_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Close"),
+                ns_string!("Close (Esc)"),
                 Some(target),
                 Some(sel!(cancelSettings:)),
                 mtm,
             )
         };
         close_button.setFont(Some(&settings_font()));
+        unsafe {
+            let _: () = msg_send![&close_button, setKeyEquivalent: ns_string!("\u{1b}")];
+        }
         set_view_frame(
             &*close_button,
             close_button_x,
