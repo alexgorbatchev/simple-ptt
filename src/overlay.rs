@@ -513,16 +513,18 @@ impl OverlayWindow {
         }
 
         let current_text = self.working_text_view.string().to_string();
-        if current_text != text {
-            let ns_text = NSString::from_str(text);
-            self.working_text_view.setString(&ns_text);
-
-            // Move cursor to the end
-            let length = text.encode_utf16().count();
-            self.working_text_view.setSelectedRange(NSRange::new(length, 0));
-            self.working_text_view
-                .scrollRangeToVisible(NSRange::new(length, 0));
+        if working_text_update_is_semantically_unchanged(&current_text, text) {
+            return;
         }
+
+        let ns_text = NSString::from_str(text);
+        self.working_text_view.setString(&ns_text);
+
+        // Move cursor to the end
+        let length = text.encode_utf16().count();
+        self.working_text_view.setSelectedRange(NSRange::new(length, 0));
+        self.working_text_view
+            .scrollRangeToVisible(NSRange::new(length, 0));
     }
 
     fn set_working_text_with_preview(&self, original_text: &str, preview_text: &str) {
@@ -782,9 +784,13 @@ fn utf16_offset(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].encode_utf16().count()
 }
 
+fn working_text_update_is_semantically_unchanged(current_text: &str, next_text: &str) -> bool {
+    current_text == next_text || current_text.trim_end() == next_text.trim_end()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::build_inline_correction_preview;
+    use super::{build_inline_correction_preview, working_text_update_is_semantically_unchanged};
 
     #[test]
     fn renders_inline_replacement_with_suffix_anchor() {
@@ -834,6 +840,22 @@ mod tests {
             underlined_segments(&preview.text, &preview.underlined_byte_ranges),
             vec!["hello"]
         );
+    }
+
+    #[test]
+    fn treats_trailing_whitespace_only_updates_as_unchanged() {
+        assert!(working_text_update_is_semantically_unchanged(
+            "hello world",
+            "hello world "
+        ));
+        assert!(working_text_update_is_semantically_unchanged(
+            "hello world  ",
+            "hello world"
+        ));
+        assert!(!working_text_update_is_semantically_unchanged(
+            "hello world",
+            "hello there"
+        ));
     }
 
     fn underlined_segments<'a>(text: &'a str, ranges: &[std::ops::Range<usize>]) -> Vec<&'a str> {
