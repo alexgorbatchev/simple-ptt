@@ -9,8 +9,8 @@ use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
     NSActionCell, NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
     NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSUnderlineStyle,
-    NSUnderlineStyleAttributeName, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
-    NSTextViewDelegate, NSView,
+    NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSTextAlignment, NSTextField,
+    NSTextFieldCell, NSTextView, NSTextViewDelegate, NSView,
     NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{
@@ -541,6 +541,7 @@ impl OverlayWindow {
         };
         let attributed_text = NSMutableAttributedString::from_attributed_nsstring(&base_attributed_text);
         let underline_style = NSNumber::new_isize(NSUnderlineStyle::Single.bits() as isize);
+        let underline_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.5);
 
         for range in &rendered_preview.underlined_byte_ranges {
             let location = utf16_offset(&rendered_preview.text, range.start);
@@ -553,6 +554,11 @@ impl OverlayWindow {
                 attributed_text.addAttribute_value_range(
                     NSUnderlineStyleAttributeName,
                     underline_style.as_ref(),
+                    NSRange::new(location, length),
+                );
+                attributed_text.addAttribute_value_range(
+                    NSUnderlineColorAttributeName,
+                    underline_color.as_ref(),
                     NSRange::new(location, length),
                 );
             }
@@ -672,10 +678,6 @@ fn build_inline_correction_preview(
     let mut rendered_text = original_text[..prefix_end].to_owned();
     let mut underlined_byte_ranges = Vec::new();
 
-    if shared_prefix_len > 0 {
-        underlined_byte_ranges.push(original_tokens[shared_prefix_len - 1].byte_range.clone());
-    }
-
     if preview_has_divergence {
         let preview_segment_start = if shared_prefix_len < original_tokens.len() || shared_prefix_len == 0 {
             preview_tokens[shared_prefix_len].byte_range.start
@@ -692,12 +694,14 @@ fn build_inline_correction_preview(
         let preview_insert_offset = rendered_text.len();
         rendered_text.push_str(&preview_text[preview_segment_start..preview_segment_end]);
 
-        let first_preview_token = &preview_tokens[shared_prefix_len];
-        let last_preview_token = &preview_tokens[preview_tokens.len() - shared_suffix_len - 1];
-        underlined_byte_ranges.push(
-            (preview_insert_offset + (first_preview_token.byte_range.start - preview_segment_start))
-                ..(preview_insert_offset + (last_preview_token.byte_range.end - preview_segment_start)),
-        );
+        let preview_changed_tokens = &preview_tokens
+            [shared_prefix_len..(preview_tokens.len() - shared_suffix_len)];
+        for token in preview_changed_tokens {
+            underlined_byte_ranges.push(
+                (preview_insert_offset + (token.byte_range.start - preview_segment_start))
+                    ..(preview_insert_offset + (token.byte_range.end - preview_segment_start)),
+            );
+        }
     }
 
     if shared_suffix_len > 0 {
@@ -801,7 +805,7 @@ mod tests {
         assert_eq!(preview.text, "the quick red fox jumps");
         assert_eq!(
             underlined_segments(&preview.text, &preview.underlined_byte_ranges),
-            vec!["quick", "red"]
+            vec!["red"]
         );
     }
 
@@ -813,7 +817,7 @@ mod tests {
         assert_eq!(preview.text, "the quick red fox jumps");
         assert_eq!(
             underlined_segments(&preview.text, &preview.underlined_byte_ranges),
-            vec!["quick", "red"]
+            vec!["red"]
         );
     }
 
@@ -825,7 +829,7 @@ mod tests {
         assert_eq!(preview.text, "hello world");
         assert_eq!(
             underlined_segments(&preview.text, &preview.underlined_byte_ranges),
-            vec!["hello", "world"]
+            vec!["world"]
         );
     }
 
@@ -836,10 +840,7 @@ mod tests {
                 .expect("preview should render");
 
         assert_eq!(preview.text, "hello world");
-        assert_eq!(
-            underlined_segments(&preview.text, &preview.underlined_byte_ranges),
-            vec!["hello"]
-        );
+        assert!(preview.underlined_byte_ranges.is_empty());
     }
 
     #[test]
