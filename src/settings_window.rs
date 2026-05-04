@@ -300,7 +300,10 @@ impl SettingsWindow {
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Language");
         let (deepgram_keyterms_field, deepgram_keyterms_hint) =
             add_labeled_text_field_with_hint(&content_view, mtm, &mut current_y, "Keyterms");
-        set_hint_text(&deepgram_keyterms_hint, Some("Comma-separated (e.g. 'macOS, GitHub')".to_string()));
+        set_hint_text(
+            &deepgram_keyterms_hint,
+            Some("Comma-separated (e.g. 'macOS, GitHub')".to_string()),
+        );
         let deepgram_model_popup =
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Model");
         let deepgram_endpointing_ms_field =
@@ -350,12 +353,8 @@ impl SettingsWindow {
         );
         let transformation_system_prompt_view =
             add_prompt_editor(&content_view, mtm, &mut current_y, "System prompt");
-        let transformation_correction_system_prompt_view = add_prompt_editor(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Correction prompt",
-        );
+        let transformation_correction_system_prompt_view =
+            add_prompt_editor(&content_view, mtm, &mut current_y, "Correction prompt");
 
         let right_edge = FIELD_X + FIELD_WIDTH;
         let save_button_width = 150.0;
@@ -659,7 +658,12 @@ impl SettingsWindow {
                 project_id: read_optional_string(&self.deepgram_project_id_field),
                 language: read_required_string(&self.deepgram_language_field, "Deepgram language")?,
                 keyterms: read_optional_string(&self.deepgram_keyterms_field)
-                    .map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+                    .map(|s| {
+                        s.split(',')
+                            .map(|k| k.trim().to_string())
+                            .filter(|k| !k.is_empty())
+                            .collect()
+                    })
                     .unwrap_or_default(),
                 model: read_required_pop_up_button_string(
                     &self.deepgram_model_popup,

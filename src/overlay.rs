@@ -2,16 +2,16 @@ use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::sync::Arc;
 
-use objc2::runtime::{AnyObject, NSObject};
 use objc2::runtime::ProtocolObject;
+use objc2::runtime::{AnyObject, NSObject};
 use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
     NSActionCell, NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
-    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSUnderlineStyle,
-    NSUnderlineColorAttributeName, NSUnderlineStyleAttributeName, NSTextAlignment, NSTextField,
-    NSTextFieldCell, NSTextView, NSTextViewDelegate, NSView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
+    NSTextField, NSTextFieldCell, NSTextView, NSTextViewDelegate, NSUnderlineColorAttributeName,
+    NSUnderlineStyle, NSUnderlineStyleAttributeName, NSView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect, NSSize,
@@ -32,9 +32,9 @@ const MAIN_OVERLAY_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
-const FOOTER_HEIGHT: f64 = 24.0;
-const FOOTER_HINT_GAP: f64 = 12.0;
-const FOOTER_HINT_WIDTH: f64 = 330.0;
+const FOOTER_HEIGHT: f64 = 40.0;
+const FOOTER_LINE_HEIGHT: f64 = 14.0;
+const FOOTER_VERTICAL_PADDING: f64 = 5.0;
 const FOOTER_STATUS_DOT_DIAMETER: f64 = 6.0;
 const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
@@ -108,35 +108,30 @@ impl OverlayWindow {
             true,
         );
 
-        let working_scroll_view =
-            NSScrollView::initWithFrame(
-                NSScrollView::alloc(mtm),
-                main_text_view_frame(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
-            );
+        let working_scroll_view = NSScrollView::initWithFrame(
+            NSScrollView::alloc(mtm),
+            main_text_view_frame(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
+        );
         configure_scroll_view(&working_scroll_view);
-        let working_text_view =
-            make_text_view(
-                mtm,
-                style,
-                main_text_area_height(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
-                true,
-            );
+        let working_text_view = make_text_view(
+            mtm,
+            style,
+            main_text_area_height(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
+            true,
+        );
 
         let correction_scroll_view = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
             correction_text_view_frame(CORRECTION_OVERLAY_MIN_HEIGHT),
         );
         configure_scroll_view(&correction_scroll_view);
-        let correction_text_view =
-            make_text_view(mtm, style, CORRECTION_OVERLAY_MIN_HEIGHT, false);
+        let correction_text_view = make_text_view(mtm, style, CORRECTION_OVERLAY_MIN_HEIGHT, false);
         correction_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
             0.82, 0.86, 0.94, 1.0,
         )));
 
-        let separator_view = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            separator_frame(MAIN_OVERLAY_MIN_HEIGHT),
-        );
+        let separator_view =
+            NSView::initWithFrame(NSView::alloc(mtm), separator_frame(MAIN_OVERLAY_MIN_HEIGHT));
         separator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         separator_view.setWantsLayer(true);
         if let Some(layer) = separator_view.layer() {
@@ -166,7 +161,7 @@ impl OverlayWindow {
         footer_text_field.setEditable(false);
         footer_text_field.setSelectable(false);
         footer_text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.72, 0.72, 0.75, 1.0,
+            0.5, 0.5, 0.5, 1.0,
         )));
         footer_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         footer_text_field.setFrame(footer_text_frame(style.shortcut_hint.is_some()));
@@ -177,8 +172,10 @@ impl OverlayWindow {
             cell.setUsesSingleLineMode(true);
         }
 
-        let footer_status_indicator_view =
-            NSView::initWithFrame(NSView::alloc(mtm), footer_status_indicator_frame());
+        let footer_status_indicator_view = NSView::initWithFrame(
+            NSView::alloc(mtm),
+            footer_status_indicator_frame(style.shortcut_hint.is_some()),
+        );
         footer_status_indicator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
         footer_status_indicator_view.setWantsLayer(true);
         if let Some(layer) = footer_status_indicator_view.layer() {
@@ -204,15 +201,13 @@ impl OverlayWindow {
         footer_hint_text_field.setEditable(false);
         footer_hint_text_field.setSelectable(false);
         footer_hint_text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.72, 0.72, 0.75, 1.0,
+            0.5, 0.5, 0.5, 1.0,
         )));
         footer_hint_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         footer_hint_text_field.setFrame(footer_hint_frame());
-        footer_hint_text_field.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewMinXMargin | NSAutoresizingMaskOptions::ViewMaxYMargin,
-        );
+        footer_hint_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         if let Some(cell) = footer_hint_text_field.cell() {
-            cell.setAlignment(NSTextAlignment::Right);
+            cell.setAlignment(NSTextAlignment::Left);
             cell.setLineBreakMode(NSLineBreakMode::ByClipping);
             cell.setUsesSingleLineMode(true);
         }
@@ -292,7 +287,7 @@ impl OverlayWindow {
         let inline_correction_preview = (state == STATE_TRANSFORMING
             && !overlay_correction_active
             && !overlay_correction_text.trim().is_empty())
-            .then_some(overlay_correction_text);
+        .then_some(overlay_correction_text);
 
         self.set_working_text(display_text, inline_correction_preview);
         self.set_correction_text(if correction_is_visible {
@@ -378,7 +373,7 @@ impl OverlayWindow {
         self.footer_text_field
             .setFrame(footer_text_frame(style.shortcut_hint.is_some()));
         self.footer_status_indicator_view
-            .setFrame(footer_status_indicator_frame());
+            .setFrame(footer_status_indicator_frame(style.shortcut_hint.is_some()));
 
         if !self.is_visible.get() {
             self.ui_meter_view.clear(meter_cluster_width());
@@ -416,15 +411,13 @@ impl OverlayWindow {
         let main_reserved_height =
             bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
         let main_min_text_area_height = (MAIN_OVERLAY_MIN_HEIGHT - main_reserved_height).max(0.0);
-        let main_desired_height = main_reserved_height + main_content_height.max(main_min_text_area_height);
+        let main_desired_height =
+            main_reserved_height + main_content_height.max(main_min_text_area_height);
         let main_is_clamped = main_height + 1.0 < main_desired_height;
-        let correction_height = correction_is_visible.then(|| {
-            correction_panel_height(
-                correction_content_height,
-                visible_frame.size.height,
-            )
-        });
-        let correction_desired_height = correction_content_height.max(CORRECTION_OVERLAY_MIN_HEIGHT);
+        let correction_height = correction_is_visible
+            .then(|| correction_panel_height(correction_content_height, visible_frame.size.height));
+        let correction_desired_height =
+            correction_content_height.max(CORRECTION_OVERLAY_MIN_HEIGHT);
         let correction_is_clamped = correction_height
             .map(|height| height + 1.0 < correction_desired_height)
             .unwrap_or(false);
@@ -453,7 +446,12 @@ impl OverlayWindow {
         self.resize_text_view(
             &self.working_scroll_view,
             &self.working_text_view,
-            main_text_area_height(footer_is_visible, meter_is_visible, meter_style, main_height),
+            main_text_area_height(
+                footer_is_visible,
+                meter_is_visible,
+                meter_style,
+                main_height,
+            ),
             main_is_clamped,
         );
         self.separator_view.setFrame(separator_frame(main_height));
@@ -522,7 +520,8 @@ impl OverlayWindow {
 
         // Move cursor to the end
         let length = text.encode_utf16().count();
-        self.working_text_view.setSelectedRange(NSRange::new(length, 0));
+        self.working_text_view
+            .setSelectedRange(NSRange::new(length, 0));
         self.working_text_view
             .scrollRangeToVisible(NSRange::new(length, 0));
     }
@@ -539,13 +538,16 @@ impl OverlayWindow {
         let base_attributed_text = unsafe {
             objc2_foundation::NSAttributedString::new_with_attributes(&ns_text, &typing_attributes)
         };
-        let attributed_text = NSMutableAttributedString::from_attributed_nsstring(&base_attributed_text);
+        let attributed_text =
+            NSMutableAttributedString::from_attributed_nsstring(&base_attributed_text);
         let underline_style = NSNumber::new_isize(NSUnderlineStyle::Single.bits() as isize);
         let underline_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.5);
 
         for range in &rendered_preview.underlined_byte_ranges {
             let location = utf16_offset(&rendered_preview.text, range.start);
-            let length = rendered_preview.text[range.start..range.end].encode_utf16().count();
+            let length = rendered_preview.text[range.start..range.end]
+                .encode_utf16()
+                .count();
             if length == 0 {
                 continue;
             }
@@ -573,7 +575,8 @@ impl OverlayWindow {
         }
 
         let length = rendered_preview.text.encode_utf16().count();
-        self.working_text_view.setSelectedRange(NSRange::new(length, 0));
+        self.working_text_view
+            .setSelectedRange(NSRange::new(length, 0));
         self.working_text_view
             .scrollRangeToVisible(NSRange::new(length, 0));
     }
@@ -659,8 +662,12 @@ fn build_inline_correction_preview(
         return None;
     }
 
-    let shared_prefix_len =
-        shared_prefix_len(original_text, &original_tokens, preview_text, &preview_tokens);
+    let shared_prefix_len = shared_prefix_len(
+        original_text,
+        &original_tokens,
+        preview_text,
+        &preview_tokens,
+    );
     let shared_suffix_len = shared_suffix_len(
         original_text,
         &original_tokens,
@@ -679,11 +686,12 @@ fn build_inline_correction_preview(
     let mut underlined_byte_ranges = Vec::new();
 
     if preview_has_divergence {
-        let preview_segment_start = if shared_prefix_len < original_tokens.len() || shared_prefix_len == 0 {
-            preview_tokens[shared_prefix_len].byte_range.start
-        } else {
-            preview_tokens[shared_prefix_len - 1].byte_range.end
-        };
+        let preview_segment_start =
+            if shared_prefix_len < original_tokens.len() || shared_prefix_len == 0 {
+                preview_tokens[shared_prefix_len].byte_range.start
+            } else {
+                preview_tokens[shared_prefix_len - 1].byte_range.end
+            };
         let preview_segment_end = if shared_suffix_len > 0 {
             preview_tokens[preview_tokens.len() - shared_suffix_len]
                 .byte_range
@@ -694,8 +702,8 @@ fn build_inline_correction_preview(
         let preview_insert_offset = rendered_text.len();
         rendered_text.push_str(&preview_text[preview_segment_start..preview_segment_end]);
 
-        let preview_changed_tokens = &preview_tokens
-            [shared_prefix_len..(preview_tokens.len() - shared_suffix_len)];
+        let preview_changed_tokens =
+            &preview_tokens[shared_prefix_len..(preview_tokens.len() - shared_suffix_len)];
         for token in preview_changed_tokens {
             underlined_byte_ranges.push(
                 (preview_insert_offset + (token.byte_range.start - preview_segment_start))
@@ -835,9 +843,8 @@ mod tests {
 
     #[test]
     fn handles_pure_deletions() {
-        let preview =
-            build_inline_correction_preview("hello old world", "hello world")
-                .expect("preview should render");
+        let preview = build_inline_correction_preview("hello old world", "hello world")
+            .expect("preview should render");
 
         assert_eq!(preview.text, "hello world");
         assert!(preview.underlined_byte_ranges.is_empty());
@@ -990,10 +997,14 @@ fn default_overlay_text(_state: u8) -> &'static str {
 }
 
 fn measured_text_height(text_view: &NSTextView) -> f64 {
-    let Some(text_container): Option<Retained<AnyObject>> = (unsafe { msg_send![text_view, textContainer] }) else {
+    let Some(text_container): Option<Retained<AnyObject>> =
+        (unsafe { msg_send![text_view, textContainer] })
+    else {
         return TEXT_VERTICAL_PADDING * 2.0;
     };
-    let Some(layout_manager): Option<Retained<AnyObject>> = (unsafe { msg_send![text_view, layoutManager] }) else {
+    let Some(layout_manager): Option<Retained<AnyObject>> =
+        (unsafe { msg_send![text_view, layoutManager] })
+    else {
         return TEXT_VERTICAL_PADDING * 2.0;
     };
 
@@ -1002,7 +1013,8 @@ fn measured_text_height(text_view: &NSTextView) -> f64 {
     unsafe {
         let _: () = msg_send![&*text_container, setContainerSize: NSSize::new(container_width, TEXT_LAYOUT_MEASUREMENT_HEIGHT)];
         let _: NSRange = msg_send![&*layout_manager, glyphRangeForTextContainer: &*text_container];
-        let used_rect: NSRect = msg_send![&*layout_manager, usedRectForTextContainer: &*text_container];
+        let used_rect: NSRect =
+            msg_send![&*layout_manager, usedRectForTextContainer: &*text_container];
         (TEXT_VERTICAL_PADDING * 2.0) + used_rect.size.height.ceil().max(1.0)
     }
 }
@@ -1040,7 +1052,8 @@ fn stacked_panel_frames(
     current_main_origin_y: Option<f64>,
 ) -> (NSRect, Option<NSRect>) {
     let visible_max_y = visible_frame.origin.y + visible_frame.size.height;
-    let centered_origin_x = visible_frame.origin.x + ((visible_frame.size.width - OVERLAY_WIDTH) / 2.0);
+    let centered_origin_x =
+        visible_frame.origin.x + ((visible_frame.size.width - OVERLAY_WIDTH) / 2.0);
     let stacked_height = main_height
         + correction_height
             .map(|height| height + PANEL_STACK_GAP)
@@ -1052,7 +1065,8 @@ fn stacked_panel_frames(
     main_origin_y = main_origin_y.max(visible_frame.origin.y);
     main_origin_y = main_origin_y.min(visible_max_y - main_height);
 
-    let mut correction_origin_y = correction_height.map(|_| main_origin_y + main_height + PANEL_STACK_GAP);
+    let mut correction_origin_y =
+        correction_height.map(|_| main_origin_y + main_height + PANEL_STACK_GAP);
     if let (Some(correction_height), Some(current_correction_origin_y)) =
         (correction_height, correction_origin_y.as_mut())
     {
@@ -1069,12 +1083,14 @@ fn stacked_panel_frames(
         NSPoint::new(centered_origin_x, main_origin_y),
         NSSize::new(OVERLAY_WIDTH, main_height),
     );
-    let correction_frame = correction_height.zip(correction_origin_y).map(|(height, origin_y)| {
-        NSRect::new(
-            NSPoint::new(centered_origin_x, origin_y),
-            NSSize::new(OVERLAY_WIDTH, height),
-        )
-    });
+    let correction_frame = correction_height
+        .zip(correction_origin_y)
+        .map(|(height, origin_y)| {
+            NSRect::new(
+                NSPoint::new(centered_origin_x, origin_y),
+                NSSize::new(OVERLAY_WIDTH, height),
+            )
+        });
 
     (main_frame, correction_frame)
 }
@@ -1132,7 +1148,12 @@ fn main_text_view_frame(
         NSPoint::new(0.0, origin_y),
         NSSize::new(
             OVERLAY_WIDTH,
-            main_text_area_height(footer_is_visible, meter_is_visible, meter_style, panel_height),
+            main_text_area_height(
+                footer_is_visible,
+                meter_is_visible,
+                meter_style,
+                panel_height,
+            ),
         ),
     )
 }
@@ -1149,7 +1170,10 @@ fn meter_reserved_height(meter_style: UiMeterStyle) -> f64 {
 }
 
 fn correction_text_view_frame(panel_height: f64) -> NSRect {
-    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(OVERLAY_WIDTH, panel_height))
+    NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(OVERLAY_WIDTH, panel_height),
+    )
 }
 
 fn separator_frame(_panel_height: f64) -> NSRect {
@@ -1176,28 +1200,27 @@ fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> 
 }
 
 fn footer_text_frame(has_footer_hint: bool) -> NSRect {
-    let footer_text_width = if has_footer_hint {
-        usable_text_width() - FOOTER_HINT_WIDTH - FOOTER_HINT_GAP
-    } else {
-        usable_text_width()
-    };
     let footer_text_origin_x =
         TEXT_HORIZONTAL_PADDING + FOOTER_STATUS_DOT_DIAMETER + FOOTER_STATUS_DOT_GAP;
 
     NSRect::new(
-        NSPoint::new(footer_text_origin_x, 6.0),
+        NSPoint::new(
+            footer_text_origin_x,
+            footer_bottom_line_origin_y(has_footer_hint) + 1.0,
+        ),
         NSSize::new(
-            (footer_text_width - FOOTER_STATUS_DOT_DIAMETER - FOOTER_STATUS_DOT_GAP).max(0.0),
-            FOOTER_HEIGHT - 8.0,
+            (usable_text_width() - FOOTER_STATUS_DOT_DIAMETER - FOOTER_STATUS_DOT_GAP).max(0.0),
+            FOOTER_LINE_HEIGHT,
         ),
     )
 }
 
-fn footer_status_indicator_frame() -> NSRect {
+fn footer_status_indicator_frame(has_footer_hint: bool) -> NSRect {
     NSRect::new(
         NSPoint::new(
-            TEXT_HORIZONTAL_PADDING - 4.0,
-            5.0 + ((FOOTER_HEIGHT - 8.0 - FOOTER_STATUS_DOT_DIAMETER) / 2.0),
+            footer_status_indicator_origin_x(),
+            footer_bottom_line_origin_y(has_footer_hint)
+                + ((FOOTER_LINE_HEIGHT - FOOTER_STATUS_DOT_DIAMETER) / 2.0),
         ),
         NSSize::new(FOOTER_STATUS_DOT_DIAMETER, FOOTER_STATUS_DOT_DIAMETER),
     )
@@ -1206,11 +1229,30 @@ fn footer_status_indicator_frame() -> NSRect {
 fn footer_hint_frame() -> NSRect {
     NSRect::new(
         NSPoint::new(
-            OVERLAY_WIDTH - TEXT_HORIZONTAL_PADDING - FOOTER_HINT_WIDTH,
-            6.0,
+            footer_status_indicator_origin_x(),
+            footer_top_line_origin_y(),
         ),
-        NSSize::new(FOOTER_HINT_WIDTH, FOOTER_HEIGHT - 8.0),
+        NSSize::new(
+            OVERLAY_WIDTH - footer_status_indicator_origin_x() - TEXT_HORIZONTAL_PADDING,
+            FOOTER_LINE_HEIGHT,
+        ),
     )
+}
+
+fn footer_status_indicator_origin_x() -> f64 {
+    TEXT_HORIZONTAL_PADDING - 9.0
+}
+
+fn footer_top_line_origin_y() -> f64 {
+    FOOTER_HEIGHT - FOOTER_VERTICAL_PADDING - FOOTER_LINE_HEIGHT
+}
+
+fn footer_bottom_line_origin_y(has_footer_hint: bool) -> f64 {
+    if has_footer_hint {
+        FOOTER_VERTICAL_PADDING
+    } else {
+        (FOOTER_HEIGHT - FOOTER_LINE_HEIGHT) / 2.0
+    }
 }
 
 fn usable_text_width() -> f64 {

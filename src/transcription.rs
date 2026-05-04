@@ -1100,12 +1100,16 @@ fn start_session(
                 ("model".to_owned(), deepgram_config.model.clone()),
                 ("language".to_owned(), deepgram_config.language.clone()),
             ]);
-            
-        let keyterm_refs: Vec<&str> = deepgram_config.keyterms.iter().map(String::as_str).collect();
+
+        let keyterm_refs: Vec<&str> = deepgram_config
+            .keyterms
+            .iter()
+            .map(String::as_str)
+            .collect();
         if !keyterm_refs.is_empty() {
             options_builder = options_builder.keyterms(keyterm_refs);
         }
-            
+
         let options = options_builder.build();
 
         client
@@ -1136,8 +1140,13 @@ fn start_session(
     );
 
     let task = runtime.spawn(async move {
-        run_transcription_stream(&mut transcription_stream, state, session_kind, recording_prefix)
-            .await
+        run_transcription_stream(
+            &mut transcription_stream,
+            state,
+            session_kind,
+            recording_prefix,
+        )
+        .await
     });
 
     Ok(ActiveSession {
@@ -1364,10 +1373,8 @@ fn transform_buffered_text_with_correction(
     correction_text: &str,
 ) {
     let original_buffer = buffered_text.clone();
-    let transform_input = build_correction_transform_input(
-        original_buffer.as_str(),
-        correction_text,
-    );
+    let transform_input =
+        build_correction_transform_input(original_buffer.as_str(), correction_text);
     let correction_config = transformation_config
         .as_ref()
         .map(transformation_correction_runtime_config);
@@ -1609,11 +1616,7 @@ fn session_overlay_text(state: &AppState, session_kind: SessionKind) -> String {
     }
 }
 
-fn set_session_overlay_text(
-    state: &AppState,
-    session_kind: SessionKind,
-    text: impl Into<String>,
-) {
+fn set_session_overlay_text(state: &AppState, session_kind: SessionKind, text: impl Into<String>) {
     match session_kind {
         SessionKind::Dictation => state.set_overlay_text(text),
         SessionKind::Correction => state.set_overlay_correction_text(text),

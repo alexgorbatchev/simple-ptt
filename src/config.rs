@@ -672,7 +672,6 @@ fn set_float32_key(table: &mut Table, key: &str, field_value: f32) {
     table[key] = value(f64::from(field_value));
 }
 
-
 fn set_string_array_key(table: &mut Table, key: &str, values: &[String]) {
     if values.is_empty() {
         table.remove(key);
@@ -697,7 +696,12 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
         table.remove("start_on_login");
     }
     set_required_string_key(table, "hotkey", &[], &ui.hotkey);
-    set_required_string_key(table, "correction_key", &["instruction_key"], &ui.correction_key);
+    set_required_string_key(
+        table,
+        "correction_key",
+        &["instruction_key"],
+        &ui.correction_key,
+    );
     set_optional_string_key(
         table,
         "font_name",
@@ -918,8 +922,7 @@ mod tests {
 
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
-        materialize_runtime_config, save_config, Config,
-        UiMeterStyle,
+        materialize_runtime_config, save_config, Config, UiMeterStyle,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -967,7 +970,8 @@ mod tests {
         assert!(updated_contents.contains("overlay_font_family = \"SF Mono\""));
         assert!(updated_contents.contains("hotkey = \"F5\""));
         assert!(updated_contents.contains("correction_key = \"RightMeta\""));
-        assert!(updated_contents.contains("correction_system_prompt = \"Apply the spoken correction.\""));
+        assert!(updated_contents
+            .contains("correction_system_prompt = \"Apply the spoken correction.\""));
     }
 
     #[test]

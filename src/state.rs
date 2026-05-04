@@ -141,7 +141,8 @@ impl AppState {
     }
 
     pub fn set_overlay_correction_active(&self, active: bool) {
-        self.overlay_correction_active.store(active, Ordering::Relaxed);
+        self.overlay_correction_active
+            .store(active, Ordering::Relaxed);
     }
 
     pub fn is_overlay_correction_active(&self) -> bool {

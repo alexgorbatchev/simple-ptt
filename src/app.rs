@@ -1225,14 +1225,29 @@ fn parse_correction_key(raw: &str) -> Result<rdev::Key, String> {
 
 fn correction_key_hint_label(raw: &str) -> String {
     match raw.trim() {
-        value if value.eq_ignore_ascii_case("LeftMeta")
-            || value.eq_ignore_ascii_case("RightMeta") => "Cmd".to_owned(),
-        value if value.eq_ignore_ascii_case("LeftAlt")
-            || value.eq_ignore_ascii_case("RightAlt") => "Alt".to_owned(),
-        value if value.eq_ignore_ascii_case("LeftControl")
-            || value.eq_ignore_ascii_case("RightControl") => "Ctrl".to_owned(),
-        value if value.eq_ignore_ascii_case("LeftShift")
-            || value.eq_ignore_ascii_case("RightShift") => "Shift".to_owned(),
+        value
+            if value.eq_ignore_ascii_case("LeftMeta")
+                || value.eq_ignore_ascii_case("RightMeta") =>
+        {
+            "Cmd".to_owned()
+        }
+        value
+            if value.eq_ignore_ascii_case("LeftAlt") || value.eq_ignore_ascii_case("RightAlt") =>
+        {
+            "Alt".to_owned()
+        }
+        value
+            if value.eq_ignore_ascii_case("LeftControl")
+                || value.eq_ignore_ascii_case("RightControl") =>
+        {
+            "Ctrl".to_owned()
+        }
+        value
+            if value.eq_ignore_ascii_case("LeftShift")
+                || value.eq_ignore_ascii_case("RightShift") =>
+        {
+            "Shift".to_owned()
+        }
         value if value.eq_ignore_ascii_case("Escape") => "Esc".to_owned(),
         value => value.to_owned(),
     }
