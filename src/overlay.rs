@@ -37,6 +37,8 @@ const FOOTER_LINE_HEIGHT: f64 = 14.0;
 const FOOTER_VERTICAL_PADDING: f64 = 5.0;
 const FOOTER_STATUS_DOT_DIAMETER: f64 = 6.0;
 const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
+const FOOTER_STATUS_DOT_X_OFFSET: f64 = -6.0;
+const FOOTER_TEXT_X_OFFSET: f64 = -4.0;
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
 const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
 const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
@@ -1200,8 +1202,10 @@ fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> 
 }
 
 fn footer_text_frame(has_footer_hint: bool) -> NSRect {
-    let footer_text_origin_x =
-        TEXT_HORIZONTAL_PADDING + FOOTER_STATUS_DOT_DIAMETER + FOOTER_STATUS_DOT_GAP;
+    let footer_text_origin_x = TEXT_HORIZONTAL_PADDING
+        + FOOTER_STATUS_DOT_DIAMETER
+        + FOOTER_STATUS_DOT_GAP
+        + FOOTER_TEXT_X_OFFSET;
 
     NSRect::new(
         NSPoint::new(
@@ -1209,7 +1213,7 @@ fn footer_text_frame(has_footer_hint: bool) -> NSRect {
             footer_bottom_line_origin_y(has_footer_hint) + 1.0,
         ),
         NSSize::new(
-            (usable_text_width() - FOOTER_STATUS_DOT_DIAMETER - FOOTER_STATUS_DOT_GAP).max(0.0),
+            (OVERLAY_WIDTH - footer_text_origin_x - TEXT_HORIZONTAL_PADDING).max(0.0),
             FOOTER_LINE_HEIGHT,
         ),
     )
@@ -1240,7 +1244,7 @@ fn footer_hint_frame() -> NSRect {
 }
 
 fn footer_status_indicator_origin_x() -> f64 {
-    TEXT_HORIZONTAL_PADDING - 9.0
+    TEXT_HORIZONTAL_PADDING + FOOTER_STATUS_DOT_X_OFFSET
 }
 
 fn footer_top_line_origin_y() -> f64 {
