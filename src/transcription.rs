@@ -657,15 +657,15 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                let transformation_config =
-                                    config_store.current().resolve_transformation_config().ok();
-                                transform_buffered_text_with_correction(
-                                    &runtime,
-                                    state.clone(),
-                                    &transformation_config,
-                                    &mut buffered_text,
-                                    correction_text.as_str(),
-                                );
+                                 let transformation_config =
+                                     config_store.current().resolve_transformation_config();
+                                 transform_buffered_text_with_correction(
+                                     &runtime,
+                                     state.clone(),
+                                     &transformation_config,
+                                     &mut buffered_text,
+                                     correction_text.as_str(),
+                                 );
                                 if should_resume_after_correction {
                                     match state.get_state() {
                                         STATE_BUFFER_READY => {
@@ -862,15 +862,15 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 buffered_text = transcript;
-                                let transformation_config =
-                                    config_store.current().resolve_transformation_config().ok();
-                                transform_buffered_text(
-                                    &runtime,
-                                    state.clone(),
-                                    &transformation_config,
-                                    &mut buffered_text,
-                                    false,
-                                );
+                                 let transformation_config =
+                                     config_store.current().resolve_transformation_config();
+                                 transform_buffered_text(
+                                     &runtime,
+                                     state.clone(),
+                                     &transformation_config,
+                                     &mut buffered_text,
+                                     false,
+                                 );
 
                                 if is_resume {
                                     let current_sample_rate = worker_sample_rate.load(Ordering::Relaxed);
@@ -972,15 +972,15 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 buffered_text = transcript;
-                                let transformation_config =
-                                    config_store.current().resolve_transformation_config().ok();
-                                transform_buffered_text(
-                                    &runtime,
-                                    state.clone(),
-                                    &transformation_config,
-                                    &mut buffered_text,
-                                    true,
-                                );
+                                 let transformation_config =
+                                     config_store.current().resolve_transformation_config();
+                                 transform_buffered_text(
+                                     &runtime,
+                                     state.clone(),
+                                     &transformation_config,
+                                     &mut buffered_text,
+                                     true,
+                                 );
                             }
                             Err(error) => {
                                 if state.consume_abort_request() {
@@ -1010,7 +1010,7 @@ pub fn spawn_transcription_thread(
                     Command::TransformBuffer => {
                         buffered_text = state.overlay_text().to_string();
                         let transformation_config =
-                            config_store.current().resolve_transformation_config().ok();
+                            config_store.current().resolve_transformation_config();
                         transform_buffered_text(
                             &runtime,
                             state.clone(),
@@ -1348,7 +1348,7 @@ fn query_paste_diagnostics(state: &AppState) -> PasteDiagnostics {
 fn transform_buffered_text(
     runtime: &Runtime,
     state: Arc<AppState>,
-    transformation_config: &Option<TransformationRuntimeConfig>,
+    transformation_config: &Result<TransformationRuntimeConfig, String>,
     buffered_text: &mut String,
     paste_after_transform: bool,
 ) {
@@ -1368,7 +1368,7 @@ fn transform_buffered_text(
 fn transform_buffered_text_with_correction(
     runtime: &Runtime,
     state: Arc<AppState>,
-    transformation_config: &Option<TransformationRuntimeConfig>,
+    transformation_config: &Result<TransformationRuntimeConfig, String>,
     buffered_text: &mut String,
     correction_text: &str,
 ) {
@@ -1377,7 +1377,8 @@ fn transform_buffered_text_with_correction(
         build_correction_transform_input(original_buffer.as_str(), correction_text);
     let correction_config = transformation_config
         .as_ref()
-        .map(transformation_correction_runtime_config);
+        .map(transformation_correction_runtime_config)
+        .map_err(|err| err.clone());
     run_buffer_transformation(
         runtime,
         state,
@@ -1395,7 +1396,7 @@ fn transform_buffered_text_with_correction(
 fn run_buffer_transformation(
     runtime: &Runtime,
     state: Arc<AppState>,
-    transformation_config: &Option<TransformationRuntimeConfig>,
+    transformation_config: &Result<TransformationRuntimeConfig, String>,
     buffered_text: &mut String,
     original_buffer: &str,
     transform_input: &str,
@@ -1412,14 +1413,21 @@ fn run_buffer_transformation(
         return;
     }
 
-    let Some(transform_config) = transformation_config.clone() else {
-        log::warn!("ignoring transformation request because transformation config is incomplete");
-        state.set_overlay_correction_active(false);
-        state.clear_overlay_correction_text();
-        state.set_overlay_text(original_buffer.to_owned());
-        state.set_overlay_text_opacity(1.0);
-        state.set_state(STATE_BUFFER_READY);
-        return;
+    let transform_config = match transformation_config {
+        Ok(config) => config.clone(),
+        Err(error) => {
+            log::error!("transformation failed: {}", error);
+            
+            // Set user-friendly error message in the correction popout and stay on screen
+            let user_friendly_error = format!("Transformation failed: {}", error);
+            state.set_overlay_correction_text(user_friendly_error);
+            state.set_overlay_correction_active(true);
+
+            state.set_overlay_text(original_buffer.to_owned());
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_BUFFER_READY);
+            return;
+        }
     };
 
     state.clear_abort_request();
@@ -1477,7 +1485,12 @@ fn run_buffer_transformation(
             }
 
             log::error!("transformation failed: {}", error);
-            state.clear_overlay_correction_text();
+            
+            // Set user-friendly error message in the correction popout and stay on screen
+            let user_friendly_error = format!("Transformation failed: {}", error);
+            state.set_overlay_correction_text(user_friendly_error);
+            state.set_overlay_correction_active(true);
+
             state.set_overlay_text(original_buffer.to_owned());
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);

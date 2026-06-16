@@ -79,6 +79,7 @@ define_class!(
 pub struct OverlayWindow {
     panel: Retained<NSPanel>,
     correction_panel: Retained<NSPanel>,
+    correction_root_view: Retained<NSView>,
     state: Arc<AppState>,
     correction_scroll_view: Retained<NSScrollView>,
     correction_text_view: Retained<NSTextView>,
@@ -233,6 +234,7 @@ impl OverlayWindow {
         let overlay_window = Self {
             panel,
             correction_panel,
+            correction_root_view,
             state,
             correction_scroll_view,
             correction_text_view,
@@ -297,6 +299,24 @@ impl OverlayWindow {
         } else {
             ""
         });
+
+        let is_error_correction = correction_is_visible && overlay_correction_text.starts_with("Transformation failed:");
+        if let Some(layer) = self.correction_root_view.layer() {
+            if is_error_correction {
+                let border_color = NSColor::systemRedColor();
+                let border_cg_color = border_color.CGColor();
+                layer.setBorderWidth(1.5);
+                layer.setBorderColor(Some(&border_cg_color));
+                self.correction_text_view.setTextColor(Some(&NSColor::systemRedColor()));
+            } else {
+                layer.setBorderWidth(0.0);
+                layer.setBorderColor(None);
+                self.correction_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                    0.82, 0.86, 0.94, 1.0,
+                )));
+            }
+        }
+
         self.layout_panels(
             mtm,
             correction_is_visible,
