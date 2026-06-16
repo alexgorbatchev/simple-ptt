@@ -45,6 +45,14 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 - **`Escape`:** abort recording, cancel background work, or discard a ready buffer.
 - **`Cmd+V` while recording:** splice the current plain-text clipboard contents into the active transcript.
 
+### Microphones and Instant Recording
+
+To make sure your voice is captured the exact millisecond you press the hotkey, `simple-ptt` keeps your microphone "warm" and ready in the background. 
+
+Starting up a microphone in macOS normally takes about a quarter of a second, which would cut off the first word or two of your dictation. Keeping it warm ensures a zero-delay experience at a tiny trade-off of around 1.0% to 1.5% CPU usage when the app is idle.
+
+Additionally, the app automatically and instantly detects when you switch your default system microphone (like plugging in USB headphones or connecting AirPods) without using any heavy background polling or lagging your system.
+
 
 ## Features
 
