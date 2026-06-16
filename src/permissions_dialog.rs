@@ -1,23 +1,18 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::runtime::AnyObject as RuntimeAnyObject;
 use objc2::{sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont, NSForegroundColorAttributeName, NSTextAlignment, NSTextField,
+    NSEventModifierFlags, NSFont, NSTextAlignment, NSTextField,
     NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize,
+    ns_string, MainThreadMarker, NSPoint, NSRect, NSSize,
     NSString,
 };
 
 use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
-use crate::settings_window::settings_font;
-
-extern "C" {
-    static NSFontAttributeName: &'static objc2_foundation::NSAttributedStringKey;
-}
+use crate::settings_window::{settings_font, style_button_bezel_and_text};
 
 const WINDOW_HEIGHT: f64 = 250.0;
 const WINDOW_WIDTH: f64 = 570.0;
@@ -311,7 +306,6 @@ fn sync_permission_button(
     requested_title: &str,
 ) {
     let title = permission_button_title(permission_name, state, missing_title, requested_title);
-    let title_string = NSString::from_str(&title);
     let granted = matches!(
         state,
         GlobalHotkeyPermissionState::Granted | GlobalHotkeyPermissionState::NeedsRelaunch
@@ -319,29 +313,15 @@ fn sync_permission_button(
 
     button.setEnabled(!granted && !matches!(state, GlobalHotkeyPermissionState::Unknown));
     if granted {
-        let bezel_color = NSColor::systemGreenColor();
-        let text_color: Retained<RuntimeAnyObject> = NSColor::whiteColor().into();
-        let font: Retained<RuntimeAnyObject> = settings_font().into();
-        let attributes = NSDictionary::<
-            objc2_foundation::NSAttributedStringKey,
-            RuntimeAnyObject,
-        >::from_retained_objects(
-            &[unsafe { NSForegroundColorAttributeName }, unsafe { NSFontAttributeName }],
-            &[text_color, font],
+        style_button_bezel_and_text(
+            button,
+            &title,
+            Some(NSColor::systemGreenColor()),
+            Some(NSColor::whiteColor()),
         );
-        let attributed_title =
-            unsafe { NSAttributedString::new_with_attributes(&title_string, &attributes) };
-
-        button.setTitle(&title_string);
-        button.setAttributedTitle(&attributed_title);
-        button.setBezelColor(Some(&bezel_color));
-        return;
+    } else {
+        style_button_bezel_and_text(button, &title, None, None);
     }
-
-    let attributed_title = NSAttributedString::from_nsstring(&title_string);
-    button.setTitle(&title_string);
-    button.setAttributedTitle(&attributed_title);
-    button.setBezelColor(None);
 }
 
 fn permissions_completion_button_title(flow: &GlobalHotkeyPermissionFlow) -> &'static str {

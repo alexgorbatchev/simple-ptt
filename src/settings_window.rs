@@ -5,12 +5,19 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{msg_send, sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor, NSComboBox,
-    NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager, NSPopUpButton,
-    NSScrollView, NSSlider, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow,
-    NSWindowDelegate, NSWindowStyleMask,
+    NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontManager,
+    NSForegroundColorAttributeName, NSPopUpButton, NSScrollView, NSSlider, NSTextAlignment,
+    NSTextField, NSTextView, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
 };
-use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    ns_string, MainThreadMarker, NSAttributedString, NSDictionary, NSPoint, NSRect, NSSize,
+    NSString,
+};
 use objc2_quartz_core::CALayer;
+
+extern "C" {
+    static NSFontAttributeName: &'static objc2_foundation::NSAttributedStringKey;
+}
 
 use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
 use crate::config::{Config, UiMeterStyle};
@@ -123,6 +130,7 @@ pub struct SettingsWindow {
     ui_meter_view: UiMeterView,
     mic_hold_ms_field: Retained<NSTextField>,
     deepgram_api_key_field: Retained<NSTextField>,
+    deepgram_api_key_check_button: Retained<NSButton>,
     deepgram_api_key_env_hint_field: Retained<NSTextField>,
     deepgram_project_id_field: Retained<NSTextField>,
     deepgram_project_id_env_hint_field: Retained<NSTextField>,
@@ -283,7 +291,7 @@ impl SettingsWindow {
         current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
         let (
             deepgram_api_key_field,
-            _deepgram_api_key_check_button,
+            deepgram_api_key_check_button,
             deepgram_api_key_env_hint_field,
         ) = add_labeled_text_field_with_hint_and_button(
             &content_view,
@@ -440,6 +448,7 @@ impl SettingsWindow {
             ui_meter_view,
             mic_hold_ms_field,
             deepgram_api_key_field,
+            deepgram_api_key_check_button,
             deepgram_api_key_env_hint_field,
             deepgram_project_id_field,
             deepgram_project_id_env_hint_field,
@@ -750,6 +759,32 @@ impl SettingsWindow {
         self.transformation_model_combo_box.setEnabled(enabled);
         self.transformation_model_refresh_button.setEnabled(enabled);
         self.transformation_model_check_button.setEnabled(enabled);
+    }
+
+    pub fn set_transformation_check_result(&self, success: bool) {
+        let (bezel, text) = if success {
+            (Some(NSColor::systemGreenColor()), Some(NSColor::whiteColor()))
+        } else {
+            (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
+        };
+        style_button_bezel_and_text(&self.transformation_model_check_button, "Check", bezel, text);
+    }
+
+    pub fn set_deepgram_check_result(&self, success: bool) {
+        let (bezel, text) = if success {
+            (Some(NSColor::systemGreenColor()), Some(NSColor::whiteColor()))
+        } else {
+            (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
+        };
+        style_button_bezel_and_text(&self.deepgram_api_key_check_button, "Check", bezel, text);
+    }
+
+    pub fn reset_transformation_check_button(&self) {
+        style_button_bezel_and_text(&self.transformation_model_check_button, "Check", None, None);
+    }
+
+    pub fn reset_deepgram_check_button(&self) {
+        style_button_bezel_and_text(&self.deepgram_api_key_check_button, "Check", None, None);
     }
 
     pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -1781,6 +1816,36 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
             "Meter style must be one of: animated-color, animated-height, none (got '{}')",
             other_value
         )),
+    }
+}
+
+pub(crate) fn style_button_bezel_and_text(
+    button: &NSButton,
+    title: &str,
+    bezel_color: Option<Retained<NSColor>>,
+    text_color: Option<Retained<NSColor>>,
+) {
+    let title_string = NSString::from_str(title);
+
+    if let (Some(bezel), Some(text)) = (bezel_color, text_color) {
+        let font: Retained<objc2::runtime::AnyObject> = settings_font().into();
+        let text_any: Retained<objc2::runtime::AnyObject> = text.into();
+        let attributes = NSDictionary::<
+            objc2_foundation::NSAttributedStringKey,
+            objc2::runtime::AnyObject,
+        >::from_retained_objects(
+            &[unsafe { NSForegroundColorAttributeName }, unsafe { NSFontAttributeName }],
+            &[text_any, font],
+        );
+        let attributed_title =
+            unsafe { NSAttributedString::new_with_attributes(&title_string, &attributes) };
+
+        button.setAttributedTitle(&attributed_title);
+        button.setBezelColor(Some(&bezel));
+    } else {
+        let attributed_title = NSAttributedString::from_nsstring(&title_string);
+        button.setAttributedTitle(&attributed_title);
+        button.setBezelColor(None);
     }
 }
 

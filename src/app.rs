@@ -908,6 +908,7 @@ impl AppDelegate {
                 format!("Refreshing models for {}…", request.provider)
             }
             TransformationModelAction::Check => {
+                settings_window.reset_transformation_check_button();
                 format!("Checking {} connection…", request.provider)
             }
         };
@@ -930,6 +931,7 @@ impl AppDelegate {
             }
         };
 
+        settings_window.reset_deepgram_check_button();
         settings_window.set_status("Checking Deepgram connection…");
         self.ivars()
             .deepgram_connection_controller
@@ -963,15 +965,20 @@ impl AppDelegate {
                 }
                 | TransformationModelUpdate::ModelsRefreshed {
                     models, message, ..
-                }
-                | TransformationModelUpdate::ConnectionChecked {
-                    models, message, ..
                 } => {
                     settings_window.populate_transformation_model_values(&models);
                     settings_window.set_status(&message);
                 }
+                TransformationModelUpdate::ConnectionChecked {
+                    models, message, ..
+                } => {
+                    settings_window.populate_transformation_model_values(&models);
+                    settings_window.set_status(&message);
+                    settings_window.set_transformation_check_result(true);
+                }
                 TransformationModelUpdate::ActionFailed { message, .. } => {
                     settings_window.set_status(&message);
+                    settings_window.set_transformation_check_result(false);
                 }
             }
         }
@@ -1001,8 +1008,15 @@ impl AppDelegate {
                     connection_status,
                     message,
                     ..
+                } => {
+                    self.ivars()
+                        .state
+                        .set_deepgram_connection_status(connection_status);
+                    settings_window.set_status(&message);
+                    let success = connection_status == DeepgramConnectionStatus::Connected;
+                    settings_window.set_deepgram_check_result(success);
                 }
-                | DeepgramCheckUpdate::ActionFailed {
+                DeepgramCheckUpdate::ActionFailed {
                     connection_status,
                     message,
                     ..
@@ -1011,6 +1025,7 @@ impl AppDelegate {
                         .state
                         .set_deepgram_connection_status(connection_status);
                     settings_window.set_status(&message);
+                    settings_window.set_deepgram_check_result(false);
                 }
             }
         }
