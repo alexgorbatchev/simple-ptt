@@ -2,7 +2,11 @@ use bytes::{BufMut, Bytes, BytesMut};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, Once};
+
+#[cfg(target_os = "macos")]
+static REGISTER_LISTENER: Once = Once::new();
 
 use crate::config::MicConfig;
 use crate::settings::LiveConfigStore;
@@ -133,6 +137,11 @@ impl AudioController {
         transcription_controller: TranscriptionController,
         config_store: LiveConfigStore,
     ) -> Self {
+        #[cfg(target_os = "macos")]
+        REGISTER_LISTENER.call_once(|| {
+            core_audio_listener::register_default_device_listener();
+        });
+
         Self {
             active_stream: Mutex::new(None),
             pending_config: Mutex::new(None),
@@ -147,6 +156,11 @@ impl AudioController {
         transcription_controller: TranscriptionController,
         config_store: LiveConfigStore,
     ) -> (Self, Option<String>) {
+        #[cfg(target_os = "macos")]
+        REGISTER_LISTENER.call_once(|| {
+            core_audio_listener::register_default_device_listener();
+        });
+
         let mic_config = config_store.current().mic;
         let (active_stream, startup_error) = match build_input_stream(
             state.clone(),
@@ -299,11 +313,26 @@ impl AudioController {
                     )
                     .is_none() =>
                 {
-                    let host = cpal::default_host();
-                    let current_default_name = host
-                        .default_input_device()
-                        .and_then(|device| device.name().ok());
-                    current_default_name != active.actual_audio_device_name
+                    #[cfg(target_os = "macos")]
+                    {
+                        if core_audio_listener::DEFAULT_DEVICE_CHANGED.swap(false, Ordering::SeqCst) {
+                            let host = cpal::default_host();
+                            let current_default_name = host
+                                .default_input_device()
+                                .and_then(|device| device.name().ok());
+                            current_default_name != active.actual_audio_device_name
+                        } else {
+                            false
+                        }
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let host = cpal::default_host();
+                        let current_default_name = host
+                            .default_input_device()
+                            .and_then(|device| device.name().ok());
+                        current_default_name != active.actual_audio_device_name
+                    }
                 }
                 None => false,
                 _ => false,
@@ -850,5 +879,78 @@ mod tests {
         ));
         assert!(is_system_default_audio_device_value("System default"));
         assert!(!is_system_default_audio_device_value("0"));
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(non_snake_case)]
+mod core_audio_listener {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    pub static DEFAULT_DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
+
+    // CoreAudio FFI
+    type OSStatus = i32;
+    type AudioObjectID = u32;
+
+    #[repr(C)]
+    struct AudioObjectPropertyAddress {
+        mSelector: u32,
+        mScope: u32,
+        mElement: u32,
+    }
+
+    type AudioObjectPropertyListenerProc = unsafe extern "C" fn(
+        inObjectID: AudioObjectID,
+        inNumberAddresses: u32,
+        inAddresses: *const AudioObjectPropertyAddress,
+        inClientData: *mut std::ffi::c_void,
+    ) -> OSStatus;
+
+    #[link(name = "CoreAudio", kind = "framework")]
+    extern "C" {
+        fn AudioObjectAddPropertyListener(
+            inObjectID: AudioObjectID,
+            inAddress: *const AudioObjectPropertyAddress,
+            inListener: AudioObjectPropertyListenerProc,
+            inClientData: *mut std::ffi::c_void,
+        ) -> OSStatus;
+    }
+
+    const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectID = 1;
+    const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE: u32 = 0x64696e69; // 'dini'
+    const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = 0x676c6f62; // 'glob'
+    const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
+
+    unsafe extern "C" fn default_device_listener_callback(
+        _inObjectID: AudioObjectID,
+        _inNumberAddresses: u32,
+        _inAddresses: *const AudioObjectPropertyAddress,
+        _inClientData: *mut std::ffi::c_void,
+    ) -> OSStatus {
+        DEFAULT_DEVICE_CHANGED.store(true, Ordering::SeqCst);
+        0 // noErr
+    }
+
+    pub fn register_default_device_listener() {
+        let address = AudioObjectPropertyAddress {
+            mSelector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE,
+            mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        };
+
+        unsafe {
+            let status = AudioObjectAddPropertyListener(
+                K_AUDIO_OBJECT_SYSTEM_OBJECT,
+                &address,
+                default_device_listener_callback,
+                std::ptr::null_mut(),
+            );
+            if status != 0 {
+                log::error!("Failed to register CoreAudio default input device listener: {}", status);
+            } else {
+                log::info!("Registered CoreAudio default input device listener successfully");
+            }
+        }
     }
 }
