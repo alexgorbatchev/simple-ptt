@@ -25,11 +25,7 @@ const APPLICATION_ICONSET_PNGS: [(&str, f64); 10] = [
     ("icon_512x512@2x.png", 1024.0),
 ];
 
-const ACTIVE_BACKGROUND_X: f64 = 0.0;
-const ACTIVE_BACKGROUND_Y: f64 = 0.0;
-const ACTIVE_BACKGROUND_WIDTH: f64 = 24.0;
-const ACTIVE_BACKGROUND_HEIGHT: f64 = 24.0;
-const ACTIVE_BACKGROUND_CORNER_RADIUS: f64 = 2.0;
+// Status bar icon sizes and viewbox settings
 
 pub fn make_application_icon(mtm: MainThreadMarker) -> Retained<NSImage> {
     make_microphone_icon(
@@ -75,27 +71,16 @@ pub fn make_status_bar_active_icon(_mtm: MainThreadMarker) -> Retained<NSImage> 
     );
     image.lockFocus();
 
-    let background = NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-        scaled_svg_rect(
-            image.size(),
-            ACTIVE_BACKGROUND_X,
-            ACTIVE_BACKGROUND_Y,
-            ACTIVE_BACKGROUND_WIDTH,
-            ACTIVE_BACKGROUND_HEIGHT,
-        ),
-        scaled_value(image.size(), ACTIVE_BACKGROUND_CORNER_RADIUS),
-        scaled_value(image.size(), ACTIVE_BACKGROUND_CORNER_RADIUS),
-    );
-    let background_color = NSColor::systemOrangeColor();
-    background_color.set();
-    background.fill();
+    let size = image.size();
+    let circle = NSBezierPath::bezierPath();
+    circle.setLineWidth(scaled_value(size, 1.5));
+    circle.appendBezierPathWithOvalInRect(scaled_svg_rect(size, 2.0, 2.0, 20.0, 20.0));
+    circle.stroke();
 
-    let foreground_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 1.0);
-    foreground_color.set();
-    draw_microphone_symbol(image.size());
+    draw_microphone_symbol(size);
 
     image.unlockFocus();
-    image.setTemplate(false);
+    image.setTemplate(true);
     image
 }
 
