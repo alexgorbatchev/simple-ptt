@@ -129,6 +129,7 @@ pub struct SettingsWindow {
     mic_gain_label_field: Retained<NSTextField>,
     ui_meter_view: UiMeterView,
     mic_hold_ms_field: Retained<NSTextField>,
+    mic_always_on_checkbox: Retained<NSButton>,
     deepgram_api_key_field: Retained<NSTextField>,
     deepgram_api_key_check_button: Retained<NSButton>,
     deepgram_api_key_env_hint_field: Retained<NSTextField>,
@@ -286,6 +287,12 @@ impl SettingsWindow {
             &mut current_y,
             "Gain",
             sel!(micGainSliderChanged:),
+        );
+        let mic_always_on_checkbox = add_checkbox(
+            &content_view,
+            mtm,
+            &mut current_y,
+            "Keep microphone active when idle (prevents delay)",
         );
 
         current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
@@ -447,6 +454,7 @@ impl SettingsWindow {
             mic_gain_label_field,
             ui_meter_view,
             mic_hold_ms_field,
+            mic_always_on_checkbox,
             deepgram_api_key_field,
             deepgram_api_key_check_button,
             deepgram_api_key_env_hint_field,
@@ -561,6 +569,12 @@ impl SettingsWindow {
             )));
         self.mic_hold_ms_field
             .setStringValue(&NSString::from_str(&config.mic.hold_ms.to_string()));
+        self.mic_always_on_checkbox
+            .setState(if config.mic.always_on {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
 
         self.deepgram_api_key_field
             .setStringValue(&NSString::from_str(
@@ -661,6 +675,7 @@ impl SettingsWindow {
                 sample_rate: read_required_u32(&self.mic_sample_rate_field, "Sample rate")?,
                 gain: self.mic_gain_slider_value(),
                 hold_ms: read_required_u64(&self.mic_hold_ms_field, "Hold ms")?,
+                always_on: self.mic_always_on_checkbox.state() == NSControlStateValueOn,
             },
             deepgram: crate::config::DeepgramConfig {
                 api_key: read_optional_string(&self.deepgram_api_key_field),

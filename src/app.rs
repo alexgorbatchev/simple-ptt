@@ -1628,6 +1628,9 @@ pub fn setup_status_polling(
 
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(75));
+                let delegate_ref = unsafe { &*(delegate_addr as *const AppDelegate) };
+                delegate_ref.ivars().audio_controller.sync_stream_state();
+
                 frame_count += 1;
                 let current_state = state.get_state();
                 let current_deepgram_connection_status = state.deepgram_connection_status();

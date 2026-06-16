@@ -82,6 +82,9 @@ pub struct MicConfig {
 
     #[serde(default = "default_hold_ms")]
     pub hold_ms: u64,
+
+    #[serde(default = "default_always_on")]
+    pub always_on: bool,
 }
 
 impl Default for MicConfig {
@@ -91,6 +94,7 @@ impl Default for MicConfig {
             sample_rate: default_sample_rate(),
             gain: default_gain(),
             hold_ms: default_hold_ms(),
+            always_on: default_always_on(),
         }
     }
 }
@@ -195,6 +199,10 @@ fn default_gain() -> f32 {
 
 fn default_hold_ms() -> u64 {
     300
+}
+
+fn default_always_on() -> bool {
+    true
 }
 
 fn default_overlay_font_size() -> f64 {
@@ -732,6 +740,7 @@ fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) {
         "hold_ms",
         i64::try_from(mic.hold_ms).unwrap_or(i64::MAX),
     );
+    table["always_on"] = value(mic.always_on);
 }
 
 fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
@@ -1049,5 +1058,22 @@ mod tests {
         assert!(prompt.contains("CURRENT ANNOTATION"));
         assert!(prompt.contains("CORRECTION REQUEST"));
         assert!(prompt.contains("Return only the fully rewritten annotation"));
+    }
+
+    #[test]
+    fn always_on_defaults_to_true_and_roundtrips() {
+        let mut config = Config::default();
+        assert!(config.mic.always_on);
+
+        config.mic.always_on = false;
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-always-on-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+
+        save_config(&path, &config).unwrap();
+        let updated_contents = std::fs::read_to_string(&path).unwrap();
+        assert!(updated_contents.contains("always_on = false"));
+        std::fs::remove_dir_all(&temp_directory).unwrap();
     }
 }

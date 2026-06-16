@@ -132,6 +132,23 @@ pub fn print_input_devices() -> Result<(), String> {
 }
 
 impl AudioController {
+    pub fn sync_stream_state(&self) {
+        let always_on = self.config_store.current().mic.always_on;
+        let is_recording = self.state.is_recording();
+        let is_preview = self.state.is_settings_window_visible();
+        let should_play = always_on || is_recording || is_preview;
+
+        if let Ok(mut active_stream) = self.active_stream.lock() {
+            if let Some(ref mut active) = *active_stream {
+                if should_play {
+                    let _ = active._stream.play();
+                } else {
+                    let _ = active._stream.pause();
+                }
+            }
+        }
+    }
+
     pub fn inactive(
         state: Arc<AppState>,
         transcription_controller: TranscriptionController,
