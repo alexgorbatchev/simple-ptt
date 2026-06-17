@@ -31,7 +31,7 @@ pub fn make_application_icon(mtm: MainThreadMarker) -> Retained<NSImage> {
     make_microphone_icon(
         mtm,
         NSSize::new(APPLICATION_ICON_SIZE, APPLICATION_ICON_SIZE),
-        &NSColor::blackColor(),
+        &NSColor::whiteColor(),
         false,
     )
 }
@@ -106,7 +106,7 @@ fn write_png_icon(mtm: MainThreadMarker, icon_size: f64, output_path: &Path) -> 
     let image = make_microphone_icon(
         mtm,
         NSSize::new(icon_size, icon_size),
-        &NSColor::blackColor(),
+        &NSColor::whiteColor(),
         false,
     );
     let tiff_data = image.TIFFRepresentation().ok_or_else(|| {
