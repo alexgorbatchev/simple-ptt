@@ -655,18 +655,23 @@ where
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 let is_recording = meter_state.is_recording();
                 let is_preview = meter_state.is_settings_window_visible();
-                if !is_recording && !is_preview {
-                    if was_recording {
-                        smoothed_level = 0.0;
-                        smoothed_peak = 0.0;
-                        was_recording = false;
-                        pcm_buffer.clear();
-                    }
-                    meter_state.clear_mic_meter();
-                    return;
-                }
+                 if !is_recording && !is_preview {
+                     if was_recording {
+                         smoothed_level = 0.0;
+                         smoothed_peak = 0.0;
+                         was_recording = false;
+                         pcm_buffer.clear();
+                     }
+                     meter_state.clear_mic_meter();
+                     meter_state.set_mic_active(false);
+                     return;
+                 }
 
-                if !was_recording {
+                 if !meter_state.is_mic_active() {
+                     meter_state.set_mic_active(true);
+                 }
+
+                 if !was_recording {
                     smoothed_level = 0.0;
                     smoothed_peak = 0.0;
                     was_recording = true;

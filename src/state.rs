@@ -32,6 +32,7 @@ pub struct MicMeterSnapshot {
     pub clip_event_counter: u32,
     pub level: u8,
     pub peak: u8,
+    pub mic_active: bool,
 }
 
 #[derive(Debug)]
@@ -51,6 +52,7 @@ pub struct AppState {
     overlay_text_opacity: AtomicU8,
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
+    mic_active: AtomicBool,
 }
 
 impl AppState {
@@ -71,6 +73,7 @@ impl AppState {
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
+            mic_active: AtomicBool::new(false),
         })
     }
 
@@ -103,8 +106,12 @@ impl AppState {
 
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
+        if state == STATE_RECORDING {
+            self.set_mic_active(false);
+        }
         if state != STATE_RECORDING && !self.is_settings_window_visible() {
             self.clear_mic_meter();
+            self.set_mic_active(false);
         }
     }
 
@@ -225,6 +232,14 @@ impl AppState {
             .unwrap_or_else(|_| Arc::from(""))
     }
 
+    pub fn is_mic_active(&self) -> bool {
+        self.mic_active.load(Ordering::Relaxed)
+    }
+
+    pub fn set_mic_active(&self, active: bool) {
+        self.mic_active.store(active, Ordering::Relaxed);
+    }
+
     pub fn set_mic_meter(&self, level: f32, peak: f32, clip_detected: bool) {
         if clip_detected {
             self.clip_event_counter.fetch_add(1, Ordering::Relaxed);
@@ -246,6 +261,7 @@ impl AppState {
             clip_event_counter: self.clip_event_counter.load(Ordering::Relaxed),
             level: self.mic_meter_level.load(Ordering::Relaxed),
             peak: self.mic_meter_peak.load(Ordering::Relaxed),
+            mic_active: self.is_mic_active(),
         }
     }
 }

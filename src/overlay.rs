@@ -93,6 +93,7 @@ pub struct OverlayWindow {
     footer_hint: RefCell<Option<String>>,
     is_visible: Cell<bool>,
     text_opacity: Cell<f64>,
+    meter_alpha: Cell<f64>,
 }
 
 impl OverlayWindow {
@@ -248,6 +249,7 @@ impl OverlayWindow {
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
             is_visible: Cell::new(false),
             text_opacity: Cell::new(1.0),
+            meter_alpha: Cell::new(0.0),
         };
         overlay_window.ui_meter_view.clear(meter_cluster_width());
         overlay_window
@@ -315,6 +317,25 @@ impl OverlayWindow {
                     0.82, 0.86, 0.94, 1.0,
                 )));
             }
+        }
+
+        let target_alpha = if meter_is_visible && mic_meter.mic_active {
+            1.0
+        } else {
+            0.0
+        };
+
+        let current_alpha = self.meter_alpha.get();
+        if state != STATE_RECORDING {
+            self.meter_alpha.set(0.0);
+        } else if (current_alpha - target_alpha).abs() > 0.01 {
+            let step = 0.375;
+            let next_alpha = if current_alpha < target_alpha {
+                (current_alpha + step).min(target_alpha)
+            } else {
+                (current_alpha - step).max(target_alpha)
+            };
+            self.meter_alpha.set(next_alpha);
         }
 
         self.layout_panels(
@@ -481,7 +502,9 @@ impl OverlayWindow {
             footer_is_visible,
             self.ui_meter_view.style(),
         ));
-        self.ui_meter_view.set_hidden(!meter_is_visible);
+        let meter_alpha = self.meter_alpha.get();
+        self.ui_meter_view.set_hidden(meter_alpha == 0.0);
+        self.ui_meter_view.view().setAlphaValue(meter_alpha);
 
         match correction_frame {
             Some(frame) => {
