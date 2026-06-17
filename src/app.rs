@@ -392,6 +392,7 @@ define_class!(
                 };
                 permissions_dialog.hide();
                 self.restore_accessory_activation_policy_if_possible();
+                self.activate_audio_if_ready();
                 return;
             }
 
@@ -637,9 +638,21 @@ impl AppDelegate {
                 "failed to activate audio input after microphone grant: {}",
                 error
             );
+            self.ivars().state.set_state(STATE_ERROR);
             if let Some(settings_window) = self.ivars().settings_window.get() {
                 settings_window.set_status(&error);
             }
+            show_modal_alert(
+                "simple-ptt couldn't start audio input",
+                &format!(
+                    concat!(
+                        "Audio capture failed to initialize after microphone permission grant.\n\n",
+                        "Please check your audio device settings.\n\n",
+                        "Error: {}"
+                    ),
+                    error
+                ),
+            );
         }
     }
 
