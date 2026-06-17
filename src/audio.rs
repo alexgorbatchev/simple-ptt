@@ -2,7 +2,7 @@ use bytes::{BufMut, Bytes, BytesMut};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 use std::collections::HashMap;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
 #[cfg(target_os = "macos")]
@@ -49,6 +49,7 @@ struct ActiveAudioStream {
     actual_audio_device_name: Option<String>,
     requested_sample_rate: u32,
     _stream: Stream,
+    healthy: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -141,9 +142,17 @@ impl AudioController {
         if let Ok(mut active_stream) = self.active_stream.lock() {
             if let Some(ref mut active) = *active_stream {
                 if should_play {
-                    let _ = active._stream.play();
+                    if let Err(error) = active._stream.play() {
+                        log::error!("failed to play audio stream: {}", error);
+                        active.healthy.store(false, Ordering::SeqCst);
+                        self.state.set_state(crate::state::STATE_ERROR);
+                    }
                 } else {
-                    let _ = active._stream.pause();
+                    if let Err(error) = active._stream.pause() {
+                        log::error!("failed to pause audio stream: {}", error);
+                        active.healthy.store(false, Ordering::SeqCst);
+                        self.state.set_state(crate::state::STATE_ERROR);
+                    }
                 }
             }
         }
@@ -185,7 +194,7 @@ impl AudioController {
             config_store.clone(),
             &mic_config,
         ) {
-            Ok((stream, actual_rate, actual_audio_device_name)) => {
+            Ok((stream, actual_rate, actual_audio_device_name, healthy)) => {
                 transcription_controller.set_sample_rate(actual_rate);
                 (
                     Some(ActiveAudioStream {
@@ -193,6 +202,7 @@ impl AudioController {
                         actual_audio_device_name,
                         requested_sample_rate: mic_config.sample_rate,
                         _stream: stream,
+                        healthy,
                     }),
                     None,
                 )
@@ -272,7 +282,9 @@ impl AudioController {
         let mic_config = self.config_store.current().mic;
 
         let needs_rebuild = if let Some(active_stream) = &*active_stream {
-            if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
+            if !active_stream.healthy.load(Ordering::SeqCst) {
+                true
+            } else if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
                 // Config says we're using "System default". Let's check if the default actually changed
                 let host = cpal::default_host();
                 let current_default_name = host
@@ -318,41 +330,45 @@ impl AudioController {
             return;
         }
 
-        // Even if there's no pending config, if the configured device is "System default", check if the system default actually changed.
+        // Even if there's no pending config, if the configured device is "System default", check if the default actually changed, or if the stream is unhealthy.
         // E.g. pulling a mic out, or adding one while app is running.
         let needs_rebuild = {
             let active_stream = self.active_stream.lock().ok();
             let current_config_mic = self.config_store.current().mic;
             match active_stream.as_deref().and_then(|x| x.as_ref()) {
-                Some(active)
-                    if normalized_configured_audio_device(
+                Some(active) => {
+                    if !active.healthy.load(Ordering::SeqCst) {
+                        true
+                    } else if normalized_configured_audio_device(
                         current_config_mic.audio_device.as_deref(),
                     )
-                    .is_none() =>
-                {
-                    #[cfg(target_os = "macos")]
+                    .is_none()
                     {
-                        if core_audio_listener::DEFAULT_DEVICE_CHANGED.swap(false, Ordering::SeqCst) {
+                        #[cfg(target_os = "macos")]
+                        {
+                            if core_audio_listener::DEFAULT_DEVICE_CHANGED.swap(false, Ordering::SeqCst) {
+                                let host = cpal::default_host();
+                                let current_default_name = host
+                                    .default_input_device()
+                                    .and_then(|device| device.name().ok());
+                                current_default_name != active.actual_audio_device_name
+                            } else {
+                                false
+                            }
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
                             let host = cpal::default_host();
                             let current_default_name = host
                                 .default_input_device()
                                 .and_then(|device| device.name().ok());
                             current_default_name != active.actual_audio_device_name
-                        } else {
-                            false
                         }
-                    }
-                    #[cfg(not(target_os = "macos"))]
-                    {
-                        let host = cpal::default_host();
-                        let current_default_name = host
-                            .default_input_device()
-                            .and_then(|device| device.name().ok());
-                        current_default_name != active.actual_audio_device_name
+                    } else {
+                        false
                     }
                 }
                 None => false,
-                _ => false,
             }
         };
 
@@ -365,7 +381,7 @@ impl AudioController {
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let (stream, actual_rate, actual_audio_device_name) = build_input_stream(
+        let (stream, actual_rate, actual_audio_device_name, healthy) = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
@@ -382,6 +398,7 @@ impl AudioController {
             actual_audio_device_name,
             requested_sample_rate: mic_config.sample_rate,
             _stream: stream,
+            healthy,
         });
         Ok(())
     }
@@ -392,7 +409,7 @@ pub fn build_input_stream(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     mic_config: &MicConfig,
-) -> Result<(Stream, u32, Option<String>), String> {
+) -> Result<(Stream, u32, Option<String>, Arc<AtomicBool>), String> {
     let host = cpal::default_host();
     let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
 
@@ -413,15 +430,17 @@ pub fn build_input_stream(
         config.sample_format()
     );
 
+    let healthy = Arc::new(AtomicBool::new(true));
+
     let stream = match config.sample_format() {
         SampleFormat::F32 => {
-            build_stream_for_format::<f32>(&device, &config, state, controller, config_store)?
+            build_stream_for_format::<f32>(&device, &config, state, controller, config_store, healthy.clone())?
         }
         SampleFormat::I16 => {
-            build_stream_for_format::<i16>(&device, &config, state, controller, config_store)?
+            build_stream_for_format::<i16>(&device, &config, state, controller, config_store, healthy.clone())?
         }
         SampleFormat::U16 => {
-            build_stream_for_format::<u16>(&device, &config, state, controller, config_store)?
+            build_stream_for_format::<u16>(&device, &config, state, controller, config_store, healthy.clone())?
         }
         sample_format => {
             return Err(format!(
@@ -436,7 +455,7 @@ pub fn build_input_stream(
         .map_err(|error| format!("failed to start audio stream: {}", error))?;
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
-    Ok((stream, actual_rate, actual_audio_device_name))
+    Ok((stream, actual_rate, actual_audio_device_name, healthy))
 }
 
 fn build_validation_stream<T>(
@@ -614,6 +633,7 @@ fn build_stream_for_format<T>(
     state: Arc<AppState>,
     controller: TranscriptionController,
     config_store: LiveConfigStore,
+    healthy: Arc<AtomicBool>,
 ) -> Result<Stream, String>
 where
     T: Sample + SizedSample + Send + 'static,
@@ -622,6 +642,8 @@ where
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
     let meter_state = Arc::clone(&state);
+    let error_state = Arc::clone(&state);
+    let stream_healthy = Arc::clone(&healthy);
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut was_recording = false;
@@ -675,8 +697,10 @@ where
                     controller.send_audio(encoded_chunk.pcm_bytes);
                 }
             },
-            |error| {
+            move |error| {
                 log::error!("audio stream error: {}", error);
+                stream_healthy.store(false, Ordering::SeqCst);
+                error_state.set_state(crate::state::STATE_ERROR);
             },
             None,
         )
