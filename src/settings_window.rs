@@ -288,11 +288,12 @@ impl SettingsWindow {
             "Gain",
             sel!(micGainSliderChanged:),
         );
-        let mic_always_on_checkbox = add_checkbox(
+        let mic_always_on_checkbox = add_checkbox_with_hint(
             &content_view,
             mtm,
             &mut current_y,
-            "Keep microphone active when idle (prevents delay)",
+            "Keep microphone active when idle",
+            "prevents delay at the cost of 1-1.5% CPU",
         );
 
         current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
@@ -1378,6 +1379,42 @@ fn add_checkbox(
     );
     content_view.addSubview(&checkbox);
     *current_y -= FIELD_HEIGHT + ROW_GAP;
+    checkbox
+}
+
+fn add_checkbox_with_hint(
+    content_view: &NSView,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    title: &str,
+    hint: &str,
+) -> Retained<NSButton> {
+    let checkbox = unsafe {
+        NSButton::checkboxWithTitle_target_action(&NSString::from_str(title), None, None, mtm)
+    };
+    checkbox.setFont(Some(&settings_font()));
+    set_view_frame(
+        &*checkbox,
+        FIELD_X,
+        *current_y - 2.0,
+        FIELD_WIDTH,
+        FIELD_HEIGHT,
+    );
+    content_view.addSubview(&checkbox);
+
+    let hint_field = NSTextField::wrappingLabelWithString(&NSString::from_str(hint), mtm);
+    configure_hint_label(&hint_field);
+    hint_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    set_view_frame(
+        &hint_field,
+        FIELD_X + 22.0,
+        *current_y - ENV_HINT_HEIGHT - 4.0,
+        FIELD_WIDTH - 22.0,
+        ENV_HINT_HEIGHT,
+    );
+    content_view.addSubview(&hint_field);
+
+    *current_y -= FIELD_HEIGHT + ENV_HINT_HEIGHT + ROW_GAP;
     checkbox
 }
 
