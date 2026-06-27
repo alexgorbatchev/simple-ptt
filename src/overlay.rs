@@ -302,20 +302,22 @@ impl OverlayWindow {
             ""
         });
 
-        let is_error_correction = correction_is_visible && overlay_correction_text.starts_with("Transformation failed:");
+        let is_error_correction =
+            correction_is_visible && overlay_correction_text.starts_with("Transformation failed:");
         if let Some(layer) = self.correction_root_view.layer() {
             if is_error_correction {
                 let border_color = NSColor::systemRedColor();
                 let border_cg_color = border_color.CGColor();
                 layer.setBorderWidth(1.5);
                 layer.setBorderColor(Some(&border_cg_color));
-                self.correction_text_view.setTextColor(Some(&NSColor::systemRedColor()));
+                self.correction_text_view
+                    .setTextColor(Some(&NSColor::systemRedColor()));
             } else {
                 layer.setBorderWidth(0.0);
                 layer.setBorderColor(None);
-                self.correction_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.82, 0.86, 0.94, 1.0,
-                )));
+                self.correction_text_view.setTextColor(Some(
+                    &NSColor::colorWithSRGBRed_green_blue_alpha(0.82, 0.86, 0.94, 1.0),
+                ));
             }
         }
 

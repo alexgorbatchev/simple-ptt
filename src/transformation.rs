@@ -155,7 +155,8 @@ where
             return Err("transformation aborted".to_owned());
         }
 
-        let chunk = chunk_result.map_err(|error| format!("transformation stream failed: {}", error))?;
+        let chunk =
+            chunk_result.map_err(|error| format!("transformation stream failed: {}", error))?;
         log::debug!("Received stream chunk");
 
         match chunk {
@@ -357,7 +358,9 @@ mod tests {
             }))
             .build();
 
-        let mut stream = agent.stream_prompt("Write a 300 word essay about Apple.").await;
+        let mut stream = agent
+            .stream_prompt("Write a 300 word essay about Apple.")
+            .await;
         println!("Starting stream...");
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {

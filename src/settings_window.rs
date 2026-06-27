@@ -779,16 +779,27 @@ impl SettingsWindow {
 
     pub fn set_transformation_check_result(&self, success: bool) {
         let (bezel, text) = if success {
-            (Some(NSColor::systemGreenColor()), Some(NSColor::whiteColor()))
+            (
+                Some(NSColor::systemGreenColor()),
+                Some(NSColor::whiteColor()),
+            )
         } else {
             (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
         };
-        style_button_bezel_and_text(&self.transformation_model_check_button, "Check", bezel, text);
+        style_button_bezel_and_text(
+            &self.transformation_model_check_button,
+            "Check",
+            bezel,
+            text,
+        );
     }
 
     pub fn set_deepgram_check_result(&self, success: bool) {
         let (bezel, text) = if success {
-            (Some(NSColor::systemGreenColor()), Some(NSColor::whiteColor()))
+            (
+                Some(NSColor::systemGreenColor()),
+                Some(NSColor::whiteColor()),
+            )
         } else {
             (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
         };
@@ -1886,7 +1897,9 @@ pub(crate) fn style_button_bezel_and_text(
             objc2_foundation::NSAttributedStringKey,
             objc2::runtime::AnyObject,
         >::from_retained_objects(
-            &[unsafe { NSForegroundColorAttributeName }, unsafe { NSFontAttributeName }],
+            &[unsafe { NSForegroundColorAttributeName }, unsafe {
+                NSFontAttributeName
+            }],
             &[text_any, font],
         );
         let attributed_title =

@@ -1417,7 +1417,7 @@ fn run_buffer_transformation(
         Ok(config) => config.clone(),
         Err(error) => {
             log::error!("transformation failed: {}", error);
-            
+
             // Set user-friendly error message in the correction popout and stay on screen
             let user_friendly_error = format!("Transformation failed: {}", error);
             state.set_overlay_correction_text(user_friendly_error);
@@ -1485,7 +1485,7 @@ fn run_buffer_transformation(
             }
 
             log::error!("transformation failed: {}", error);
-            
+
             // Set user-friendly error message in the correction popout and stay on screen
             let user_friendly_error = format!("Transformation failed: {}", error);
             state.set_overlay_correction_text(user_friendly_error);

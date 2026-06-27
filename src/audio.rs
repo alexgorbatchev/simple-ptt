@@ -165,7 +165,7 @@ impl AudioController {
     ) -> Self {
         #[cfg(target_os = "macos")]
         REGISTER_LISTENER.call_once(|| {
-            core_audio_listener::register_default_device_listener();
+            core_audio_listener::register_hardware_listeners();
         });
 
         Self {
@@ -184,7 +184,7 @@ impl AudioController {
     ) -> (Self, Option<String>) {
         #[cfg(target_os = "macos")]
         REGISTER_LISTENER.call_once(|| {
-            core_audio_listener::register_default_device_listener();
+            core_audio_listener::register_hardware_listeners();
         });
 
         let mic_config = config_store.current().mic;
@@ -234,24 +234,32 @@ impl AudioController {
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
 
-        // We must rebuild if settings changed, but also if it looks like the default device identity shifted.
+        // We must rebuild if settings changed, but also if it looks like the default device identity shifted,
+        // or if we are currently on a fallback device and the settings dialog is being re-saved.
         let needs_stream_rebuild = match active_stream.as_ref() {
             Some(active_stream) => {
                 if active_stream.requested_sample_rate != mic_config.sample_rate
                     || active_stream.configured_audio_device != mic_config.audio_device
                 {
                     true
-                } else if normalized_configured_audio_device(mic_config.audio_device.as_deref())
-                    .is_none()
+                } else if let Some(configured_name) =
+                    normalized_configured_audio_device(mic_config.audio_device.as_deref())
                 {
+                    // We asked for a specific device, but maybe we didn't get it (fallback).
+                    // If the user clicks Save again, let's try to rebuild if we aren't on the requested one.
+                    let actual_name = active_stream
+                        .actual_audio_device_name
+                        .as_deref()
+                        .unwrap_or("");
+                    actual_name != configured_name
+                        && actual_name.to_lowercase() != configured_name.to_lowercase()
+                } else {
                     // Config says we're using "System default". Let's check if the default actually changed (e.g. plugged in new mic).
                     let host = cpal::default_host();
                     let current_default_name = host
                         .default_input_device()
                         .and_then(|device| device.name().ok());
                     current_default_name != active_stream.actual_audio_device_name
-                } else {
-                    false
                 }
             }
             None => true,
@@ -284,7 +292,9 @@ impl AudioController {
         let needs_rebuild = if let Some(active_stream) = &*active_stream {
             if !active_stream.healthy.load(Ordering::SeqCst) {
                 true
-            } else if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
+            } else if normalized_configured_audio_device(mic_config.audio_device.as_deref())
+                .is_none()
+            {
                 // Config says we're using "System default". Let's check if the default actually changed
                 let host = cpal::default_host();
                 let current_default_name = host
@@ -330,8 +340,8 @@ impl AudioController {
             return;
         }
 
-        // Even if there's no pending config, if the configured device is "System default", check if the default actually changed, or if the stream is unhealthy.
-        // E.g. pulling a mic out, or adding one while app is running.
+        // Even if there's no pending config, if the stream is unhealthy or if hardware changed,
+        // we might need to rebuild the stream (e.g. pulling a mic out, or adding one while app is running).
         let needs_rebuild = {
             let active_stream = self.active_stream.lock().ok();
             let current_config_mic = self.config_store.current().mic;
@@ -346,7 +356,7 @@ impl AudioController {
                     {
                         #[cfg(target_os = "macos")]
                         {
-                            if core_audio_listener::DEFAULT_DEVICE_CHANGED.swap(false, Ordering::SeqCst) {
+                            if core_audio_listener::HARDWARE_CHANGED.swap(false, Ordering::SeqCst) {
                                 let host = cpal::default_host();
                                 let current_default_name = host
                                     .default_input_device()
@@ -365,7 +375,32 @@ impl AudioController {
                             current_default_name != active.actual_audio_device_name
                         }
                     } else {
-                        false
+                        #[cfg(target_os = "macos")]
+                        {
+                            if core_audio_listener::HARDWARE_CHANGED.swap(false, Ordering::SeqCst) {
+                                let configured_name = normalized_configured_audio_device(
+                                    current_config_mic.audio_device.as_deref(),
+                                )
+                                .unwrap();
+                                let actual_name =
+                                    active.actual_audio_device_name.as_deref().unwrap_or("");
+                                actual_name != configured_name
+                                    && actual_name.to_lowercase() != configured_name.to_lowercase()
+                            } else {
+                                false
+                            }
+                        }
+                        #[cfg(not(target_os = "macos"))]
+                        {
+                            let configured_name = normalized_configured_audio_device(
+                                current_config_mic.audio_device.as_deref(),
+                            )
+                            .unwrap();
+                            let actual_name =
+                                active.actual_audio_device_name.as_deref().unwrap_or("");
+                            actual_name != configured_name
+                                && actual_name.to_lowercase() != configured_name.to_lowercase()
+                        }
                     }
                 }
                 None => false,
@@ -433,15 +468,30 @@ pub fn build_input_stream(
     let healthy = Arc::new(AtomicBool::new(true));
 
     let stream = match config.sample_format() {
-        SampleFormat::F32 => {
-            build_stream_for_format::<f32>(&device, &config, state, controller, config_store, healthy.clone())?
-        }
-        SampleFormat::I16 => {
-            build_stream_for_format::<i16>(&device, &config, state, controller, config_store, healthy.clone())?
-        }
-        SampleFormat::U16 => {
-            build_stream_for_format::<u16>(&device, &config, state, controller, config_store, healthy.clone())?
-        }
+        SampleFormat::F32 => build_stream_for_format::<f32>(
+            &device,
+            &config,
+            state,
+            controller,
+            config_store,
+            healthy.clone(),
+        )?,
+        SampleFormat::I16 => build_stream_for_format::<i16>(
+            &device,
+            &config,
+            state,
+            controller,
+            config_store,
+            healthy.clone(),
+        )?,
+        SampleFormat::U16 => build_stream_for_format::<u16>(
+            &device,
+            &config,
+            state,
+            controller,
+            config_store,
+            healthy.clone(),
+        )?,
         sample_format => {
             return Err(format!(
                 "unsupported audio input sample format: {:?}",
@@ -554,10 +604,13 @@ fn resolve_input_device(
             log::info!("using configured audio device index {}", index);
             return Ok(device.clone());
         }
-        return Err(format!(
-            "configured audio_device index {} is out of range",
+        log::warn!(
+            "configured audio_device index {} is out of range, falling back to default device",
             index
-        ));
+        );
+        return host
+            .default_input_device()
+            .ok_or_else(|| "no default audio input device".to_owned());
     }
 
     let requested_device_lower = requested_device.to_lowercase();
@@ -571,10 +624,12 @@ fn resolve_input_device(
         }
     }
 
-    Err(format!(
-        "configured audio_device '{}' was not found",
+    log::warn!(
+        "configured audio_device '{}' was not found, falling back to default device",
         requested_device
-    ))
+    );
+    host.default_input_device()
+        .ok_or_else(|| "no default audio input device".to_owned())
 }
 
 fn normalized_configured_audio_device(configured_audio_device: Option<&str>) -> Option<&str> {
@@ -655,23 +710,23 @@ where
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 let is_recording = meter_state.is_recording();
                 let is_preview = meter_state.is_settings_window_visible();
-                 if !is_recording && !is_preview {
-                     if was_recording {
-                         smoothed_level = 0.0;
-                         smoothed_peak = 0.0;
-                         was_recording = false;
-                         pcm_buffer.clear();
-                     }
-                     meter_state.clear_mic_meter();
-                     meter_state.set_mic_active(false);
-                     return;
-                 }
+                if !is_recording && !is_preview {
+                    if was_recording {
+                        smoothed_level = 0.0;
+                        smoothed_peak = 0.0;
+                        was_recording = false;
+                        pcm_buffer.clear();
+                    }
+                    meter_state.clear_mic_meter();
+                    meter_state.set_mic_active(false);
+                    return;
+                }
 
-                 if !meter_state.is_mic_active() {
-                     meter_state.set_mic_active(true);
-                 }
+                if !meter_state.is_mic_active() {
+                    meter_state.set_mic_active(true);
+                }
 
-                 if !was_recording {
+                if !was_recording {
                     smoothed_level = 0.0;
                     smoothed_peak = 0.0;
                     was_recording = true;
@@ -933,7 +988,7 @@ mod tests {
 mod core_audio_listener {
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    pub static DEFAULT_DEVICE_CHANGED: AtomicBool = AtomicBool::new(false);
+    pub static HARDWARE_CHANGED: AtomicBool = AtomicBool::new(false);
 
     // CoreAudio FFI
     type OSStatus = i32;
@@ -965,22 +1020,29 @@ mod core_audio_listener {
 
     const K_AUDIO_OBJECT_SYSTEM_OBJECT: AudioObjectID = 1;
     const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE: u32 = 0x64696e69; // 'dini'
+    const K_AUDIO_HARDWARE_PROPERTY_DEVICES: u32 = 0x64657673; // 'devs'
     const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = 0x676c6f62; // 'glob'
     const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
 
-    unsafe extern "C" fn default_device_listener_callback(
+    unsafe extern "C" fn hardware_listener_callback(
         _inObjectID: AudioObjectID,
         _inNumberAddresses: u32,
         _inAddresses: *const AudioObjectPropertyAddress,
         _inClientData: *mut std::ffi::c_void,
     ) -> OSStatus {
-        DEFAULT_DEVICE_CHANGED.store(true, Ordering::SeqCst);
+        HARDWARE_CHANGED.store(true, Ordering::SeqCst);
         0 // noErr
     }
 
-    pub fn register_default_device_listener() {
-        let address = AudioObjectPropertyAddress {
+    pub fn register_hardware_listeners() {
+        let default_device_address = AudioObjectPropertyAddress {
             mSelector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE,
+            mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
+            mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
+        };
+
+        let devices_address = AudioObjectPropertyAddress {
+            mSelector: K_AUDIO_HARDWARE_PROPERTY_DEVICES,
             mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
             mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
         };
@@ -988,14 +1050,29 @@ mod core_audio_listener {
         unsafe {
             let status = AudioObjectAddPropertyListener(
                 K_AUDIO_OBJECT_SYSTEM_OBJECT,
-                &address,
-                default_device_listener_callback,
+                &default_device_address,
+                hardware_listener_callback,
                 std::ptr::null_mut(),
             );
             if status != 0 {
-                log::error!("Failed to register CoreAudio default input device listener: {}", status);
+                log::error!(
+                    "Failed to register CoreAudio default input device listener: {}",
+                    status
+                );
             } else {
                 log::info!("Registered CoreAudio default input device listener successfully");
+            }
+
+            let status = AudioObjectAddPropertyListener(
+                K_AUDIO_OBJECT_SYSTEM_OBJECT,
+                &devices_address,
+                hardware_listener_callback,
+                std::ptr::null_mut(),
+            );
+            if status != 0 {
+                log::error!("Failed to register CoreAudio devices listener: {}", status);
+            } else {
+                log::info!("Registered CoreAudio devices listener successfully");
             }
         }
     }

@@ -3,13 +3,10 @@ use objc2::runtime::AnyObject;
 use objc2::{sel, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont, NSTextAlignment, NSTextField,
-    NSView, NSWindow, NSWindowStyleMask,
+    NSEventModifierFlags, NSFont, NSTextAlignment, NSTextField, NSView, NSWindow,
+    NSWindowStyleMask,
 };
-use objc2_foundation::{
-    ns_string, MainThreadMarker, NSPoint, NSRect, NSSize,
-    NSString,
-};
+use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
 use crate::settings_window::{settings_font, style_button_bezel_and_text};
