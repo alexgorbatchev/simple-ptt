@@ -27,7 +27,6 @@ use crate::ui_meter::{self, UiMeterView};
 
 const CORRECTION_OVERLAY_MIN_HEIGHT: f64 = 92.0;
 const CORRECTION_OVERLAY_MAX_HEIGHT_RATIO: f64 = 0.26;
-const MAIN_OVERLAY_MAX_HEIGHT_RATIO: f64 = 0.48;
 const MAIN_OVERLAY_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
@@ -370,6 +369,18 @@ impl OverlayWindow {
             self.correction_panel.orderFrontRegardless();
         }
 
+        let text_length = self.working_text_view.string().length();
+        self.working_text_view
+            .setSelectedRange(NSRange::new(text_length, 0));
+        self.working_text_view
+            .scrollRangeToVisible(NSRange::new(text_length, 0));
+
+        if correction_is_visible {
+            let correction_length = self.correction_text_view.string().length();
+            self.correction_text_view
+                .scrollRangeToVisible(NSRange::new(correction_length, 0));
+        }
+
         self.state.set_overlay_window_visible(true);
     }
 
@@ -446,12 +457,30 @@ impl OverlayWindow {
         let correction_content_height = correction_is_visible
             .then(|| measured_text_height(&self.correction_text_view))
             .unwrap_or(CORRECTION_OVERLAY_MIN_HEIGHT);
+        let current_main_origin_y = self.is_visible.get().then(|| self.panel.frame().origin.y);
+        let correction_height = correction_is_visible
+            .then(|| correction_panel_height(correction_content_height, visible_frame.size.height));
+
+        let visible_max_y = visible_frame.origin.y + visible_frame.size.height;
+        let top_edge_limit = visible_max_y - 100.0;
+        let current_correction_stack_height = correction_height
+            .map(|height| height + PANEL_STACK_GAP)
+            .unwrap_or(0.0);
+
+        let max_main_height = if let Some(origin_y) = current_main_origin_y {
+            (top_edge_limit - origin_y - current_correction_stack_height)
+                .max(MAIN_OVERLAY_MIN_HEIGHT)
+        } else {
+            // When first showing, limit it to 60% of screen height
+            (visible_frame.size.height * 0.6).max(MAIN_OVERLAY_MIN_HEIGHT)
+        };
+
         let main_height = main_panel_height(
             main_content_height,
             footer_is_visible,
             meter_is_visible,
             meter_style,
-            visible_frame.size.height,
+            max_main_height,
         );
         let main_reserved_height =
             bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
@@ -459,15 +488,12 @@ impl OverlayWindow {
         let main_desired_height =
             main_reserved_height + main_content_height.max(main_min_text_area_height);
         let main_is_clamped = main_height + 1.0 < main_desired_height;
-        let correction_height = correction_is_visible
-            .then(|| correction_panel_height(correction_content_height, visible_frame.size.height));
         let correction_desired_height =
             correction_content_height.max(CORRECTION_OVERLAY_MIN_HEIGHT);
         let correction_is_clamped = correction_height
             .map(|height| height + 1.0 < correction_desired_height)
             .unwrap_or(false);
 
-        let current_main_origin_y = self.is_visible.get().then(|| self.panel.frame().origin.y);
         let (main_frame, correction_frame) = stacked_panel_frames(
             visible_frame,
             main_height,
@@ -1071,12 +1097,12 @@ fn main_panel_height(
     footer_is_visible: bool,
     meter_is_visible: bool,
     meter_style: UiMeterStyle,
-    screen_height: f64,
+    max_allowed_height: f64,
 ) -> f64 {
     let reserved_height = bottom_reserved_height(footer_is_visible, meter_is_visible, meter_style);
     let min_text_area_height = (MAIN_OVERLAY_MIN_HEIGHT - reserved_height).max(0.0);
     let desired_text_area_height = text_height.max(min_text_area_height);
-    let max_height = (screen_height * MAIN_OVERLAY_MAX_HEIGHT_RATIO).max(MAIN_OVERLAY_MIN_HEIGHT);
+    let max_height = max_allowed_height.max(MAIN_OVERLAY_MIN_HEIGHT);
 
     (reserved_height + desired_text_area_height)
         .max(MAIN_OVERLAY_MIN_HEIGHT)
