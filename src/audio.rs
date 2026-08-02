@@ -46,6 +46,7 @@ pub struct AudioController {
     state: Arc<AppState>,
     transcription_controller: TranscriptionController,
     last_rebuild_attempt: Mutex<Option<Instant>>,
+    preview_audio_device: Mutex<Option<Option<String>>>,
 }
 
 struct ActiveAudioStream {
@@ -180,6 +181,7 @@ impl AudioController {
             state,
             transcription_controller,
             last_rebuild_attempt: Mutex::new(None),
+            preview_audio_device: Mutex::new(None),
         }
     }
 
@@ -228,9 +230,26 @@ impl AudioController {
                 state,
                 transcription_controller,
                 last_rebuild_attempt: Mutex::new(None),
+                preview_audio_device: Mutex::new(None),
             },
             startup_error,
         )
+    }
+
+    pub fn set_preview_audio_device(&self, device: Option<Option<String>>) {
+        if let Ok(mut preview_guard) = self.preview_audio_device.lock() {
+            *preview_guard = device;
+        }
+    }
+
+    pub fn effective_mic_config(&self) -> MicConfig {
+        let mut mic_config = self.config_store.current().mic;
+        if let Ok(preview_guard) = self.preview_audio_device.lock() {
+            if let Some(ref preview_device) = *preview_guard {
+                mic_config.audio_device = preview_device.clone();
+            }
+        }
+        mic_config
     }
 
     pub fn should_rebuild_stream(&self) -> bool {
@@ -239,7 +258,7 @@ impl AudioController {
             Err(_) => return true,
         };
 
-        let mic_config = self.config_store.current().mic;
+        let mic_config = self.effective_mic_config();
         let Some(active) = active_stream.as_ref() else {
             return true;
         };
@@ -329,7 +348,7 @@ impl AudioController {
 
     pub fn ensure_input_stream_ready(&self) -> Result<bool, String> {
         if self.should_rebuild_stream() {
-            let mic_config = self.config_store.current().mic;
+            let mic_config = self.effective_mic_config();
             self.rebuild_stream(&mic_config)?;
             #[cfg(target_os = "macos")]
             core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
@@ -375,7 +394,7 @@ impl AudioController {
             *last_attempt_guard = Some(now);
         }
 
-        let current_config_mic = self.config_store.current().mic;
+        let current_config_mic = self.effective_mic_config();
         match self.rebuild_stream(&current_config_mic) {
             Ok(()) => {
                 #[cfg(target_os = "macos")]
@@ -1019,6 +1038,28 @@ mod tests {
         assert!(controller.should_rebuild_stream());
     }
 
+    #[test]
+    fn preview_audio_device_overrides_configured_device_for_rebuild() {
+        let state = crate::state::AppState::new();
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let transcription_controller =
+            crate::transcription::spawn_transcription_thread(state.clone(), config_store.clone());
+        let controller = AudioController::inactive(state, transcription_controller, config_store);
+
+        controller.set_preview_audio_device(Some(Some("Preview Mic".to_owned())));
+        assert_eq!(
+            controller.effective_mic_config().audio_device,
+            Some("Preview Mic".to_owned())
+        );
+
+        controller.set_preview_audio_device(None);
+        assert_eq!(controller.effective_mic_config().audio_device, None);
+    }
 }
 
 #[cfg(target_os = "macos")]

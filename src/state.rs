@@ -49,6 +49,7 @@ pub struct AppState {
     settings_window_visible: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
     overlay_text: Mutex<Arc<str>>,
+    overlay_error_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
@@ -70,6 +71,7 @@ impl AppState {
             settings_window_visible: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
             overlay_text: Mutex::new(Arc::from("")),
+            overlay_error_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
@@ -184,6 +186,21 @@ impl AppState {
         self.set_overlay_text(String::new());
     }
 
+    pub fn set_overlay_error_text(&self, overlay_error_text: impl Into<String>) {
+        if let Ok(mut current_overlay_error_text) = self.overlay_error_text.lock() {
+            *current_overlay_error_text = Arc::from(overlay_error_text.into());
+        }
+    }
+
+    pub fn clear_overlay_error_text(&self) {
+        self.set_overlay_error_text(String::new());
+    }
+
+    pub fn report_error(&self, message: impl Into<String>) {
+        self.set_overlay_error_text(message);
+        self.set_state(STATE_ERROR);
+    }
+
     pub fn set_overlay_correction_text(&self, overlay_correction_text: impl Into<String>) {
         if let Ok(mut current_overlay_correction_text) = self.overlay_correction_text.lock() {
             *current_overlay_correction_text = Arc::from(overlay_correction_text.into());
@@ -209,6 +226,13 @@ impl AppState {
         self.overlay_text
             .lock()
             .map(|overlay_text| overlay_text.clone())
+            .unwrap_or_else(|_| Arc::from(""))
+    }
+
+    pub fn overlay_error_text(&self) -> Arc<str> {
+        self.overlay_error_text
+            .lock()
+            .map(|overlay_error_text| overlay_error_text.clone())
             .unwrap_or_else(|_| Arc::from(""))
     }
 
@@ -325,6 +349,19 @@ mod tests {
 
         state.set_overlay_window_visible(false);
         assert!(!state.is_overlay_window_visible());
+    }
+
+    #[test]
+    fn preview_mic_gain_can_be_set_and_cleared() {
+        let state = AppState::new();
+
+        assert_eq!(state.preview_mic_gain(), None);
+
+        state.set_preview_mic_gain(Some(1.2));
+        assert_eq!(state.preview_mic_gain(), Some(1.2));
+
+        state.set_preview_mic_gain(None);
+        assert_eq!(state.preview_mic_gain(), None);
     }
 
     #[test]

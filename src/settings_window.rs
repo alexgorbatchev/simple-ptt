@@ -274,8 +274,14 @@ impl SettingsWindow {
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Meter style");
 
         current_y = add_section_title(&content_view, mtm, current_y, "Microphone");
-        let mic_audio_device_popup =
-            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Audio device");
+        let mic_audio_device_popup = add_labeled_pop_up_button_with_action(
+            &content_view,
+            target,
+            mtm,
+            &mut current_y,
+            "Audio device",
+            sel!(micAudioDeviceChanged:),
+        );
         let mic_sample_rate_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Sample rate");
         let mic_hold_ms_field =
@@ -877,7 +883,7 @@ impl SettingsWindow {
         available_audio_input_devices.map(|_| ())
     }
 
-    fn mic_audio_device_value(&self) -> Option<String> {
+    pub fn mic_audio_device_value(&self) -> Option<String> {
         let selected_title = self
             .mic_audio_device_popup
             .titleOfSelectedItem()
@@ -1209,6 +1215,22 @@ fn add_labeled_combo_box_with_buttons(
 
     *current_y -= FIELD_HEIGHT + ROW_GAP;
     (combo_box, leading_button, trailing_button)
+}
+
+fn add_labeled_pop_up_button_with_action(
+    content_view: &NSView,
+    target: &AnyObject,
+    mtm: MainThreadMarker,
+    current_y: &mut f64,
+    label: &str,
+    action: objc2::runtime::Sel,
+) -> Retained<NSPopUpButton> {
+    let popup_button = add_labeled_pop_up_button(content_view, mtm, current_y, label);
+    unsafe {
+        popup_button.setTarget(Some(target));
+        popup_button.setAction(Some(action));
+    }
+    popup_button
 }
 
 fn add_labeled_pop_up_button(

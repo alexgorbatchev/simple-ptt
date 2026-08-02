@@ -276,6 +276,16 @@ define_class!(
             settings_window.update_mic_gain_label(gain);
         }
 
+        #[unsafe(method(micAudioDeviceChanged:))]
+        fn mic_audio_device_changed(&self, _sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+            let device = settings_window.mic_audio_device_value();
+            self.ivars().audio_controller.set_preview_audio_device(Some(device));
+            self.ivars().audio_controller.apply_pending_if_idle();
+        }
+
         #[unsafe(method(openGitHubRepo:))]
         fn open_github_repo(&self, _sender: Option<&AnyObject>) {
             let github_url = NSString::from_str(GITHUB_REPO_URL);
@@ -481,6 +491,8 @@ define_class!(
 
             crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
 
+            self.ivars().audio_controller.set_preview_audio_device(None);
+
             let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
                 Ok(effect) => effect,
                 Err(error) => {
@@ -638,7 +650,7 @@ impl AppDelegate {
                 "failed to activate audio input after microphone grant: {}",
                 error
             );
-            self.ivars().state.set_state(STATE_ERROR);
+            self.ivars().state.report_error(error.to_string());
             if let Some(settings_window) = self.ivars().settings_window.get() {
                 settings_window.set_status(&error);
             }
@@ -825,6 +837,8 @@ impl AppDelegate {
             .set_settings_window_visible(false);
         self.ivars().state.set_settings_window_visible(false);
         self.ivars().state.set_preview_mic_gain(None);
+        self.ivars().audio_controller.set_preview_audio_device(None);
+        self.ivars().audio_controller.apply_pending_if_idle();
 
         if let Some(settings_window) = self.ivars().settings_window.get() {
             settings_window.cancel_hotkey_capture();
@@ -1120,6 +1134,7 @@ impl AppDelegate {
         deepgram_connection_status: DeepgramConnectionStatus,
         overlay_dismissed: bool,
         overlay_text: &str,
+        overlay_error_text: &str,
         overlay_correction_text: &str,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
@@ -1147,6 +1162,7 @@ impl AppDelegate {
             deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
+            overlay_error_text,
             overlay_correction_text,
             overlay_correction_active,
             overlay_text_opacity,
@@ -1449,6 +1465,7 @@ fn update_overlay_window(
     deepgram_connection_status: DeepgramConnectionStatus,
     overlay_dismissed: bool,
     overlay_text: &str,
+    overlay_error_text: &str,
     overlay_correction_text: &str,
     overlay_correction_active: bool,
     overlay_text_opacity: f64,
@@ -1462,6 +1479,7 @@ fn update_overlay_window(
             deepgram_connection_status,
             overlay_dismissed,
             overlay_text,
+            overlay_error_text,
             overlay_correction_text,
             overlay_correction_active,
             overlay_text_opacity,
@@ -1489,6 +1507,7 @@ struct UiUpdate {
     overlay_correction_active: bool,
     overlay_correction_text: Arc<str>,
     overlay_text: Arc<str>,
+    overlay_error_text: Arc<str>,
     overlay_text_opacity: f64,
     state: u8,
 }
@@ -1503,6 +1522,7 @@ extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
         update.deepgram_connection_status,
         update.overlay_dismissed,
         &update.overlay_text,
+        &update.overlay_error_text,
         &update.overlay_correction_text,
         update.overlay_correction_active,
         update.overlay_text_opacity,
@@ -1635,6 +1655,7 @@ pub fn setup_status_polling(
             let mut last_overlay_correction_active = false;
             let mut last_overlay_correction_text: Arc<str> = Arc::from("");
             let mut last_overlay_text: Arc<str> = Arc::from("");
+            let mut last_overlay_error_text: Arc<str> = Arc::from("");
             let mut last_overlay_text_opacity = 1.0;
             let mut last_state = STATE_IDLE;
             let mut frame_count = 0u64;
@@ -1653,6 +1674,7 @@ pub fn setup_status_polling(
                 let current_overlay_correction_active = state.is_overlay_correction_active();
                 let current_overlay_correction_text = state.overlay_correction_text();
                 let current_overlay_text = state.overlay_text();
+                let current_overlay_error_text = state.overlay_error_text();
                 let current_overlay_text_opacity = state.overlay_text_opacity();
                 let ui_changed = current_state != last_state
                     || current_deepgram_connection_status != last_deepgram_connection_status
@@ -1664,6 +1686,7 @@ pub fn setup_status_polling(
                         &last_overlay_correction_text,
                     )
                     || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
+                    || !Arc::ptr_eq(&current_overlay_error_text, &last_overlay_error_text)
                     || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
                         > f64::EPSILON;
                 let mic_meter_changed = current_mic_meter != last_mic_meter;
@@ -1702,6 +1725,7 @@ pub fn setup_status_polling(
                 last_overlay_correction_active = current_overlay_correction_active;
                 last_overlay_correction_text = Arc::clone(&current_overlay_correction_text);
                 last_overlay_text = Arc::clone(&current_overlay_text);
+                last_overlay_error_text = Arc::clone(&current_overlay_error_text);
                 last_overlay_text_opacity = current_overlay_text_opacity;
 
                 if ui_changed {
@@ -1729,6 +1753,7 @@ pub fn setup_status_polling(
                     overlay_correction_active: current_overlay_correction_active,
                     overlay_correction_text: current_overlay_correction_text,
                     overlay_text: current_overlay_text,
+                    overlay_error_text: current_overlay_error_text,
                     overlay_text_opacity: current_overlay_text_opacity,
                     state: current_state,
                 });
