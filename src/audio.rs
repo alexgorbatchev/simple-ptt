@@ -4,6 +4,7 @@ use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStrea
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 static REGISTER_LISTENER: Once = Once::new();
@@ -17,6 +18,8 @@ const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 const METER_MIN_DB: f32 = -42.0;
 const METER_MAX_DB: f32 = -6.0;
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
+const STREAM_STALL_TIMEOUT: Duration = Duration::from_millis(1500);
+const REBUILD_RETRY_INTERVAL: Duration = Duration::from_millis(1000);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AudioInputDeviceChoice {
@@ -42,6 +45,7 @@ pub struct AudioController {
     config_store: LiveConfigStore,
     state: Arc<AppState>,
     transcription_controller: TranscriptionController,
+    last_rebuild_attempt: Mutex<Option<Instant>>,
 }
 
 struct ActiveAudioStream {
@@ -50,6 +54,7 @@ struct ActiveAudioStream {
     requested_sample_rate: u32,
     _stream: Stream,
     healthy: Arc<AtomicBool>,
+    last_callback_time: Arc<Mutex<Option<Instant>>>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -145,13 +150,13 @@ impl AudioController {
                     if let Err(error) = active._stream.play() {
                         log::error!("failed to play audio stream: {}", error);
                         active.healthy.store(false, Ordering::SeqCst);
-                        self.state.set_state(crate::state::STATE_ERROR);
+                        
                     }
                 } else {
                     if let Err(error) = active._stream.pause() {
                         log::error!("failed to pause audio stream: {}", error);
                         active.healthy.store(false, Ordering::SeqCst);
-                        self.state.set_state(crate::state::STATE_ERROR);
+                        
                     }
                 }
             }
@@ -174,6 +179,7 @@ impl AudioController {
             config_store,
             state,
             transcription_controller,
+            last_rebuild_attempt: Mutex::new(None),
         }
     }
 
@@ -194,7 +200,7 @@ impl AudioController {
             config_store.clone(),
             &mic_config,
         ) {
-            Ok((stream, actual_rate, actual_audio_device_name, healthy)) => {
+            Ok((stream, actual_rate, actual_audio_device_name, healthy, last_callback_time)) => {
                 transcription_controller.set_sample_rate(actual_rate);
                 (
                     Some(ActiveAudioStream {
@@ -203,6 +209,7 @@ impl AudioController {
                         requested_sample_rate: mic_config.sample_rate,
                         _stream: stream,
                         healthy,
+                        last_callback_time,
                     }),
                     None,
                 )
@@ -220,51 +227,88 @@ impl AudioController {
                 config_store,
                 state,
                 transcription_controller,
+                last_rebuild_attempt: Mutex::new(None),
             },
             startup_error,
         )
+    }
+
+    pub fn should_rebuild_stream(&self) -> bool {
+        let active_stream = match self.active_stream.lock() {
+            Ok(guard) => guard,
+            Err(_) => return true,
+        };
+
+        let mic_config = self.config_store.current().mic;
+        let Some(active) = active_stream.as_ref() else {
+            return true;
+        };
+
+        if !active.healthy.load(Ordering::SeqCst) {
+            return true;
+        }
+
+        if active.requested_sample_rate != mic_config.sample_rate
+            || active.configured_audio_device != mic_config.audio_device
+        {
+            return true;
+        }
+
+        let is_recording = self.state.is_recording();
+        let is_preview = self.state.is_settings_window_visible();
+        let should_play = mic_config.always_on || is_recording || is_preview;
+        if should_play {
+            if let Ok(last_time_guard) = active.last_callback_time.lock() {
+                if let Some(last_time) = *last_time_guard {
+                    if last_time.elapsed() > STREAM_STALL_TIMEOUT {
+                        log::warn!(
+                            "audio stream stalled (no audio callbacks for >1.5s); marking unhealthy"
+                        );
+                        active.healthy.store(false, Ordering::SeqCst);
+                        return true;
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        let hardware_changed = core_audio_listener::HARDWARE_CHANGED.load(Ordering::SeqCst);
+        #[cfg(not(target_os = "macos"))]
+        let hardware_changed = false;
+
+        if let Some(configured_name) =
+            normalized_configured_audio_device(mic_config.audio_device.as_deref())
+        {
+            let actual_name = active.actual_audio_device_name.as_deref().unwrap_or("");
+            if actual_name != configured_name
+                && actual_name.to_lowercase() != configured_name.to_lowercase()
+            {
+                return true;
+            }
+            if hardware_changed {
+                return true;
+            }
+        } else {
+            if hardware_changed {
+                return true;
+            }
+            let host = cpal::default_host();
+            let current_default_name = host
+                .default_input_device()
+                .and_then(|device| device.name().ok());
+            if current_default_name != active.actual_audio_device_name {
+                return true;
+            }
+        }
+
+        false
     }
 
     pub fn apply_mic_config(
         &self,
         mic_config: &MicConfig,
     ) -> Result<AudioConfigApplyEffect, String> {
-        let active_stream = self
-            .active_stream
-            .lock()
-            .map_err(|_| "audio stream lock poisoned".to_owned())?;
-
-        // We must rebuild if settings changed, but also if it looks like the default device identity shifted,
-        // or if we are currently on a fallback device and the settings dialog is being re-saved.
-        let needs_stream_rebuild = match active_stream.as_ref() {
-            Some(active_stream) => {
-                if active_stream.requested_sample_rate != mic_config.sample_rate
-                    || active_stream.configured_audio_device != mic_config.audio_device
-                {
-                    true
-                } else if let Some(configured_name) =
-                    normalized_configured_audio_device(mic_config.audio_device.as_deref())
-                {
-                    // We asked for a specific device, but maybe we didn't get it (fallback).
-                    // If the user clicks Save again, let's try to rebuild if we aren't on the requested one.
-                    let actual_name = active_stream
-                        .actual_audio_device_name
-                        .as_deref()
-                        .unwrap_or("");
-                    actual_name != configured_name
-                        && actual_name.to_lowercase() != configured_name.to_lowercase()
-                } else {
-                    // Config says we're using "System default". Let's check if the default actually changed (e.g. plugged in new mic).
-                    let host = cpal::default_host();
-                    let current_default_name = host
-                        .default_input_device()
-                        .and_then(|device| device.name().ok());
-                    current_default_name != active_stream.actual_audio_device_name
-                }
-            }
-            None => true,
-        };
-        drop(active_stream);
+        let needs_stream_rebuild = self.should_rebuild_stream();
 
         if !needs_stream_rebuild {
             return Ok(AudioConfigApplyEffect::AppliedNow);
@@ -278,40 +322,17 @@ impl AudioController {
         }
 
         self.rebuild_stream(mic_config)?;
+        #[cfg(target_os = "macos")]
+        core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
         Ok(AudioConfigApplyEffect::AppliedNow)
     }
 
     pub fn ensure_input_stream_ready(&self) -> Result<bool, String> {
-        let active_stream = self
-            .active_stream
-            .lock()
-            .map_err(|_| "audio stream lock poisoned".to_owned())?;
-
-        let mic_config = self.config_store.current().mic;
-
-        let needs_rebuild = if let Some(active_stream) = &*active_stream {
-            if !active_stream.healthy.load(Ordering::SeqCst) {
-                true
-            } else if normalized_configured_audio_device(mic_config.audio_device.as_deref())
-                .is_none()
-            {
-                // Config says we're using "System default". Let's check if the default actually changed
-                let host = cpal::default_host();
-                let current_default_name = host
-                    .default_input_device()
-                    .and_then(|device| device.name().ok());
-                current_default_name != active_stream.actual_audio_device_name
-            } else {
-                false
-            }
-        } else {
-            true
-        };
-
-        drop(active_stream);
-
-        if needs_rebuild {
+        if self.should_rebuild_stream() {
+            let mic_config = self.config_store.current().mic;
             self.rebuild_stream(&mic_config)?;
+            #[cfg(target_os = "macos")]
+            core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
             return Ok(true);
         }
 
@@ -340,83 +361,35 @@ impl AudioController {
             return;
         }
 
-        // Even if there's no pending config, if the stream is unhealthy or if hardware changed,
-        // we might need to rebuild the stream (e.g. pulling a mic out, or adding one while app is running).
-        let needs_rebuild = {
-            let active_stream = self.active_stream.lock().ok();
-            let current_config_mic = self.config_store.current().mic;
-            match active_stream.as_deref().and_then(|x| x.as_ref()) {
-                Some(active) => {
-                    if !active.healthy.load(Ordering::SeqCst) {
-                        true
-                    } else if normalized_configured_audio_device(
-                        current_config_mic.audio_device.as_deref(),
-                    )
-                    .is_none()
-                    {
-                        #[cfg(target_os = "macos")]
-                        {
-                            if core_audio_listener::HARDWARE_CHANGED.swap(false, Ordering::SeqCst) {
-                                let host = cpal::default_host();
-                                let current_default_name = host
-                                    .default_input_device()
-                                    .and_then(|device| device.name().ok());
-                                current_default_name != active.actual_audio_device_name
-                            } else {
-                                false
-                            }
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let host = cpal::default_host();
-                            let current_default_name = host
-                                .default_input_device()
-                                .and_then(|device| device.name().ok());
-                            current_default_name != active.actual_audio_device_name
-                        }
-                    } else {
-                        #[cfg(target_os = "macos")]
-                        {
-                            if core_audio_listener::HARDWARE_CHANGED.swap(false, Ordering::SeqCst) {
-                                let configured_name = normalized_configured_audio_device(
-                                    current_config_mic.audio_device.as_deref(),
-                                )
-                                .unwrap();
-                                let actual_name =
-                                    active.actual_audio_device_name.as_deref().unwrap_or("");
-                                actual_name != configured_name
-                                    && actual_name.to_lowercase() != configured_name.to_lowercase()
-                            } else {
-                                false
-                            }
-                        }
-                        #[cfg(not(target_os = "macos"))]
-                        {
-                            let configured_name = normalized_configured_audio_device(
-                                current_config_mic.audio_device.as_deref(),
-                            )
-                            .unwrap();
-                            let actual_name =
-                                active.actual_audio_device_name.as_deref().unwrap_or("");
-                            actual_name != configured_name
-                                && actual_name.to_lowercase() != configured_name.to_lowercase()
-                        }
-                    }
-                }
-                None => false,
-            }
-        };
+        if !self.should_rebuild_stream() {
+            return;
+        }
 
-        if needs_rebuild {
-            let current_config_mic = self.config_store.current().mic;
-            if let Err(error) = self.rebuild_stream(&current_config_mic) {
-                log::error!("failed to switch to new default audio device: {}", error);
+        let now = Instant::now();
+        if let Ok(mut last_attempt_guard) = self.last_rebuild_attempt.lock() {
+            if let Some(last_attempt) = *last_attempt_guard {
+                if now.duration_since(last_attempt) < REBUILD_RETRY_INTERVAL {
+                    return;
+                }
+            }
+            *last_attempt_guard = Some(now);
+        }
+
+        let current_config_mic = self.config_store.current().mic;
+        match self.rebuild_stream(&current_config_mic) {
+            Ok(()) => {
+                #[cfg(target_os = "macos")]
+                core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
+                log::info!("successfully rebuilt audio input stream");
+            }
+            Err(error) => {
+                log::error!("failed to switch or reconnect audio input device: {}", error);
             }
         }
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let (stream, actual_rate, actual_audio_device_name, healthy) = build_input_stream(
+        let (stream, actual_rate, actual_audio_device_name, healthy, last_callback_time) = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
@@ -434,6 +407,7 @@ impl AudioController {
             requested_sample_rate: mic_config.sample_rate,
             _stream: stream,
             healthy,
+            last_callback_time,
         });
         Ok(())
     }
@@ -444,7 +418,16 @@ pub fn build_input_stream(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     mic_config: &MicConfig,
-) -> Result<(Stream, u32, Option<String>, Arc<AtomicBool>), String> {
+) -> Result<
+    (
+        Stream,
+        u32,
+        Option<String>,
+        Arc<AtomicBool>,
+        Arc<Mutex<Option<Instant>>>,
+    ),
+    String,
+> {
     let host = cpal::default_host();
     let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
 
@@ -466,6 +449,7 @@ pub fn build_input_stream(
     );
 
     let healthy = Arc::new(AtomicBool::new(true));
+    let last_callback_time = Arc::new(Mutex::new(None));
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => build_stream_for_format::<f32>(
@@ -475,6 +459,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
+            last_callback_time.clone(),
         )?,
         SampleFormat::I16 => build_stream_for_format::<i16>(
             &device,
@@ -483,6 +468,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
+            last_callback_time.clone(),
         )?,
         SampleFormat::U16 => build_stream_for_format::<u16>(
             &device,
@@ -491,6 +477,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
+            last_callback_time.clone(),
         )?,
         sample_format => {
             return Err(format!(
@@ -505,7 +492,13 @@ pub fn build_input_stream(
         .map_err(|error| format!("failed to start audio stream: {}", error))?;
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
-    Ok((stream, actual_rate, actual_audio_device_name, healthy))
+    Ok((
+        stream,
+        actual_rate,
+        actual_audio_device_name,
+        healthy,
+        last_callback_time,
+    ))
 }
 
 fn build_validation_stream<T>(
@@ -689,6 +682,7 @@ fn build_stream_for_format<T>(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     healthy: Arc<AtomicBool>,
+    last_callback_time: Arc<Mutex<Option<Instant>>>,
 ) -> Result<Stream, String>
 where
     T: Sample + SizedSample + Send + 'static,
@@ -699,6 +693,7 @@ where
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
+    let callback_last_time = Arc::clone(&last_callback_time);
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut was_recording = false;
@@ -708,6 +703,9 @@ where
         .build_input_stream(
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
+                if let Ok(mut last_time) = callback_last_time.lock() {
+                    *last_time = Some(Instant::now());
+                }
                 let is_recording = meter_state.is_recording();
                 let is_preview = meter_state.is_settings_window_visible();
                 if !is_recording && !is_preview {
@@ -760,7 +758,7 @@ where
             move |error| {
                 log::error!("audio stream error: {}", error);
                 stream_healthy.store(false, Ordering::SeqCst);
-                error_state.set_state(crate::state::STATE_ERROR);
+                error_state.report_error(error.to_string());
             },
             None,
         )
@@ -851,7 +849,7 @@ mod tests {
     use super::{
         build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
         normalize_meter_amplitude, normalized_configured_audio_device, smooth_meter_value,
-        AudioInputDeviceChoice, InputDeviceDescriptor,
+        AudioController, AudioInputDeviceChoice, InputDeviceDescriptor,
     };
     use bytes::BytesMut;
 
@@ -981,6 +979,46 @@ mod tests {
         assert!(is_system_default_audio_device_value("System default"));
         assert!(!is_system_default_audio_device_value("0"));
     }
+
+    #[test]
+    fn none_active_stream_requests_rebuild() {
+        let state = crate::state::AppState::new();
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let transcription_controller =
+            crate::transcription::spawn_transcription_thread(state.clone(), config_store.clone());
+        let controller = AudioController::inactive(state, transcription_controller, config_store);
+
+        assert!(controller.should_rebuild_stream());
+    }
+
+    #[test]
+    fn config_change_requests_rebuild() {
+        let state = crate::state::AppState::new();
+        let mut config = crate::config::Config::default();
+        config.mic.audio_device = Some("Original Mic".to_owned());
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config.clone(),
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let transcription_controller =
+            crate::transcription::spawn_transcription_thread(state.clone(), config_store.clone());
+        let controller = AudioController::inactive(state, transcription_controller, config_store.clone());
+
+        assert!(controller.should_rebuild_stream());
+
+        let mut new_config = config.clone();
+        new_config.mic.audio_device = Some("New Mic".to_owned());
+        config_store.replace(new_config.clone(), new_config);
+
+        assert!(controller.should_rebuild_stream());
+    }
+
 }
 
 #[cfg(target_os = "macos")]
