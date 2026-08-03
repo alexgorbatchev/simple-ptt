@@ -209,8 +209,7 @@ define_class!(
                 .billing_menu_item
                 .set(billing_item)
                 .expect("billing item must only be set once");
-            let settings_window = SettingsWindow::new(self, mtm);
-            settings_window.set_delegate(ProtocolObject::from_ref(self));
+            let settings_window = SettingsWindow::new(mtm, self, ProtocolObject::from_ref(self));
             self.ivars()
                 .settings_window
                 .set(settings_window)
@@ -520,9 +519,9 @@ define_class!(
                     "audio device/sample-rate changes will apply after the current recording stops"
                 }
             };
-            settings_window.load_from_config(
+            let _ = settings_window.load_from_config(
                 &proposed_config,
-                &self.ivars().config_store.path().display().to_string(),
+                Some(audio_message),
             );
             self.sync_transformation_provider_ui();
             settings_window.set_status(&format!("Saved and applied settings. {}.", audio_message));
@@ -801,9 +800,9 @@ impl AppDelegate {
         settings_window.cancel_hotkey_capture();
 
         let current_file_config = self.ivars().config_store.current_file();
-        settings_window.load_from_config(
+        let _ = settings_window.load_from_config(
             &current_file_config,
-            &self.ivars().config_store.path().display().to_string(),
+            None,
         );
         self.sync_transformation_provider_ui();
         self.promote_for_window_presentation();
@@ -820,9 +819,9 @@ impl AppDelegate {
         settings_window.cancel_hotkey_capture();
 
         let current_file_config = self.ivars().config_store.current_file();
-        settings_window.load_from_config(
+        let _ = settings_window.load_from_config(
             &current_file_config,
-            &self.ivars().config_store.path().display().to_string(),
+            None,
         );
         self.sync_transformation_provider_ui();
         self.promote_for_window_presentation();
@@ -1151,7 +1150,7 @@ impl AppDelegate {
 
         if self.ivars().state.is_settings_window_visible() {
             if let Some(settings_window) = self.ivars().settings_window.get() {
-                settings_window.update_meter(mic_meter);
+                settings_window.update_meter(Some(mic_meter));
             }
         }
 
