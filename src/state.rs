@@ -197,6 +197,7 @@ impl AppState {
     }
 
     pub fn report_error(&self, message: impl Into<String>) {
+        self.restore_overlay();
         self.set_overlay_error_text(message);
         self.set_state(STATE_ERROR);
     }
@@ -362,6 +363,20 @@ mod tests {
 
         state.set_preview_mic_gain(None);
         assert_eq!(state.preview_mic_gain(), None);
+    }
+
+    #[test]
+    fn report_error_restores_overlay_and_sets_error_state() {
+        let state = AppState::new();
+
+        state.dismiss_overlay();
+        assert!(state.is_overlay_dismissed());
+
+        state.report_error("mic unplugged");
+
+        assert!(!state.is_overlay_dismissed());
+        assert_eq!(state.get_state(), super::STATE_ERROR);
+        assert_eq!(&*state.overlay_error_text(), "mic unplugged");
     }
 
     #[test]
