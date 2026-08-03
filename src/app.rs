@@ -282,7 +282,7 @@ define_class!(
                 return;
             };
             let device = settings_window.mic_audio_device_value();
-            self.ivars().audio_controller.set_preview_audio_device(Some(device));
+            self.ivars().audio_controller.set_preview_audio_device(device);
             self.ivars().audio_controller.apply_pending_if_idle();
         }
 
@@ -491,7 +491,7 @@ define_class!(
 
             crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
 
-            self.ivars().audio_controller.set_preview_audio_device(None);
+            self.ivars().audio_controller.clear_preview_audio_device();
 
             let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
                 Ok(effect) => effect,
@@ -837,7 +837,7 @@ impl AppDelegate {
             .set_settings_window_visible(false);
         self.ivars().state.set_settings_window_visible(false);
         self.ivars().state.set_preview_mic_gain(None);
-        self.ivars().audio_controller.set_preview_audio_device(None);
+        self.ivars().audio_controller.clear_preview_audio_device();
         self.ivars().audio_controller.apply_pending_if_idle();
 
         if let Some(settings_window) = self.ivars().settings_window.get() {

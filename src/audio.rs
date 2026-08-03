@@ -2,9 +2,11 @@ use bytes::{BufMut, Bytes, BytesMut};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, Once, LazyLock};
 use std::time::{Duration, Instant};
+
+static PROCESS_START: LazyLock<Instant> = LazyLock::new(Instant::now);
 
 #[cfg(target_os = "macos")]
 static REGISTER_LISTENER: Once = Once::new();
@@ -39,6 +41,12 @@ struct InputDeviceDescriptor {
     name: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PreviewDeviceState {
+    Disabled,
+    Override(Option<String>),
+}
+
 pub struct AudioController {
     active_stream: Mutex<Option<ActiveAudioStream>>,
     pending_config: Mutex<Option<MicConfig>>,
@@ -46,7 +54,7 @@ pub struct AudioController {
     state: Arc<AppState>,
     transcription_controller: TranscriptionController,
     last_rebuild_attempt: Mutex<Option<Instant>>,
-    preview_audio_device: Mutex<Option<Option<String>>>,
+    preview_audio_device: Mutex<PreviewDeviceState>,
 }
 
 struct ActiveAudioStream {
@@ -55,7 +63,7 @@ struct ActiveAudioStream {
     requested_sample_rate: u32,
     _stream: Stream,
     healthy: Arc<AtomicBool>,
-    last_callback_time: Arc<Mutex<Option<Instant>>>,
+    last_callback_millis: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -181,7 +189,7 @@ impl AudioController {
             state,
             transcription_controller,
             last_rebuild_attempt: Mutex::new(None),
-            preview_audio_device: Mutex::new(None),
+            preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
         }
     }
 
@@ -202,7 +210,7 @@ impl AudioController {
             config_store.clone(),
             &mic_config,
         ) {
-            Ok((stream, actual_rate, actual_audio_device_name, healthy, last_callback_time)) => {
+            Ok((stream, actual_rate, actual_audio_device_name, healthy, last_callback_millis)) => {
                 transcription_controller.set_sample_rate(actual_rate);
                 (
                     Some(ActiveAudioStream {
@@ -211,7 +219,7 @@ impl AudioController {
                         requested_sample_rate: mic_config.sample_rate,
                         _stream: stream,
                         healthy,
-                        last_callback_time,
+                        last_callback_millis,
                     }),
                     None,
                 )
@@ -230,22 +238,28 @@ impl AudioController {
                 state,
                 transcription_controller,
                 last_rebuild_attempt: Mutex::new(None),
-                preview_audio_device: Mutex::new(None),
+                preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
             },
             startup_error,
         )
     }
 
-    pub fn set_preview_audio_device(&self, device: Option<Option<String>>) {
+    pub fn set_preview_audio_device(&self, device: Option<String>) {
         if let Ok(mut preview_guard) = self.preview_audio_device.lock() {
-            *preview_guard = device;
+            *preview_guard = PreviewDeviceState::Override(device);
+        }
+    }
+
+    pub fn clear_preview_audio_device(&self) {
+        if let Ok(mut preview_guard) = self.preview_audio_device.lock() {
+            *preview_guard = PreviewDeviceState::Disabled;
         }
     }
 
     pub fn effective_mic_config(&self) -> MicConfig {
         let mut mic_config = self.config_store.current().mic;
         if let Ok(preview_guard) = self.preview_audio_device.lock() {
-            if let Some(ref preview_device) = *preview_guard {
+            if let PreviewDeviceState::Override(ref preview_device) = *preview_guard {
                 mic_config.audio_device = preview_device.clone();
             }
         }
@@ -277,15 +291,15 @@ impl AudioController {
         let is_preview = self.state.is_settings_window_visible();
         let should_play = mic_config.always_on || is_recording || is_preview;
         if should_play {
-            if let Ok(last_time_guard) = active.last_callback_time.lock() {
-                if let Some(last_time) = *last_time_guard {
-                    if last_time.elapsed() > STREAM_STALL_TIMEOUT {
-                        log::warn!(
-                            "audio stream stalled (no audio callbacks for >1.5s); marking unhealthy"
-                        );
-                        active.healthy.store(false, Ordering::SeqCst);
-                        return true;
-                    }
+            let last_ms = active.last_callback_millis.load(Ordering::Relaxed);
+            if last_ms > 0 {
+                let now_ms = PROCESS_START.elapsed().as_millis() as u64;
+                if now_ms.saturating_sub(last_ms) > STREAM_STALL_TIMEOUT.as_millis() as u64 {
+                    log::warn!(
+                        "audio stream stalled (no audio callbacks for >1.5s); marking unhealthy"
+                    );
+                    active.healthy.store(false, Ordering::SeqCst);
+                    return true;
                 }
             }
         }
@@ -408,7 +422,7 @@ impl AudioController {
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let (stream, actual_rate, actual_audio_device_name, healthy, last_callback_time) = build_input_stream(
+        let (stream, actual_rate, actual_audio_device_name, healthy, last_callback_millis) = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
@@ -426,7 +440,7 @@ impl AudioController {
             requested_sample_rate: mic_config.sample_rate,
             _stream: stream,
             healthy,
-            last_callback_time,
+            last_callback_millis,
         });
         Ok(())
     }
@@ -443,7 +457,7 @@ pub fn build_input_stream(
         u32,
         Option<String>,
         Arc<AtomicBool>,
-        Arc<Mutex<Option<Instant>>>,
+        Arc<AtomicU64>,
     ),
     String,
 > {
@@ -468,7 +482,7 @@ pub fn build_input_stream(
     );
 
     let healthy = Arc::new(AtomicBool::new(true));
-    let last_callback_time = Arc::new(Mutex::new(None));
+    let last_callback_millis = Arc::new(AtomicU64::new(0));
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => build_stream_for_format::<f32>(
@@ -478,7 +492,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_time.clone(),
+            last_callback_millis.clone(),
         )?,
         SampleFormat::I16 => build_stream_for_format::<i16>(
             &device,
@@ -487,7 +501,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_time.clone(),
+            last_callback_millis.clone(),
         )?,
         SampleFormat::U16 => build_stream_for_format::<u16>(
             &device,
@@ -496,7 +510,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_time.clone(),
+            last_callback_millis.clone(),
         )?,
         sample_format => {
             return Err(format!(
@@ -516,7 +530,7 @@ pub fn build_input_stream(
         actual_rate,
         actual_audio_device_name,
         healthy,
-        last_callback_time,
+        last_callback_millis,
     ))
 }
 
@@ -701,7 +715,7 @@ fn build_stream_for_format<T>(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     healthy: Arc<AtomicBool>,
-    last_callback_time: Arc<Mutex<Option<Instant>>>,
+    last_callback_millis: Arc<AtomicU64>,
 ) -> Result<Stream, String>
 where
     T: Sample + SizedSample + Send + 'static,
@@ -712,7 +726,7 @@ where
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
-    let callback_last_time = Arc::clone(&last_callback_time);
+    let callback_last_millis = Arc::clone(&last_callback_millis);
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut was_recording = false;
@@ -722,9 +736,10 @@ where
         .build_input_stream(
             &stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
-                if let Ok(mut last_time) = callback_last_time.lock() {
-                    *last_time = Some(Instant::now());
-                }
+                callback_last_millis.store(
+                    PROCESS_START.elapsed().as_millis() as u64,
+                    Ordering::Relaxed,
+                );
                 let is_recording = meter_state.is_recording();
                 let is_preview = meter_state.is_settings_window_visible();
                 if !is_recording && !is_preview {
@@ -1051,13 +1066,13 @@ mod tests {
             crate::transcription::spawn_transcription_thread(state.clone(), config_store.clone());
         let controller = AudioController::inactive(state, transcription_controller, config_store);
 
-        controller.set_preview_audio_device(Some(Some("Preview Mic".to_owned())));
+        controller.set_preview_audio_device(Some("Preview Mic".to_owned()));
         assert_eq!(
             controller.effective_mic_config().audio_device,
             Some("Preview Mic".to_owned())
         );
 
-        controller.set_preview_audio_device(None);
+        controller.clear_preview_audio_device();
         assert_eq!(controller.effective_mic_config().audio_device, None);
     }
 }

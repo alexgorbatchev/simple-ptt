@@ -20,7 +20,7 @@ use objc2_foundation::{
 
 use crate::config::UiMeterStyle;
 use crate::state::{
-    AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_PROCESSING,
+    AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::ui_meter::{self, UiMeterView};
@@ -91,6 +91,7 @@ pub struct OverlayWindow {
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
     is_visible: Cell<bool>,
+    is_error_color: Cell<bool>,
     text_opacity: Cell<f64>,
     meter_alpha: Cell<f64>,
 }
@@ -247,6 +248,7 @@ impl OverlayWindow {
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
             is_visible: Cell::new(false),
+            is_error_color: Cell::new(false),
             text_opacity: Cell::new(1.0),
             meter_alpha: Cell::new(0.0),
         };
@@ -261,6 +263,7 @@ impl OverlayWindow {
         deepgram_connection_status: DeepgramConnectionStatus,
         overlay_dismissed: bool,
         overlay_text: &str,
+        overlay_error_text: &str,
         overlay_correction_text: &str,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
@@ -270,14 +273,22 @@ impl OverlayWindow {
         let should_show = !overlay_dismissed
             && matches!(
                 state,
-                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
+                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
             );
         if !should_show {
             self.hide();
             return;
         }
 
-        let display_text = if overlay_text.trim().is_empty() {
+        let is_error = state == STATE_ERROR;
+
+        let display_text = if is_error {
+            if overlay_error_text.trim().is_empty() {
+                "An unexpected error occurred"
+            } else {
+                overlay_error_text
+            }
+        } else if overlay_text.trim().is_empty() {
             default_overlay_text(state)
         } else {
             overlay_text
@@ -287,12 +298,24 @@ impl OverlayWindow {
         let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
         let correction_is_visible = overlay_correction_active;
         let meter_is_visible =
-            state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None;
+            state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
 
         let inline_correction_preview = (state == STATE_TRANSFORMING
             && !overlay_correction_active
             && !overlay_correction_text.trim().is_empty())
         .then_some(overlay_correction_text);
+
+        if is_error != self.is_error_color.get() {
+            self.is_error_color.set(is_error);
+            if is_error {
+                self.working_text_view
+                    .setTextColor(Some(&NSColor::systemRedColor()));
+            } else {
+                self.working_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
+                    0.98, 0.98, 0.99, 1.0,
+                )));
+            }
+        }
 
         self.set_working_text(display_text, inline_correction_preview);
         self.set_correction_text(if correction_is_visible {
@@ -327,7 +350,7 @@ impl OverlayWindow {
         };
 
         let current_alpha = self.meter_alpha.get();
-        if state != STATE_RECORDING {
+        if state != STATE_RECORDING || is_error {
             self.meter_alpha.set(0.0);
         } else if (current_alpha - target_alpha).abs() > 0.01 {
             let step = 0.375;
