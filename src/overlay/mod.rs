@@ -1,3 +1,6 @@
+pub mod diff;
+pub use diff::*;
+
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
 use std::sync::Arc;
