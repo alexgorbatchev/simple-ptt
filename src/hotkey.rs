@@ -149,9 +149,14 @@ fn handle_key_press(
         let current_state = state.get_state();
         if !matches!(
             current_state,
-            STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING
+            STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
         ) {
             return false;
+        }
+
+        if current_state == STATE_ERROR {
+            state.set_state(STATE_IDLE);
+            state.clear_overlay_error_text();
         }
 
         state.request_abort();
@@ -171,7 +176,7 @@ fn handle_key_press(
                         Ok(()) => log::info!("aborting correction recording"),
                         Err(error) => {
                             log::error!("failed to abort correction recording: {}", error);
-                            state.set_state(STATE_ERROR);
+                            state.report_error(error.to_string());
                         }
                     }
                 } else {
@@ -224,22 +229,24 @@ fn handle_key_press(
                 log::info!("ignoring correction because no narrated annotation is available");
                 return false;
             }
-            STATE_RECORDING | STATE_BUFFER_READY => match controller.start_correction_session() {
-                Ok(()) => {
-                    billing_controller.refresh_month_to_date_spend();
-                    state.restore_overlay();
-                    state.set_overlay_correction_active(true);
-                    state.clear_overlay_correction_text();
-                    state.set_overlay_text_opacity(1.0);
-                    state.set_state(STATE_RECORDING);
-                    log::info!("correction recording started");
+            STATE_RECORDING | STATE_BUFFER_READY => {
+                billing_controller.refresh_month_to_date_spend();
+                state.restore_overlay();
+                state.set_overlay_correction_active(true);
+                state.clear_overlay_correction_text();
+                state.set_overlay_text_opacity(1.0);
+                match controller.start_correction_session() {
+                    Ok(()) => {
+                        state.set_state(STATE_RECORDING);
+                        log::info!("correction recording started");
+                    }
+                    Err(start_error) => {
+                        correction_key_is_down.set(false);
+                        log::error!("failed to start correction: {}", start_error);
+                        state.report_error(start_error.to_string());
+                    }
                 }
-                Err(start_error) => {
-                    correction_key_is_down.set(false);
-                    log::error!("failed to start correction: {}", start_error);
-                    state.set_state(STATE_ERROR);
-                }
-            },
+            }
             _ => {
                 correction_key_is_down.set(false);
                 log::info!("ignoring correction because no buffered annotation is available");
@@ -266,22 +273,28 @@ fn handle_key_press(
         }
 
         let action = match current_state {
-            STATE_IDLE | STATE_ERROR => match controller.start_session() {
-                Ok(()) => {
-                    billing_controller.refresh_month_to_date_spend();
-                    state.restore_overlay();
-                    state.clear_overlay_text();
-                    state.set_overlay_text_opacity(1.0);
-                    state.set_state(STATE_RECORDING);
-                    log::info!("recording started");
-                    Some(RecordHotkeyAction::StartRecording)
+            STATE_IDLE | STATE_ERROR => {
+                billing_controller.refresh_month_to_date_spend();
+                state.restore_overlay();
+                state.clear_overlay_error_text();
+                state.clear_overlay_text();
+                state.set_overlay_text_opacity(1.0);
+                
+                match controller.start_session() {
+                    Ok(()) => {
+                        state.set_state(STATE_RECORDING);
+                        log::info!("recording started");
+                        Some(RecordHotkeyAction::StartRecording)
+                    }
+                    Err(start_error) => {
+                        log::error!("failed to start recording: {}", start_error);
+                        state.report_error(start_error.to_string());
+                        // Return true to claim the hotkey press, because we DID process it
+                        // (we just failed and entered STATE_ERROR instead of STATE_RECORDING)
+                        return true;
+                    }
                 }
-                Err(start_error) => {
-                    log::error!("failed to start recording: {}", start_error);
-                    state.set_state(STATE_ERROR);
-                    None
-                }
-            },
+            }
             STATE_RECORDING => Some(if hotkey_config.auto_transform_enabled {
                 RecordHotkeyAction::StopAndTransformAndPaste
             } else {
@@ -340,7 +353,7 @@ fn handle_key_press(
             Err(error) => {
                 clipboard_insert_is_down.set(false);
                 log::error!("failed to queue clipboard insertion: {}", error);
-                state.set_state(STATE_ERROR);
+                state.report_error(error.to_string());
             }
         }
 
@@ -378,7 +391,7 @@ fn handle_key_release(
                 }
                 Err(error) => {
                     log::error!("failed to stop correction: {}", error);
-                    state.set_state(STATE_ERROR);
+                    state.report_error(error.to_string());
                 }
             }
         }
@@ -428,7 +441,7 @@ fn handle_key_release(
                 }
                 Err(error) => {
                     log::error!("failed to paste buffered text: {}", error);
-                    state.set_state(STATE_ERROR);
+                    state.report_error(error.to_string());
                 }
             },
         }
@@ -455,26 +468,31 @@ fn handle_key_release(
             STATE_RECORDING if state.is_overlay_correction_active() => {
                 log::info!("ignoring transform hotkey while correction is recording");
             }
-            STATE_RECORDING => match controller.stop_session_and_transform_and_resume() {
-                Ok(()) => {
-                    state.set_overlay_text_opacity(0.02);
-                    state.set_state(STATE_PROCESSING);
-                    log::info!("stopping recording, transforming buffered text, and resuming");
+            STATE_RECORDING => {
+                state.set_overlay_text_opacity(0.02);
+                state.set_state(STATE_PROCESSING);
+                match controller.stop_session_and_transform_and_resume() {
+                    Ok(()) => {
+                        log::info!("stopping recording, transforming buffered text, and resuming");
+                    }
+                    Err(error) => {
+                        log::error!("failed to stop recording for transformation: {}", error);
+                        state.report_error(error.to_string());
+                    }
                 }
-                Err(error) => {
-                    log::error!("failed to stop recording for transformation: {}", error);
-                    state.set_state(STATE_ERROR);
+            }
+            STATE_BUFFER_READY => {
+                state.set_state(STATE_TRANSFORMING);
+                match controller.transform_buffer() {
+                    Ok(()) => {
+                        log::info!("transforming buffered text");
+                    }
+                    Err(error) => {
+                        log::error!("failed to start transformation: {}", error);
+                        state.report_error(error.to_string());
+                    }
                 }
-            },
-            STATE_BUFFER_READY => match controller.transform_buffer() {
-                Ok(()) => {
-                    state.set_state(STATE_TRANSFORMING);
-                    log::info!("transforming buffered text");
-                }
-                Err(error) => {
-                    log::error!("failed to start transformation: {}", error);
-                }
-            },
+            }
             _ => {}
         }
 
@@ -531,7 +549,7 @@ fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionControll
         }
         Err(stop_error) => {
             log::error!("failed to stop recording: {}", stop_error);
-            state.set_state(STATE_ERROR);
+            state.report_error(stop_error.to_string());
         }
     }
 }
@@ -553,7 +571,7 @@ fn stop_recording_and_transform_and_paste(
         }
         Err(stop_error) => {
             log::error!("failed to stop recording: {}", stop_error);
-            state.set_state(STATE_ERROR);
+            state.report_error(stop_error.to_string());
         }
     }
 }
@@ -581,7 +599,7 @@ fn abort_recording(
         }
         Err(stop_error) => {
             log::error!("failed to abort recording: {}", stop_error);
-            state.set_state(STATE_ERROR);
+            state.report_error(stop_error.to_string());
         }
     }
 }

@@ -9,6 +9,9 @@ run-config config_path="config.toml":
 run-local:
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
+run-simulated-error error_msg="deepgram connection failed":
+    SIMPLE_PTT_SIMULATE_ERROR="{{error_msg}}" SIMPLE_PTT_CONFIG="./config.toml" cargo run
+
 run-xdg:
     cargo run
 

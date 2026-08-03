@@ -246,7 +246,7 @@ pub fn spawn_transcription_thread(
                                     state.set_state(STATE_IDLE);
                                 } else {
                                     log::error!("failed to resolve Deepgram config: {}", error);
-                                    state.set_state(STATE_ERROR);
+                                    state.report_error(error.to_string());
                                 }
                                 continue;
                             }
@@ -279,7 +279,7 @@ pub fn spawn_transcription_thread(
                                     state.set_deepgram_connection_status(
                                         DeepgramConnectionStatus::Disconnected,
                                     );
-                                    state.set_state(STATE_ERROR);
+                                    state.report_error(error.to_string());
                                 }
                             }
                         }
@@ -330,7 +330,7 @@ pub fn spawn_transcription_thread(
                                         error
                                     );
                                     recording_prefix.clear();
-                                    state.set_state(STATE_ERROR);
+                                    state.report_error(error.to_string());
                                     continue;
                                 }
                             }
@@ -376,7 +376,7 @@ pub fn spawn_transcription_thread(
                                     error
                                 );
                                 state.set_overlay_correction_active(false);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                                 continue;
                             }
                         };
@@ -405,7 +405,7 @@ pub fn spawn_transcription_thread(
                                 state.set_deepgram_connection_status(
                                     DeepgramConnectionStatus::Disconnected,
                                 );
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -426,7 +426,7 @@ pub fn spawn_transcription_thread(
                                 state.set_deepgram_connection_status(
                                     DeepgramConnectionStatus::Disconnected,
                                 );
-                                state.set_state(STATE_ERROR);
+                                state.report_error("Deepgram session queue closed unexpectedly");
                             }
                         }
                     }
@@ -497,7 +497,7 @@ pub fn spawn_transcription_thread(
                                         buffered_text = recording_prefix.clone();
                                         recording_prefix.clear();
                                         if buffered_text.is_empty() {
-                                            state.set_state(STATE_ERROR);
+                                            state.report_error(error.to_string());
                                         } else {
                                             state.set_overlay_text(buffered_text.clone());
                                             state.set_state(STATE_BUFFER_READY);
@@ -525,7 +525,7 @@ pub fn spawn_transcription_thread(
                                         buffered_text = recording_prefix.clone();
                                         recording_prefix.clear();
                                         if buffered_text.is_empty() {
-                                            state.set_state(STATE_ERROR);
+                                            state.report_error(error.to_string());
                                         } else {
                                             state.set_overlay_text(buffered_text.clone());
                                             state.set_state(STATE_BUFFER_READY);
@@ -541,7 +541,7 @@ pub fn spawn_transcription_thread(
                                 recording_prefix.clear();
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -607,7 +607,7 @@ pub fn spawn_transcription_thread(
                                                 state.set_deepgram_connection_status(
                                                     DeepgramConnectionStatus::Disconnected,
                                                 );
-                                                state.set_state(STATE_ERROR);
+                                                state.report_error(error.to_string());
                                             }
                                         }
                                     } else {
@@ -648,7 +648,7 @@ pub fn spawn_transcription_thread(
                                                 state.set_deepgram_connection_status(
                                                     DeepgramConnectionStatus::Disconnected,
                                                 );
-                                                state.set_state(STATE_ERROR);
+                                                state.report_error(error.to_string());
                                             }
                                         }
                                     } else {
@@ -692,7 +692,7 @@ pub fn spawn_transcription_thread(
                                                     state.set_deepgram_connection_status(
                                                         DeepgramConnectionStatus::Disconnected,
                                                     );
-                                                    state.set_state(STATE_ERROR);
+                                                    state.report_error(error.to_string());
                                                 }
                                             }
                                         }
@@ -740,7 +740,7 @@ pub fn spawn_transcription_thread(
                                                 state.set_deepgram_connection_status(
                                                     DeepgramConnectionStatus::Disconnected,
                                                 );
-                                                state.set_state(STATE_ERROR);
+                                                state.report_error(error.to_string());
                                             }
                                         }
                                     } else {
@@ -754,7 +754,7 @@ pub fn spawn_transcription_thread(
                                 state.clear_overlay_correction_text();
                                 state.set_overlay_text(buffered_text.clone());
                                 state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -816,7 +816,7 @@ pub fn spawn_transcription_thread(
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -904,7 +904,7 @@ pub fn spawn_transcription_thread(
                                                 state.set_deepgram_connection_status(
                                                     DeepgramConnectionStatus::Disconnected,
                                                 );
-                                                state.set_state(STATE_ERROR);
+                                                state.report_error(error.to_string());
                                             }
                                         }
                                     }
@@ -927,7 +927,7 @@ pub fn spawn_transcription_thread(
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -999,7 +999,7 @@ pub fn spawn_transcription_thread(
                                 log::error!("Deepgram session failed: {}", error);
                                 state.clear_overlay_text();
                                 state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_ERROR);
+                                state.report_error(error.to_string());
                             }
                         }
                     }
@@ -1087,6 +1087,10 @@ fn start_session(
     session_kind: SessionKind,
     recording_prefix: String,
 ) -> Result<ActiveSession, String> {
+    if let Ok(simulated_error) = std::env::var("SIMPLE_PTT_SIMULATE_ERROR") {
+        return Err(format!("simulated error: {}", simulated_error));
+    }
+
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
     let deepgram_config = config.clone();
 
