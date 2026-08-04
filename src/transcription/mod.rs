@@ -559,47 +559,59 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
+                                if state.consume_abort_request() {
+                                    log::info!("discarding transformation because abort was requested");
+                                    buffered_text.clear();
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
                                 let current_config = config_store.current();
                                 let transformation_config =
                                     match resolve_transformation_config(&current_config) {
-                                        Ok(config) => config,
+                                        Ok(config) => Some(config),
                                         Err(error) => {
-                                            log::error!(
-                                                "failed to resolve transformation config: {}",
-                                                error
-                                            );
-                                            state.clear_overlay_text();
-                                            state.set_overlay_text_opacity(1.0);
-                                            state.report_error(error.to_string());
-                                            continue;
+                                            log::info!("transformation provider not active ({}); pasting raw transcript", error);
+                                            None
                                         }
                                     };
 
-                                state.set_state(STATE_TRANSFORMING);
-                                match runtime.block_on(transform_text(
-                                    state.clone(),
-                                    &transformation_config,
-                                    &buffered_text,
-                                    TransformationPreviewMode::ReplaceOverlay,
-                                )) {
-                                    Ok(transformed_text) => {
-                                        log::info!(
-                                            "transformation completed: chars={}",
-                                            transformed_text.chars().count()
-                                        );
-                                        buffered_text = transformed_text;
-                                        flush_buffered_text_or_paste(
-                                            &state,
-                                            &mut buffered_text,
-                                            true,
-                                        );
+                                if let Some(transformation_config) = transformation_config {
+                                    state.set_state(STATE_TRANSFORMING);
+                                    match runtime.block_on(transform_text(
+                                        state.clone(),
+                                        &transformation_config,
+                                        &buffered_text,
+                                        TransformationPreviewMode::ReplaceOverlay,
+                                    )) {
+                                        Ok(transformed_text) => {
+                                            log::info!(
+                                                "transformation completed: chars={}",
+                                                transformed_text.chars().count()
+                                            );
+                                            buffered_text = transformed_text;
+                                            flush_buffered_text_or_paste(
+                                                &state,
+                                                &mut buffered_text,
+                                                true,
+                                            );
+                                        }
+                                        Err(error) => {
+                                            log::error!("transformation failed: {}", error);
+                                            state.set_overlay_text(buffered_text.clone());
+                                            state.set_overlay_text_opacity(1.0);
+                                            state.report_error(error.to_string());
+                                        }
                                     }
-                                    Err(error) => {
-                                        log::error!("transformation failed: {}", error);
-                                        state.clear_overlay_text();
-                                        state.set_overlay_text_opacity(1.0);
-                                        state.report_error(error.to_string());
-                                    }
+                                } else {
+                                    state.set_overlay_text_opacity(1.0);
+                                    flush_buffered_text_or_paste(
+                                        &state,
+                                        &mut buffered_text,
+                                        true,
+                                    );
                                 }
                             }
                             Err(error) => {
@@ -623,89 +635,96 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
+                                if state.consume_abort_request() {
+                                    log::info!("discarding transformation because abort was requested");
+                                    buffered_text.clear();
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.set_state(STATE_IDLE);
+                                    continue;
+                                }
+
                                 let current_config = config_store.current();
                                 let transformation_config =
                                     match resolve_transformation_config(&current_config) {
+                                        Ok(config) => Some(config),
+                                        Err(error) => {
+                                            log::info!("transformation provider not active ({}); resuming with raw transcript", error);
+                                            None
+                                        }
+                                    };
+
+                                if let Some(transformation_config) = transformation_config {
+                                    state.set_state(STATE_TRANSFORMING);
+                                    match runtime.block_on(transform_text(
+                                        state.clone(),
+                                        &transformation_config,
+                                        &buffered_text,
+                                        TransformationPreviewMode::ReplaceOverlay,
+                                    )) {
+                                        Ok(transformed_text) => {
+                                            log::info!(
+                                                "transformation completed: chars={}",
+                                                transformed_text.chars().count()
+                                            );
+                                            buffered_text = transformed_text;
+                                        }
+                                        Err(error) => {
+                                            log::error!("transformation failed: {}", error);
+                                            state.set_overlay_text(buffered_text.clone());
+                                            state.set_overlay_text_opacity(1.0);
+                                            state.report_error(error.to_string());
+                                            continue;
+                                        }
+                                    }
+                                }
+
+                                recording_prefix = buffered_text.clone();
+                                if !recording_prefix.is_empty()
+                                    && !recording_prefix
+                                        .ends_with(|c: char| c.is_whitespace())
+                                {
+                                    recording_prefix.push(' ');
+                                }
+
+                                state.set_overlay_text(recording_prefix.clone());
+
+                                let current_sample_rate =
+                                    thread_worker_sample_rate.load(Ordering::Relaxed);
+                                let deepgram_config =
+                                    match resolved_deepgram_config(&current_config) {
                                         Ok(config) => config,
                                         Err(error) => {
                                             log::error!(
-                                                "failed to resolve transformation config: {}",
+                                                "failed to resolve Deepgram config for resume: {}",
                                                 error
                                             );
-                                            state.clear_overlay_text();
-                                            state.set_overlay_text_opacity(1.0);
+                                            state.set_state(STATE_BUFFER_READY);
                                             state.report_error(error.to_string());
                                             continue;
                                         }
                                     };
 
-                                state.set_state(STATE_TRANSFORMING);
-                                match runtime.block_on(transform_text(
+                                match start_session(
+                                    &runtime,
                                     state.clone(),
-                                    &transformation_config,
-                                    &buffered_text,
-                                    TransformationPreviewMode::ReplaceOverlay,
-                                )) {
-                                    Ok(transformed_text) => {
-                                        log::info!(
-                                            "transformation completed: chars={}",
-                                            transformed_text.chars().count()
+                                    &deepgram_config,
+                                    current_sample_rate,
+                                    SessionKind::Dictation,
+                                    recording_prefix.clone(),
+                                ) {
+                                    Ok(session) => {
+                                        state.set_deepgram_connection_status(
+                                            DeepgramConnectionStatus::Connected,
                                         );
-                                        buffered_text = transformed_text;
-                                        recording_prefix = buffered_text.clone();
-                                        if !recording_prefix.is_empty()
-                                            && !recording_prefix
-                                                .ends_with(|c: char| c.is_whitespace())
-                                        {
-                                            recording_prefix.push(' ');
-                                        }
-
-                                        state.set_overlay_text(recording_prefix.clone());
-
-                                        let current_sample_rate =
-                                            thread_worker_sample_rate.load(Ordering::Relaxed);
-                                        let deepgram_config =
-                                            match resolved_deepgram_config(&current_config) {
-                                                Ok(config) => config,
-                                                Err(error) => {
-                                                    log::error!(
-                                                        "failed to resolve Deepgram config for resume: {}",
-                                                        error
-                                                    );
-                                                    state.set_state(STATE_BUFFER_READY);
-                                                    state.report_error(error.to_string());
-                                                    continue;
-                                                }
-                                            };
-
-                                        match start_session(
-                                            &runtime,
-                                            state.clone(),
-                                            &deepgram_config,
-                                            current_sample_rate,
-                                            SessionKind::Dictation,
-                                            recording_prefix.clone(),
-                                        ) {
-                                            Ok(session) => {
-                                                state.set_deepgram_connection_status(
-                                                    DeepgramConnectionStatus::Connected,
-                                                );
-                                                state.set_state(STATE_RECORDING);
-                                                active_session = Some(session);
-                                            }
-                                            Err(error) => {
-                                                log::error!("failed to resume session: {}", error);
-                                                state.set_deepgram_connection_status(
-                                                    DeepgramConnectionStatus::Disconnected,
-                                                );
-                                                state.report_error(error.to_string());
-                                            }
-                                        }
+                                        state.set_state(STATE_RECORDING);
+                                        active_session = Some(session);
                                     }
                                     Err(error) => {
-                                        log::error!("transformation failed: {}", error);
-                                        state.clear_overlay_text();
-                                        state.set_overlay_text_opacity(1.0);
+                                        log::error!("failed to resume session: {}", error);
+                                        state.set_deepgram_connection_status(
+                                            DeepgramConnectionStatus::Disconnected,
+                                        );
                                         state.report_error(error.to_string());
                                     }
                                 }
