@@ -24,6 +24,7 @@ enum RecordHotkeyAction {
     StartRecording,
     StopAndPaste,
     StopAndTransformAndPaste,
+    #[allow(dead_code)]
     PasteBuffer,
 }
 
@@ -273,11 +274,13 @@ fn handle_key_press(
         }
 
         let action = match current_state {
-            STATE_IDLE | STATE_ERROR => {
+            STATE_IDLE | STATE_ERROR | STATE_BUFFER_READY => {
                 billing_controller.refresh_month_to_date_spend();
                 state.restore_overlay();
                 state.clear_overlay_error_text();
-                state.clear_overlay_text();
+                if current_state != STATE_BUFFER_READY {
+                    state.clear_overlay_text();
+                }
                 state.set_overlay_text_opacity(1.0);
                 
                 match controller.start_session() {
@@ -289,8 +292,6 @@ fn handle_key_press(
                     Err(start_error) => {
                         log::error!("failed to start recording: {}", start_error);
                         state.report_error(start_error.to_string());
-                        // Return true to claim the hotkey press, because we DID process it
-                        // (we just failed and entered STATE_ERROR instead of STATE_RECORDING)
                         return true;
                     }
                 }
@@ -300,7 +301,6 @@ fn handle_key_press(
             } else {
                 RecordHotkeyAction::StopAndPaste
             }),
-            STATE_BUFFER_READY => Some(RecordHotkeyAction::PasteBuffer),
             _ => None,
         };
 
@@ -579,20 +579,14 @@ fn stop_recording_and_transform_and_paste(
 fn abort_recording(
     state: &AppState,
     controller: &TranscriptionController,
-    auto_transform_enabled: bool,
+    _auto_transform_enabled: bool,
     reason: &str,
 ) {
     if !state.is_recording() {
         return;
     }
 
-    let stop_result = if auto_transform_enabled {
-        controller.stop_session_and_transform_and_paste()
-    } else {
-        controller.stop_session_and_paste()
-    };
-
-    match stop_result {
+    match controller.stop_session_and_paste() {
         Ok(()) => {
             state.set_state(STATE_IDLE);
             log::info!("recording aborted ({})", reason);

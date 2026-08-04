@@ -141,9 +141,9 @@ pub fn spawn_transcription_thread(
                     thread_worker_sample_rate.store(sample_rate, Ordering::Relaxed);
                 }
                 Command::StartSession => {
-                    if active_session.is_some() {
-                        log::info!("ignoring start_session command while session is active");
-                        continue;
+                    if let Some(old_session) = active_session.take() {
+                        log::info!("cleaning up previous active session before starting new session");
+                        let _ = old_session.finish(&runtime, state.clone());
                     }
 
                     if state.get_state() == STATE_BUFFER_READY {
