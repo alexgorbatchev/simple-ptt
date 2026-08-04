@@ -41,8 +41,8 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - **Overlay UI Keybindings:** Do not introduce explicit keyboard actions (like Enter, Esc, etc.) inside the overlay's text editor. The entire dictation, editing, and pasting sequence is driven purely by the system-wide record/transform hotkeys (e.g., F5/F6) mapped via `rdev` in `src/hotkey.rs`. Releasing the recording hotkey acts as the trigger to finish and paste.
 
 ## Boundaries
-- Always: there must be no errors or warnings when the application is built. A successful build with warnings is not acceptable.
-- Always: after Rust or packaging-script changes, run `cargo test --locked`, `cargo check --message-format=short`, and `cargo build --locked --release`.
+- Always: there MUST be ZERO errors AND ZERO WARNINGS when the application is checked or built (`cargo check`, `cargo test`, `cargo build`). A successful build that emits warnings is strictly unacceptable and considered a build failure.
+- Always: after Rust or packaging-script changes, run `cargo test --locked`, `cargo check --message-format=short`, and `cargo build --locked --release`. Verify that output is 100% clean with zero warnings.
 - Ask first: changes to `Cargo.toml`, `.github/workflows/release.yml`, bundle metadata/signing in `scripts/build-macos-app.sh`, or the permission architecture in `src/permissions*.rs`.
 - Never: commit secrets in config files, hand-edit generated output under `dist/` or `target/`, or bypass `config::save_config` with a destructive config rewrite.
 
@@ -50,9 +50,12 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - `README.md`
 - `config.example.toml`
 - `src/main.rs`
-- `src/app.rs`
-- `src/config.rs`
-- `src/settings_window.rs`
+- `src/app/`
+- `src/audio/`
+- `src/config/`
+- `src/overlay/`
+- `src/settings_window/`
+- `src/transcription/`
 - `src/permissions.rs`
 - `scripts/build-macos-app.sh`
 - `.github/workflows/release.yml`
