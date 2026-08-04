@@ -66,8 +66,8 @@ pub struct SettingsWindow {
     ui_footer_font_size_field: Retained<NSTextField>,
     deepgram_api_key_check_button: Retained<NSButton>,
     status_text_field: Retained<NSTextField>,
-    save_button: Retained<NSButton>,
-    cancel_button: Retained<NSButton>,
+    _save_button: Retained<NSButton>,
+    _cancel_button: Retained<NSButton>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
 
@@ -395,8 +395,8 @@ impl SettingsWindow {
             ui_footer_font_size_field,
             deepgram_api_key_check_button,
             status_text_field,
-            save_button,
-            cancel_button,
+            _save_button: save_button,
+            _cancel_button: cancel_button,
             hotkey_capture_restore_value: RefCell::new(None),
         };
 
@@ -404,6 +404,7 @@ impl SettingsWindow {
         window_obj
     }
 
+    #[allow(dead_code)]
     pub fn window(&self) -> &NSWindow {
         &self.window
     }
@@ -743,6 +744,7 @@ impl SettingsWindow {
         self.set_hotkey_value(target, value);
     }
 
+    #[allow(dead_code)]
     pub fn set_hotkey_capture_outcome(&self, target: HotkeyCaptureTarget, value: &str) {
         self.set_hotkey_capture_state(None);
         self.set_hotkey_value(target, value);

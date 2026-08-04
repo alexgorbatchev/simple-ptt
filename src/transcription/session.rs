@@ -29,6 +29,7 @@ pub struct ActiveSession {
 }
 
 impl ActiveSession {
+    #[allow(dead_code)]
     pub fn kind(&self) -> SessionKind {
         self.kind
     }
@@ -56,7 +57,7 @@ impl ActiveSession {
 
 pub fn start_session(
     runtime: &Runtime,
-    state: Arc<AppState>,
+    _state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
     session_kind: SessionKind,

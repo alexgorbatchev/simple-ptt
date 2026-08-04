@@ -72,6 +72,7 @@ define_class!(
     }
 );
 
+#[allow(dead_code)]
 fn calculate_centered_title_rect(cell: &SettingsCenteredTextFieldCell, bounds: NSRect) -> NSRect {
     let mut rect: NSRect = unsafe { msg_send![super(cell), titleRectForBounds: bounds] };
     let font_size = cell.font().map(|font| font.pointSize()).unwrap_or(12.0);

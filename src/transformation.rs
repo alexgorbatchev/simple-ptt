@@ -19,6 +19,7 @@ const TRANSFORMATION_FADE_SETTLE_DELAY_MS: u64 = 150;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformationPreviewMode<'a> {
     ReplaceOverlay,
+    #[allow(dead_code)]
     InlineCorrection { original_text: &'a str },
 }
 

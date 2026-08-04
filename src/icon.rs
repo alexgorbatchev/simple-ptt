@@ -72,15 +72,16 @@ pub fn make_status_bar_active_icon(_mtm: MainThreadMarker) -> Retained<NSImage> 
     image.lockFocus();
 
     let size = image.size();
-    let circle = NSBezierPath::bezierPath();
-    circle.setLineWidth(scaled_value(size, 1.5));
-    circle.appendBezierPathWithOvalInRect(scaled_svg_rect(size, 2.0, 2.0, 20.0, 20.0));
-    circle.stroke();
 
+    NSColor::labelColor().set();
     draw_microphone_symbol(size);
 
+    let dot = NSBezierPath::bezierPathWithOvalInRect(scaled_svg_rect(size, 16.5, 1.5, 6.0, 6.0));
+    NSColor::systemRedColor().set();
+    dot.fill();
+
     image.unlockFocus();
-    image.setTemplate(true);
+    image.setTemplate(false);
     image
 }
 

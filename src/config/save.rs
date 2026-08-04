@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::Path;
 use toml_edit::{value, Array, DocumentMut, Item, Table};
 
