@@ -537,7 +537,10 @@ fn parse_correction_key(raw: &str) -> Option<Key> {
 }
 
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
-    if !state.is_recording() {
+    if !state.is_recording() || state.is_overlay_correction_active() {
+        if state.is_overlay_correction_active() {
+            log::info!("ignoring record hotkey paste release while correction is active ({})", reason);
+        }
         return;
     }
 
@@ -559,7 +562,10 @@ fn stop_recording_and_transform_and_paste(
     controller: &TranscriptionController,
     reason: &str,
 ) {
-    if !state.is_recording() {
+    if !state.is_recording() || state.is_overlay_correction_active() {
+        if state.is_overlay_correction_active() {
+            log::info!("ignoring record hotkey transform-and-paste release while correction is active ({})", reason);
+        }
         return;
     }
 
@@ -600,7 +606,10 @@ fn abort_recording(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_clipboard_insert_shortcut, parse_correction_key};
+    use super::{
+        is_clipboard_insert_shortcut, parse_correction_key, stop_recording_and_paste,
+        stop_recording_and_transform_and_paste,
+    };
     use crate::hotkey_binding::HotkeyModifiers;
     use rdev::Key;
 
@@ -640,5 +649,28 @@ mod tests {
         assert_eq!(parse_correction_key("RightMeta"), Some(Key::MetaRight));
         assert_eq!(parse_correction_key("F7"), Some(Key::F7));
         assert_eq!(parse_correction_key("Cmd"), None);
+    }
+
+    #[test]
+    fn releasing_record_hotkey_while_correction_is_active_is_ignored() {
+        use crate::state::{AppState, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_overlay_correction_active(true);
+
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let controller = crate::transcription::spawn_transcription_thread(state.clone(), config_store);
+
+        stop_recording_and_transform_and_paste(&state, &controller, "test");
+        stop_recording_and_paste(&state, &controller, "test");
+
+        // State MUST remain STATE_RECORDING (not changed to STATE_PROCESSING)
+        assert_eq!(state.get_state(), STATE_RECORDING);
     }
 }
