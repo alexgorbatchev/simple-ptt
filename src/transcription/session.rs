@@ -13,7 +13,14 @@ use crate::config::DeepgramConfig;
 use crate::state::{AppState, DeepgramConnectionStatus};
 use super::text_builder::{build_overlay_text, join_transcript_parts};
 
-pub const AUDIO_QUEUE_CAPACITY: usize = 32;
+pub const AUDIO_QUEUE_CAPACITY: usize = 512;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PushAudioResult {
+    Ok,
+    Full,
+    Closed,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionKind {
@@ -34,10 +41,12 @@ impl ActiveSession {
         self.kind
     }
 
-    pub fn push_audio(&self, pcm_data: Bytes) -> Result<(), String> {
-        self.audio_tx
-            .try_send(Ok(pcm_data))
-            .map_err(|error| format!("failed to queue audio chunk: {}", error))
+    pub fn push_audio(&self, pcm_data: Bytes) -> PushAudioResult {
+        match self.audio_tx.try_send(Ok(pcm_data)) {
+            Ok(()) => PushAudioResult::Ok,
+            Err(tokio_mpsc::error::TrySendError::Full(_)) => PushAudioResult::Full,
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => PushAudioResult::Closed,
+        }
     }
 
     pub fn finish(self, runtime: &Runtime, state: Arc<AppState>) -> Result<String, String> {
@@ -261,4 +270,14 @@ pub fn extract_transcript(channel: &Channel) -> String {
 
 pub fn format_deepgram_error(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_queue_capacity_provides_ample_buffer_depth() {
+        assert!(AUDIO_QUEUE_CAPACITY >= 256);
+    }
 }

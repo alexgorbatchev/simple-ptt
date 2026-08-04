@@ -289,13 +289,19 @@ pub fn spawn_transcription_thread(
                 }
                 Command::PushAudio(pcm_data) => {
                     if let Some(session) = &active_session {
-                        if let Err(error) = session.push_audio(pcm_data) {
-                            log::warn!("discarding audio chunk: {}", error);
-                            active_session = None;
-                            state.set_deepgram_connection_status(
-                                DeepgramConnectionStatus::Disconnected,
-                            );
-                            state.report_error("Deepgram session queue closed unexpectedly");
+                        match session.push_audio(pcm_data) {
+                            PushAudioResult::Ok => {}
+                            PushAudioResult::Full => {
+                                log::warn!("audio queue full; dropping audio chunk");
+                            }
+                            PushAudioResult::Closed => {
+                                log::warn!("Deepgram session queue closed");
+                                active_session = None;
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Disconnected,
+                                );
+                                state.report_error("Deepgram session queue closed unexpectedly");
+                            }
                         }
                     }
                 }
