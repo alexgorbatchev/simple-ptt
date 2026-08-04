@@ -30,9 +30,8 @@ pub enum SessionKind {
 
 pub struct ActiveSession {
     audio_tx: TokioSender<Result<Bytes, std::io::Error>>,
-    stream: TranscriptionStream,
     kind: SessionKind,
-    recording_prefix: String,
+    task: tokio::task::JoinHandle<Result<String, String>>,
 }
 
 impl ActiveSession {
@@ -49,24 +48,17 @@ impl ActiveSession {
         }
     }
 
-    pub fn finish(self, runtime: &Runtime, state: Arc<AppState>) -> Result<String, String> {
+    pub fn finish(self, runtime: &Runtime, _state: Arc<AppState>) -> Result<String, String> {
         drop(self.audio_tx);
-        let mut stream = self.stream;
-        let recording_prefix = self.recording_prefix;
-        let kind = self.kind;
-
-        runtime.block_on(run_transcription_stream(
-            &mut stream,
-            state,
-            kind,
-            recording_prefix,
-        ))
+        runtime
+            .block_on(self.task)
+            .map_err(|error| format!("transcription task join error: {}", error))?
     }
 }
 
 pub fn start_session(
     runtime: &Runtime,
-    _state: Arc<AppState>,
+    state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
     session_kind: SessionKind,
@@ -129,11 +121,15 @@ pub fn start_session(
         session_kind
     );
 
+    let task = runtime.spawn(async move {
+        let mut stream = transcription_stream;
+        run_transcription_stream(&mut stream, state, session_kind, recording_prefix).await
+    });
+
     Ok(ActiveSession {
         audio_tx,
-        stream: transcription_stream,
         kind: session_kind,
-        recording_prefix,
+        task,
     })
 }
 
