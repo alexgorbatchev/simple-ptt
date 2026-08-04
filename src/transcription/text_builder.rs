@@ -87,4 +87,18 @@ mod tests {
             "CURRENT ANNOTATION:\noriginal text\n\nCORRECTION REQUEST:\nfix spelling"
         );
     }
+
+    #[test]
+    fn correction_runtime_config_swaps_correction_prompt() {
+        let base_config = TransformationRuntimeConfig {
+            provider: "openai".to_owned(),
+            api_key: Some("key".to_owned()),
+            model: "gpt-4o-mini".to_owned(),
+            system_prompt: "dictation prompt".to_owned(),
+            correction_system_prompt: "correction prompt".to_owned(),
+        };
+
+        let correction_config = transformation_correction_runtime_config(&base_config);
+        assert_eq!(correction_config.system_prompt, "correction prompt");
+    }
 }

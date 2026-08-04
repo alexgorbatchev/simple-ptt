@@ -215,12 +215,33 @@ pub fn spawn_transcription_thread(
                     }
                 }
                 Command::StartCorrectionSession => {
-                    if active_session.is_some() {
-                        log::info!("ignoring correction start while session is active");
-                        continue;
+                    let was_recording_dictation = active_session
+                        .as_ref()
+                        .map(|session| session.kind() == SessionKind::Dictation)
+                        .unwrap_or(false);
+
+                    if let Some(session) = active_session.take() {
+                        match session.finish(&runtime, state.clone()) {
+                            Ok(text) => {
+                                if !text.trim().is_empty() {
+                                    buffered_text = text;
+                                }
+                            }
+                            Err(error) => {
+                                log::error!(
+                                    "failed to checkpoint dictation before correction: {}",
+                                    error
+                                );
+                                state.report_error(error.to_string());
+                                continue;
+                            }
+                        }
                     }
 
-                    buffered_text = state.overlay_text().to_string();
+                    if buffered_text.trim().is_empty() {
+                        buffered_text = state.overlay_text().to_string();
+                    }
+
                     if buffered_text.trim().is_empty() {
                         log::warn!(
                             "ignoring correction request because no working text is available"
@@ -230,6 +251,8 @@ pub fn spawn_transcription_thread(
                         state.set_state(STATE_IDLE);
                         continue;
                     }
+
+                    resume_after_correction = was_recording_dictation;
 
                     let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
                     if state.is_abort_requested() {
@@ -438,6 +461,14 @@ pub fn spawn_transcription_thread(
 
                         if correction_request.trim().is_empty() {
                             log::info!("ignoring empty correction request");
+                            state.set_overlay_text(buffered_text.clone());
+                            state.set_overlay_text_opacity(1.0);
+                            state.set_state(STATE_BUFFER_READY);
+                            continue;
+                        }
+
+                        if state.consume_abort_request() {
+                            log::info!("discarding correction transformation because abort was requested");
                             state.set_overlay_text(buffered_text.clone());
                             state.set_overlay_text_opacity(1.0);
                             state.set_state(STATE_BUFFER_READY);
