@@ -311,8 +311,6 @@ define_class!(
         fn check_for_updates(&self, sender: Option<&AnyObject>) {
             if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
                 updater.check_for_updates(sender);
-            } else {
-                crate::updater::check_for_github_release_update();
             }
         }
 
