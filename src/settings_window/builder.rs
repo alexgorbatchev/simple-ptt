@@ -24,7 +24,7 @@ use super::helpers::{
 
 pub const WINDOW_HEIGHT: f64 = 760.0;
 pub const WINDOW_WIDTH: f64 = 760.0;
-pub const CONTENT_HEIGHT: f64 = 1600.0;
+pub const CONTENT_HEIGHT: f64 = 1700.0;
 pub const CONTENT_TOP_PADDING: f64 = 28.0;
 pub const HORIZONTAL_PADDING: f64 = 20.0;
 pub const LABEL_WIDTH: f64 = 180.0;
@@ -41,6 +41,7 @@ pub const FIELD_WITH_ACTION_BUTTON_WIDTH: f64 =
 pub const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 pub const ROW_GAP: f64 = 10.0;
 pub const SECTION_BREAK_GAP: f64 = 12.0;
+#[allow(dead_code)]
 pub const SECTION_GAP: f64 = 20.0;
 pub const SECTION_HEIGHT: f64 = 22.0;
 pub const SECTION_TITLE_BOTTOM_GAP: f64 = 10.0;
@@ -757,7 +758,7 @@ pub fn add_prompt_editor(
     let prompt_scroll_view = NSScrollView::initWithFrame(
         NSScrollView::alloc(mtm),
         NSRect::new(
-            NSPoint::new(FIELD_X, *current_y - PROMPT_HEIGHT + 20.0),
+            NSPoint::new(FIELD_X, *current_y - PROMPT_HEIGHT - 4.0),
             NSSize::new(FIELD_WIDTH, PROMPT_HEIGHT),
         ),
     );
@@ -782,7 +783,7 @@ pub fn add_prompt_editor(
     prompt_scroll_view.setDocumentView(Some(&prompt_view));
     content_view.addSubview(&prompt_scroll_view);
 
-    *current_y -= PROMPT_HEIGHT + SECTION_GAP;
+    *current_y -= PROMPT_HEIGHT + 4.0 + ROW_GAP;
     prompt_view
 }
 
