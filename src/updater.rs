@@ -87,6 +87,7 @@ impl AppUpdater {
         Some(Self { controller })
     }
 
+    #[allow(dead_code)]
     pub fn controller(&self) -> &AnyObject {
         &self.controller
     }
@@ -101,6 +102,13 @@ impl AppUpdater {
         }
     }
 
+    pub fn check_for_updates(&self, sender: Option<&AnyObject>) {
+        unsafe {
+            let _: () = msg_send![&self.controller, checkForUpdates: sender];
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn check_for_updates_selector() -> Sel {
         sel!(checkForUpdates:)
     }

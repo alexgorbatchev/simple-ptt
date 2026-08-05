@@ -116,14 +116,16 @@ impl SettingsWindow {
         scroll_view.setHasHorizontalScroller(false);
         scroll_view.setAutohidesScrollers(true);
         scroll_view.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
+        unsafe {
+            let _: () = msg_send![&scroll_view, setHorizontalScrollElasticity: 1isize];
+        }
 
-        let content_size = scroll_view.contentSize();
         let content_view = unsafe {
             let view: Retained<SettingsScrollContentView> = msg_send![
                 SettingsScrollContentView::alloc(mtm),
                 initWithFrame: NSRect::new(
                     NSPoint::new(0.0, 0.0),
-                    NSSize::new(content_size.width, CONTENT_HEIGHT),
+                    NSSize::new(WINDOW_WIDTH - 24.0, CONTENT_HEIGHT),
                 )
             ];
             Retained::into_super(view)

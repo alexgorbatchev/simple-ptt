@@ -159,21 +159,19 @@ define_class!(
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
                     ns_string!("Check for Updates…"),
-                    Some(crate::updater::AppUpdater::check_for_updates_selector()),
+                    Some(sel!(checkForUpdates:)),
                     ns_string!(""),
                 )
             };
+            unsafe {
+                check_updates_item.setTarget(Some(self));
+            }
 
             let app_updater = crate::updater::AppUpdater::init(mtm);
             if let Some(ref updater) = app_updater {
                 updater.set_automatically_checks_for_updates(
                     self.ivars().config_store.current().ui.auto_check_updates,
                 );
-                unsafe {
-                    check_updates_item.setTarget(Some(updater.controller()));
-                }
-            } else {
-                check_updates_item.setEnabled(false);
             }
             menu.addItem(&check_updates_item);
             let _ = self.ivars().app_updater.set(app_updater);
@@ -309,18 +307,18 @@ define_class!(
             self.ivars().audio_controller.apply_pending_if_idle();
         }
 
+        #[unsafe(method(checkForUpdates:))]
+        fn check_for_updates(&self, sender: Option<&AnyObject>) {
+            if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
+                updater.check_for_updates(sender);
+            } else {
+                self.open_github_repo_url();
+            }
+        }
+
         #[unsafe(method(openGitHubRepo:))]
         fn open_github_repo(&self, _sender: Option<&AnyObject>) {
-            let github_url = NSString::from_str(GITHUB_REPO_URL);
-            let Some(url) = NSURL::URLWithString(&github_url) else {
-                log::error!("invalid GitHub URL configured: {}", GITHUB_REPO_URL);
-                return;
-            };
-
-            let opened = NSWorkspace::sharedWorkspace().openURL(&url);
-            if !opened {
-                log::error!("failed to open GitHub URL: {}", GITHUB_REPO_URL);
-            }
+            self.open_github_repo_url();
         }
 
         #[unsafe(method(openSettings:))]
@@ -625,6 +623,19 @@ impl AppDelegate {
                     error
                 ),
             );
+        }
+    }
+
+    fn open_github_repo_url(&self) {
+        let github_url = NSString::from_str(GITHUB_REPO_URL);
+        let Some(url) = NSURL::URLWithString(&github_url) else {
+            log::error!("invalid GitHub URL configured: {}", GITHUB_REPO_URL);
+            return;
+        };
+
+        let opened = NSWorkspace::sharedWorkspace().openURL(&url);
+        if !opened {
+            log::error!("failed to open GitHub URL: {}", GITHUB_REPO_URL);
         }
     }
 
