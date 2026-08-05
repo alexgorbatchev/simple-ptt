@@ -117,12 +117,13 @@ impl SettingsWindow {
         scroll_view.setAutohidesScrollers(true);
         scroll_view.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
 
+        let content_size = scroll_view.contentSize();
         let content_view = unsafe {
             let view: Retained<SettingsScrollContentView> = msg_send![
                 SettingsScrollContentView::alloc(mtm),
                 initWithFrame: NSRect::new(
                     NSPoint::new(0.0, 0.0),
-                    NSSize::new(WINDOW_WIDTH, CONTENT_HEIGHT),
+                    NSSize::new(content_size.width, CONTENT_HEIGHT),
                 )
             ];
             Retained::into_super(view)

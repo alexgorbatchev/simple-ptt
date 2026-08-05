@@ -468,91 +468,23 @@ define_class!(
         }
 
         #[unsafe(method(cancelSettings:))]
-        fn cancel_settings(&self, _sender: Option<&AnyObject>) {
-            let Some(settings_window) = self.ivars().settings_window.get() else {
-                return;
-            };
+        fn cancel_settings_action(&self, _sender: Option<&AnyObject>) {
+            self.cancel_settings();
+        }
 
-            self.disable_settings_window_hotkey_blocking();
-            settings_window.hide();
-            self.restore_accessory_activation_policy_if_possible();
+        #[unsafe(method(cancelSettingsPressed:))]
+        fn cancel_settings_pressed(&self, _sender: Option<&AnyObject>) {
+            self.cancel_settings();
         }
 
         #[unsafe(method(saveSettings:))]
-        fn save_settings(&self, _sender: Option<&AnyObject>) {
-            let Some(settings_window) = self.ivars().settings_window.get() else {
-                return;
-            };
+        fn save_settings_action(&self, _sender: Option<&AnyObject>) {
+            self.save_settings();
+        }
 
-            self.ivars().hotkey_capture_controller.cancel();
-            settings_window.cancel_hotkey_capture();
-
-            let proposed_config = match settings_window.read_config() {
-                Ok(config) => config,
-                Err(error) => {
-                    settings_window.set_status(&error);
-                    show_modal_alert("Couldn't save settings", &error);
-                    return;
-                }
-            };
-
-            if let Err(error) = validate_settings_config(&proposed_config) {
-                settings_window.set_status(&error);
-                show_modal_alert("Couldn't save settings", &error);
-                return;
-            }
-
-            let runtime_config = config::materialize_runtime_config(&proposed_config);
-            let previous_file_config = self.ivars().config_store.current_file();
-
-            if let Err(error) = config::save_config(self.ivars().config_store.path(), &proposed_config)
-            {
-                settings_window.set_status(&error);
-                show_modal_alert("Couldn't save settings", &error);
-                return;
-            }
-
-            crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
-
-            if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
-                updater.set_automatically_checks_for_updates(runtime_config.ui.auto_check_updates);
-            }
-
-            self.ivars().audio_controller.clear_preview_audio_device();
-
-            let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
-                Ok(effect) => effect,
-                Err(error) => {
-                    let _ = config::save_config(
-                        self.ivars().config_store.path(),
-                        &previous_file_config,
-                    );
-                    settings_window.set_status(&error);
-                    show_modal_alert("Couldn't apply audio settings", &error);
-                    return;
-                }
-            };
-
-            self.ivars()
-                .config_store
-                .replace(proposed_config.clone(), runtime_config.clone());
-            self.ivars().billing_controller.refresh_month_to_date_spend();
-            if let Some(overlay_window) = self.ivars().overlay_window.get() {
-                overlay_window.apply_style(&overlay_style_from_config(&runtime_config));
-            }
-
-            let audio_message = match audio_apply_effect {
-                AudioConfigApplyEffect::AppliedNow => "audio changes applied now",
-                AudioConfigApplyEffect::DeferredUntilRecordingStops => {
-                    "audio device/sample-rate changes will apply after the current recording stops"
-                }
-            };
-            let _ = settings_window.load_from_config(
-                &proposed_config,
-                Some(audio_message),
-            );
-            self.sync_transformation_provider_ui();
-            settings_window.set_status(&format!("Saved and applied settings. {}.", audio_message));
+        #[unsafe(method(applySettingsPressed:))]
+        fn apply_settings_pressed(&self, _sender: Option<&AnyObject>) {
+            self.save_settings();
         }
     }
 
@@ -1084,6 +1016,94 @@ impl AppDelegate {
                 }
             }
         }
+    }
+
+    fn cancel_settings(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        let previous_file_config = self.ivars().config_store.current_file();
+        let _ = settings_window.load_from_config(&previous_file_config, None);
+        self.disable_settings_window_hotkey_blocking();
+        settings_window.hide();
+        self.restore_accessory_activation_policy_if_possible();
+    }
+
+    fn save_settings(&self) {
+        let Some(settings_window) = self.ivars().settings_window.get() else {
+            return;
+        };
+
+        self.ivars().hotkey_capture_controller.cancel();
+        settings_window.cancel_hotkey_capture();
+
+        let proposed_config = match settings_window.read_config() {
+            Ok(config) => config,
+            Err(error) => {
+                settings_window.set_status(&error);
+                show_modal_alert("Couldn't save settings", &error);
+                return;
+            }
+        };
+
+        if let Err(error) = validate_settings_config(&proposed_config) {
+            settings_window.set_status(&error);
+            show_modal_alert("Couldn't save settings", &error);
+            return;
+        }
+
+        let runtime_config = config::materialize_runtime_config(&proposed_config);
+        let previous_file_config = self.ivars().config_store.current_file();
+
+        if let Err(error) = config::save_config(self.ivars().config_store.path(), &proposed_config)
+        {
+            settings_window.set_status(&error);
+            show_modal_alert("Couldn't save settings", &error);
+            return;
+        }
+
+        crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
+
+        if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
+            updater.set_automatically_checks_for_updates(runtime_config.ui.auto_check_updates);
+        }
+
+        self.ivars().audio_controller.clear_preview_audio_device();
+
+        let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
+            Ok(effect) => effect,
+            Err(error) => {
+                let _ = config::save_config(
+                    self.ivars().config_store.path(),
+                    &previous_file_config,
+                );
+                settings_window.set_status(&error);
+                show_modal_alert("Couldn't apply audio settings", &error);
+                return;
+            }
+        };
+
+        let audio_message = match audio_apply_effect {
+            AudioConfigApplyEffect::AppliedNow => "audio changes applied now",
+            AudioConfigApplyEffect::DeferredUntilRecordingStops => {
+                "audio device/sample-rate changes will apply after the current recording stops"
+            }
+        };
+        log::info!("settings saved and applied ({})", audio_message);
+
+        self.ivars()
+            .config_store
+            .replace(proposed_config.clone(), runtime_config.clone());
+        self.ivars().billing_controller.refresh_month_to_date_spend();
+        if let Some(overlay_window) = self.ivars().overlay_window.get() {
+            overlay_window.apply_style(&overlay_style_from_config(&runtime_config));
+        }
+
+        self.sync_transformation_provider_ui();
+        self.disable_settings_window_hotkey_blocking();
+        settings_window.hide();
+        self.restore_accessory_activation_policy_if_possible();
     }
 
     fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
