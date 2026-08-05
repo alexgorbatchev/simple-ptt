@@ -46,8 +46,24 @@ fn load_sparkle_framework() {
     }
 }
 
+fn is_valid_sparkle_bundle() -> bool {
+    let bundle = objc2_foundation::NSBundle::mainBundle();
+    let has_bundle_id = bundle.bundleIdentifier().is_some();
+    let feed_url_key = objc2_foundation::NSString::from_str("SUFeedURL");
+    let has_feed_url = bundle.objectForInfoDictionaryKey(&feed_url_key).is_some();
+
+    has_bundle_id && has_feed_url
+}
+
 impl AppUpdater {
     pub fn init(_mtm: MainThreadMarker) -> Option<Self> {
+        if !is_valid_sparkle_bundle() {
+            log::info!(
+                "skipping Sparkle updater initialization: not running inside a packaged .app bundle with SUFeedURL"
+            );
+            return None;
+        }
+
         load_sparkle_framework();
 
         let cls = AnyClass::get(c"SPUStandardUpdaterController")?;
@@ -95,9 +111,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_updater_initializes_when_sparkle_framework_is_available() {
+    fn app_updater_init_safely_handles_unbundled_execution() {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         let updater = AppUpdater::init(mtm);
-        assert!(updater.is_some(), "Sparkle updater should initialize when Sparkle.framework is available");
+        // In unbundled CLI test execution, init safely returns None without panicking or showing Sparkle alert
+        assert!(updater.is_none());
     }
 }
