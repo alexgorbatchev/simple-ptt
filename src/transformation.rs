@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use rig::agent::{Agent, MultiTurnStreamItem};
 use rig::client::{CompletionClient, ProviderClient};
@@ -14,7 +13,7 @@ use tokio_stream::StreamExt;
 
 use crate::state::AppState;
 
-const TRANSFORMATION_FADE_SETTLE_DELAY_MS: u64 = 150;
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformationPreviewMode<'a> {
@@ -40,7 +39,6 @@ pub async fn transform_text(
 ) -> Result<String, String> {
     let normalized_provider = normalize_provider_name(&config.provider);
 
-    tokio::time::sleep(Duration::from_millis(TRANSFORMATION_FADE_SETTLE_DELAY_MS)).await;
     if state.is_abort_requested() {
         return Err("transformation aborted".to_owned());
     }
