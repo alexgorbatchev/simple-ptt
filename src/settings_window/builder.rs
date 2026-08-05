@@ -24,16 +24,16 @@ use super::helpers::{
 
 pub const WINDOW_HEIGHT: f64 = 760.0;
 pub const WINDOW_WIDTH: f64 = 760.0;
-pub const CONTENT_HEIGHT: f64 = 1380.0;
+pub const CONTENT_HEIGHT: f64 = 1600.0;
 pub const CONTENT_TOP_PADDING: f64 = 28.0;
 pub const HORIZONTAL_PADDING: f64 = 20.0;
 pub const LABEL_WIDTH: f64 = 180.0;
 pub const FIELD_HEIGHT: f64 = 24.0;
-pub const FIELD_WIDTH: f64 = 500.0;
-pub const HOTKEY_FIELD_WIDTH: f64 = 390.0;
+pub const FIELD_WIDTH: f64 = 480.0;
+pub const HOTKEY_FIELD_WIDTH: f64 = 370.0;
 pub const CAPTURE_BUTTON_WIDTH: f64 = 100.0;
 pub const CAPTURE_BUTTON_GAP: f64 = 10.0;
-pub const MODEL_COMBO_BOX_WIDTH: f64 = 320.0;
+pub const MODEL_COMBO_BOX_WIDTH: f64 = 300.0;
 pub const MODEL_ACTION_BUTTON_WIDTH: f64 = 80.0;
 pub const MODEL_ACTION_BUTTON_GAP: f64 = 10.0;
 pub const FIELD_WITH_ACTION_BUTTON_WIDTH: f64 =
@@ -67,7 +67,7 @@ define_class!(
     impl SettingsScrollContentView {
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
-            true
+            false
         }
     }
 );
