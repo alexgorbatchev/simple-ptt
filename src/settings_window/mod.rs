@@ -60,6 +60,7 @@ pub struct SettingsWindow {
     transformation_model_check_button: Retained<NSButton>,
     transformation_system_prompt_view: Retained<NSTextView>,
     transformation_correction_system_prompt_view: Retained<NSTextView>,
+    ui_auto_check_updates_checkbox: Retained<NSButton>,
     ui_start_on_login_checkbox: Retained<NSButton>,
     ui_font_name_popup: Retained<NSPopUpButton>,
     ui_font_size_field: Retained<NSTextField>,
@@ -295,6 +296,12 @@ impl SettingsWindow {
         );
 
         current_y = add_section_title(&content_view, mtm, current_y, "System");
+        let ui_auto_check_updates_checkbox = add_checkbox(
+            &content_view,
+            mtm,
+            &mut current_y,
+            "Automatically check for updates",
+        );
         let ui_start_on_login_checkbox = add_checkbox(
             &content_view,
             mtm,
@@ -389,6 +396,7 @@ impl SettingsWindow {
             transformation_model_check_button,
             transformation_system_prompt_view,
             transformation_correction_system_prompt_view,
+            ui_auto_check_updates_checkbox,
             ui_start_on_login_checkbox,
             ui_font_name_popup,
             ui_font_size_field,
@@ -439,6 +447,12 @@ impl SettingsWindow {
         config: &Config,
         audio_device_status_message: Option<&str>,
     ) -> Result<(), String> {
+        self.ui_auto_check_updates_checkbox
+            .setState(if config.ui.auto_check_updates {
+                NSControlStateValueOn
+            } else {
+                NSControlStateValueOff
+            });
         self.ui_start_on_login_checkbox.setState(if config.ui.start_on_login {
             NSControlStateValueOn
         } else {
@@ -559,6 +573,7 @@ impl SettingsWindow {
         Ok(Config {
             ui: crate::config::UiConfig {
                 start_on_login: self.ui_start_on_login_checkbox.state() == NSControlStateValueOn,
+                auto_check_updates: self.ui_auto_check_updates_checkbox.state() == NSControlStateValueOn,
                 hotkey: read_required_string(&self.ui_hotkey_field, "Record hotkey")?,
                 correction_key: read_required_string(
                     &self.ui_correction_key_field,

@@ -166,6 +166,9 @@ define_class!(
 
             let app_updater = crate::updater::AppUpdater::init(mtm);
             if let Some(ref updater) = app_updater {
+                updater.set_automatically_checks_for_updates(
+                    self.ivars().config_store.current().ui.auto_check_updates,
+                );
                 unsafe {
                     check_updates_item.setTarget(Some(updater.controller()));
                 }
@@ -510,6 +513,10 @@ define_class!(
             }
 
             crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
+
+            if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
+                updater.set_automatically_checks_for_updates(runtime_config.ui.auto_check_updates);
+            }
 
             self.ivars().audio_controller.clear_preview_audio_device();
 

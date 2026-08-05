@@ -104,6 +104,7 @@ fn set_string_array_key(table: &mut Table, key: &str, values: &[String]) {
 fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
     let table = ensure_named_table(document, "ui");
     table["start_on_login"] = value(ui.start_on_login);
+    table["auto_check_updates"] = value(ui.auto_check_updates);
     set_required_string_key(table, "hotkey", &["record_hotkey"], &ui.hotkey);
     set_required_string_key(table, "correction_key", &[], &ui.correction_key);
     set_optional_string_key(

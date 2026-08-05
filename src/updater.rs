@@ -34,6 +34,16 @@ impl AppUpdater {
         &self.controller
     }
 
+    pub fn set_automatically_checks_for_updates(&self, enabled: bool) {
+        unsafe {
+            let updater: Option<Retained<AnyObject>> = msg_send![&self.controller, updater];
+            if let Some(updater) = updater {
+                let _: () = msg_send![&updater, setAutomaticallyChecksForUpdates: enabled];
+                let _: () = msg_send![&updater, setUpdateCheckInterval: 604800.0f64]; // 1 week interval
+            }
+        }
+    }
+
     pub fn check_for_updates_selector() -> Sel {
         sel!(checkForUpdates:)
     }

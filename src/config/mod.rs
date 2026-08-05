@@ -41,6 +41,9 @@ pub struct UiConfig {
     #[serde(default)]
     pub start_on_login: bool,
 
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
+
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
@@ -63,6 +66,7 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             start_on_login: false,
+            auto_check_updates: true,
             hotkey: default_hotkey(),
             correction_key: default_correction_key(),
             font_name: None,
@@ -174,6 +178,10 @@ impl Default for TransformationConfig {
             correction_system_prompt: default_transformation_correction_system_prompt(),
         }
     }
+}
+
+fn default_auto_check_updates() -> bool {
+    true
 }
 
 fn default_hotkey() -> String {
@@ -706,6 +714,11 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
     } else {
         table.remove("start_on_login");
     }
+    if !ui.auto_check_updates {
+        table["auto_check_updates"] = value(false);
+    } else {
+        table.remove("auto_check_updates");
+    }
     set_required_string_key(table, "hotkey", &[], &ui.hotkey);
     set_required_string_key(
         table,
@@ -1061,6 +1074,23 @@ mod tests {
         assert!(prompt.contains("CURRENT ANNOTATION"));
         assert!(prompt.contains("CORRECTION REQUEST"));
         assert!(prompt.contains("Return only the fully rewritten annotation"));
+    }
+
+    #[test]
+    fn auto_check_updates_defaults_to_true_and_roundtrips() {
+        let mut config = Config::default();
+        assert!(config.ui.auto_check_updates);
+
+        config.ui.auto_check_updates = false;
+        let temp_dir =
+            std::env::temp_dir().join(format!("simple-ptt-autocheck-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let path = temp_dir.join("config.toml");
+
+        save_config(&path, &config).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("auto_check_updates = false"));
+        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
