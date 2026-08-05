@@ -19,6 +19,7 @@ mod transcription;
 mod transformation;
 mod transformation_models;
 mod ui_meter;
+mod updater;
 
 use std::any::Any;
 use std::path::Path;

@@ -43,6 +43,7 @@ input_monitoring_usage_description="${APP_INPUT_MONITORING_USAGE_DESCRIPTION:-si
 
 app_contents_path="${app_bundle_path}/Contents"
 app_macos_path="${app_contents_path}/MacOS"
+app_frameworks_path="${app_contents_path}/Frameworks"
 app_resources_path="${app_contents_path}/Resources"
 icon_file_name="AppIcon.icns"
 icon_file_base_name="${icon_file_name%.icns}"
@@ -53,8 +54,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+sparkle_version="2.9.5"
+sparkle_vendor_dir="${repo_root}/vendor/Sparkle.framework"
+if [[ ! -d "$sparkle_vendor_dir" ]]; then
+  echo "downloading Sparkle.framework ${sparkle_version}..."
+  mkdir -p "${repo_root}/vendor"
+  curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/${sparkle_version}/Sparkle-${sparkle_version}.tar.xz" | tar -xJ -C "${repo_root}/vendor" Sparkle.framework
+fi
+
 rm -rf "$app_bundle_path"
-mkdir -p "$app_macos_path" "$app_resources_path" "$iconset_dir"
+mkdir -p "$app_macos_path" "$app_frameworks_path" "$app_resources_path" "$iconset_dir"
+cp -R "$sparkle_vendor_dir" "${app_frameworks_path}/Sparkle.framework"
 cp "$binary_path" "${app_macos_path}/${binary_name}"
 chmod 755 "${app_macos_path}/${binary_name}"
 "${app_macos_path}/${binary_name}" --write-app-iconset "$iconset_dir"
@@ -87,12 +97,21 @@ cat > "${app_contents_path}/Info.plist" <<EOF
   <string>${microphone_usage_description}</string>
   <key>NSInputMonitoringUsageDescription</key>
   <string>${input_monitoring_usage_description}</string>
+  <key>SUFeedURL</key>
+  <string>https://raw.githubusercontent.com/alexgorbatchev/simple-ptt/main/appcast.xml</string>
+  <key>SUPublicEDKey</key>
+  <string>9MDL+O/NtfYqeNcio9M1aWXwwa90tUFWMGXx+zBrDWw=</string>
+  <key>SUEnableAutomaticChecks</key>
+  <true/>
 </dict>
 </plist>
 EOF
 
 if [[ "${ADHOC_SIGN_APP:-1}" == "1" ]]; then
-  codesign --force --deep --sign - "$app_bundle_path"
+  if [[ -d "${app_frameworks_path}/Sparkle.framework" ]]; then
+    codesign --force --options runtime --sign - "${app_frameworks_path}/Sparkle.framework"
+  fi
+  codesign --force --deep --options runtime --sign - "$app_bundle_path"
   codesign --verify --deep --strict --verbose=2 "$app_bundle_path" >/dev/null
 fi
 

@@ -48,6 +48,7 @@ const GITHUB_REPO_URL: &str = "https://github.com/alexgorbatchev/simple-ptt";
 const NS_VARIABLE_STATUS_ITEM_LENGTH: f64 = -1.0;
 
 pub struct Ivars {
+    app_updater: OnceCell<Option<crate::updater::AppUpdater>>,
     audio_controller: AudioController,
     initial_audio_error: Option<String>,
     billing_controller: BillingController,
@@ -153,6 +154,26 @@ define_class!(
                 settings_item.setTarget(Some(self));
             }
             menu.addItem(&settings_item);
+
+            let check_updates_item = unsafe {
+                NSMenuItem::initWithTitle_action_keyEquivalent(
+                    NSMenuItem::alloc(mtm),
+                    ns_string!("Check for Updates…"),
+                    Some(crate::updater::AppUpdater::check_for_updates_selector()),
+                    ns_string!(""),
+                )
+            };
+
+            let app_updater = crate::updater::AppUpdater::init(mtm);
+            if let Some(ref updater) = app_updater {
+                unsafe {
+                    check_updates_item.setTarget(Some(updater.controller()));
+                }
+            } else {
+                check_updates_item.setEnabled(false);
+            }
+            menu.addItem(&check_updates_item);
+            let _ = self.ivars().app_updater.set(app_updater);
 
             let permissions_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -575,6 +596,7 @@ impl AppDelegate {
         state: Arc<AppState>,
     ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(Ivars {
+            app_updater: OnceCell::new(),
             audio_controller,
             initial_audio_error,
             billing_controller,

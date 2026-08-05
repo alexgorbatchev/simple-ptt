@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <channel>
+        <title>simple-ptt Changelog</title>
+        <link>https://raw.githubusercontent.com/alexgorbatchev/simple-ptt/main/appcast.xml</link>
+        <description>Most recent releases and updates for simple-ptt.</description>
+        <language>en</language>
+        <item>
+            <title>Version 1.6.0</title>
+            <pubDate>Wed, 05 Aug 2026 16:47:00 +0000</pubDate>
+            <sparkle:releaseNotesLink>https://github.com/alexgorbatchev/simple-ptt/releases/tag/v1.6.0</sparkle:releaseNotesLink>
+            <sparkle:version>1.6.0</sparkle:version>
+            <sparkle:shortVersionString>1.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/alexgorbatchev/simple-ptt/releases/download/v1.6.0/simple-ptt-v1.6.0-macos-arm64.dmg"
+                       length="6979888"
+                       type="application/octet-stream"
+                       sparkle:edSignature="PBQuVwJY/7OGhklkyYco+NlrDrYQ6UHGudilzRNJ0HLswwTok+uORz1SKg5kCTcUj/2OIPHO8U2YjoR8dAZ2Bw==" />
+        </item>
+    </channel>
+</rss>
