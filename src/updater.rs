@@ -9,10 +9,18 @@ pub struct AppUpdater {
     controller: Retained<AnyObject>,
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Clone, Debug, serde::Deserialize)]
+struct ReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(Clone, Debug, serde::Deserialize)]
 struct GitHubReleaseResponse {
     tag_name: String,
     html_url: String,
+    #[serde(default)]
+    assets: Vec<ReleaseAsset>,
 }
 
 pub fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
@@ -53,6 +61,7 @@ pub fn check_for_github_release_update() {
                     "Unable to Check for Updates",
                     &format!("Could not initialize network client: {}", error),
                     None,
+                    None,
                 );
                 return;
             }
@@ -73,6 +82,7 @@ pub fn check_for_github_release_update() {
                         error
                     ),
                     None,
+                    None,
                 );
                 return;
             }
@@ -86,20 +96,34 @@ pub fn check_for_github_release_update() {
                     "Unable to Check for Updates",
                     &format!("Failed to parse release information: {}", error),
                     None,
+                    None,
                 );
                 return;
             }
         };
 
-        let remote_ver_str = release.tag_name.trim_start_matches('v');
+        let remote_ver_str = release.tag_name.trim_start_matches('v').to_owned();
         if is_newer_version(&release.tag_name, current_version) {
+            let download_url = release
+                .assets
+                .iter()
+                .find(|asset| asset.name.ends_with(".dmg"))
+                .map(|asset| asset.browser_download_url.clone())
+                .unwrap_or_else(|| {
+                    format!(
+                        "https://github.com/alexgorbatchev/simple-ptt/releases/download/{}/simple-ptt-{}-macos-arm64.dmg",
+                        release.tag_name, release.tag_name
+                    )
+                });
+
             dispatch_update_alert(
                 "A new version of simple-ptt is available!",
                 &format!(
-                    "simple-ptt {} is available (you have {}).\n\nWould you like to open the release page to download it?",
+                    "simple-ptt {} is available (you have {}).\n\nWould you like to update now or open the release page?",
                     remote_ver_str, current_version
                 ),
                 Some(release.html_url),
+                Some((download_url, remote_ver_str)),
             );
         } else {
             dispatch_update_alert(
@@ -109,8 +133,164 @@ pub fn check_for_github_release_update() {
                     current_version
                 ),
                 None,
+                None,
             );
         }
+    });
+}
+
+fn detect_target_app_installation_path() -> std::path::PathBuf {
+    if let Ok(exe_path) = std::env::current_exe() {
+        for ancestor in exe_path.ancestors() {
+            if ancestor.extension().and_then(|ext| ext.to_str()) == Some("app") {
+                return ancestor.to_path_buf();
+            }
+        }
+    }
+
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        let user_apps = home.join("Applications").join("simple-ptt.app");
+        if user_apps.parent().map(|p| p.exists()).unwrap_or(false) {
+            return user_apps;
+        }
+    }
+
+    std::path::PathBuf::from("/Applications/simple-ptt.app")
+}
+
+fn show_update_error(title: &str, message: &str) {
+    dispatch_update_alert(title, message, None, None);
+}
+
+pub fn perform_in_app_update(download_url: String, remote_version: String) {
+    std::thread::spawn(move || {
+        log::info!("downloading update from {}...", download_url);
+
+        let temp_dir = std::env::temp_dir();
+        let dmg_path = temp_dir.join(format!("simple-ptt-update-{}.dmg", remote_version));
+        let mount_point = temp_dir.join(format!("simple_ptt_mount_{}", std::process::id()));
+
+        let client = match reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .user_agent(concat!("simple-ptt/", env!("CARGO_PKG_VERSION")))
+            .build()
+        {
+            Ok(c) => c,
+            Err(err) => {
+                show_update_error("Update Failed", &format!("Failed to create HTTP client: {}", err));
+                return;
+            }
+        };
+
+        let mut response = match client.get(&download_url).send() {
+            Ok(resp) => resp,
+            Err(err) => {
+                show_update_error("Update Failed", &format!("Failed to download update package: {}", err));
+                return;
+            }
+        };
+
+        if !response.status().is_success() {
+            show_update_error("Update Failed", &format!("Download server returned status {}", response.status()));
+            return;
+        }
+
+        let mut file = match std::fs::File::create(&dmg_path) {
+            Ok(f) => f,
+            Err(err) => {
+                show_update_error("Update Failed", &format!("Failed to create local update file: {}", err));
+                return;
+            }
+        };
+
+        if let Err(err) = std::io::copy(&mut response, &mut file) {
+            show_update_error("Update Failed", &format!("Failed to write update file: {}", err));
+            let _ = std::fs::remove_file(&dmg_path);
+            return;
+        }
+        drop(file);
+
+        let _ = std::fs::create_dir_all(&mount_point);
+        let attach_status = std::process::Command::new("hdiutil")
+            .arg("attach")
+            .arg(&dmg_path)
+            .arg("-nobrowse")
+            .arg("-mountpoint")
+            .arg(&mount_point)
+            .status();
+
+        if attach_status.as_ref().map(|s| !s.success()).unwrap_or(true) {
+            show_update_error("Update Failed", "Failed to mount DMG update package.");
+            let _ = std::fs::remove_file(&dmg_path);
+            let _ = std::fs::remove_dir_all(&mount_point);
+            return;
+        }
+
+        let app_source = mount_point.join("simple-ptt.app");
+        if !app_source.exists() {
+            show_update_error("Update Failed", "Update package did not contain simple-ptt.app.");
+            let _ = std::process::Command::new("hdiutil").arg("detach").arg(&mount_point).arg("-force").status();
+            let _ = std::fs::remove_file(&dmg_path);
+            let _ = std::fs::remove_dir_all(&mount_point);
+            return;
+        }
+
+        let target_app_path = detect_target_app_installation_path();
+
+        if target_app_path.exists() {
+            let _ = std::fs::remove_dir_all(&target_app_path);
+        }
+
+        if let Some(parent) = target_app_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let copy_status = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(&app_source)
+            .arg(&target_app_path)
+            .status();
+
+        let _ = std::process::Command::new("hdiutil")
+            .arg("detach")
+            .arg(&mount_point)
+            .arg("-force")
+            .status();
+        let _ = std::fs::remove_file(&dmg_path);
+        let _ = std::fs::remove_dir_all(&mount_point);
+
+        if copy_status.as_ref().map(|s| !s.success()).unwrap_or(true) {
+            show_update_error(
+                "Update Failed",
+                &format!("Failed to copy updated app bundle to {}.", target_app_path.display()),
+            );
+            return;
+        }
+
+        dispatch_to_main_thread(move || {
+            let mtm = match MainThreadMarker::new() {
+                Some(mtm) => mtm,
+                None => return,
+            };
+
+            let alert = objc2_app_kit::NSAlert::new(mtm);
+            alert.setMessageText(&objc2_foundation::NSString::from_str("Update Installed!"));
+            alert.setInformativeText(&objc2_foundation::NSString::from_str(&format!(
+                "simple-ptt has been updated to version {}.\n\nClick Relaunch to start the updated version now.",
+                remote_version
+            )));
+            alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Relaunch"));
+            alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Later"));
+
+            let response = alert.runModal();
+            if response == objc2_app_kit::NSAlertFirstButtonReturn {
+                let _ = std::process::Command::new("open")
+                    .arg("-n")
+                    .arg(&target_app_path)
+                    .spawn();
+                std::process::exit(0);
+            }
+        });
     });
 }
 
@@ -146,7 +326,12 @@ fn dispatch_to_main_thread(work: impl FnOnce() + Send + 'static) {
     }
 }
 
-fn dispatch_update_alert(title: &str, message: &str, open_url: Option<String>) {
+fn dispatch_update_alert(
+    title: &str,
+    message: &str,
+    open_url: Option<String>,
+    download_info: Option<(String, String)>,
+) {
     let title = title.to_owned();
     let message = message.to_owned();
 
@@ -160,7 +345,27 @@ fn dispatch_update_alert(title: &str, message: &str, open_url: Option<String>) {
         alert.setMessageText(&objc2_foundation::NSString::from_str(&title));
         alert.setInformativeText(&objc2_foundation::NSString::from_str(&message));
 
-        if let Some(ref url) = open_url {
+        if let Some((download_url, remote_version)) = download_info {
+            alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Update Now"));
+            if open_url.is_some() {
+                alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Open Release Page"));
+            }
+            alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Cancel"));
+
+            let response = alert.runModal();
+            if response == objc2_app_kit::NSAlertFirstButtonReturn {
+                perform_in_app_update(download_url, remote_version);
+            } else if response == objc2_app_kit::NSAlertSecondButtonReturn && open_url.is_some() {
+                if let Some(ref url) = open_url {
+                    let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+                    if let Some(ns_url) =
+                        objc2_foundation::NSURL::URLWithString(&objc2_foundation::NSString::from_str(url))
+                    {
+                        workspace.openURL(&ns_url);
+                    }
+                }
+            }
+        } else if let Some(ref url) = open_url {
             alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Open Release Page"));
             alert.addButtonWithTitle(&objc2_foundation::NSString::from_str("Cancel"));
             let response = alert.runModal();
@@ -294,12 +499,12 @@ mod tests {
     fn app_updater_init_safely_handles_unbundled_execution() {
         let mtm = unsafe { MainThreadMarker::new_unchecked() };
         let updater = AppUpdater::init(mtm);
-        // In unbundled CLI test execution, init safely returns None without panicking or showing Sparkle alert
         assert!(updater.is_none());
     }
 
     #[test]
     fn semver_comparison_correctly_identifies_newer_versions() {
+        assert!(is_newer_version("v1.6.0", "1.5.9"));
         assert!(is_newer_version("v1.6.1", "1.6.0"));
         assert!(is_newer_version("1.7.0", "1.6.0"));
         assert!(is_newer_version("2.0.0", "1.6.0"));
