@@ -3,8 +3,7 @@ use std::ptr::NonNull;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use objc2::MainThreadMarker;
-use objc2_app_kit::{NSApplication, NSPasteboard, NSPasteboardTypeString};
+use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
 use objc2_foundation::NSString;
@@ -44,9 +43,7 @@ pub fn query_paste_diagnostics(state: &AppState) -> PasteDiagnostics {
 }
 
 fn is_main_app_active() -> bool {
-    let mtm = MainThreadMarker::new().expect("must be on main thread");
-    let app = NSApplication::sharedApplication(mtm);
-    app.isActive()
+    objc2_app_kit::NSRunningApplication::currentApplication().isActive()
 }
 
 pub fn describe_paste_diagnostics(diagnostics: &PasteDiagnostics) -> String {
@@ -287,5 +284,22 @@ pub fn write_clipboard_text(text: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("failed to update the macOS general pasteboard".to_owned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::AppState;
+
+    #[test]
+    fn query_paste_diagnostics_runs_on_background_thread_without_panicking() {
+        let state = AppState::new();
+        let handle = std::thread::spawn(move || {
+            query_paste_diagnostics(&state)
+        });
+
+        let diagnostics = handle.join().expect("background thread must not panic");
+        assert_eq!(diagnostics.state, crate::state::STATE_IDLE);
     }
 }
