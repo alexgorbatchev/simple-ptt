@@ -312,7 +312,7 @@ define_class!(
             if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
                 updater.check_for_updates(sender);
             } else {
-                self.open_github_repo_url();
+                crate::updater::check_for_github_release_update();
             }
         }
 
