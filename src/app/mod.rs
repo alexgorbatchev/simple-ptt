@@ -344,20 +344,21 @@ define_class!(
 
         #[unsafe(method(requestMicrophonePermission:))]
         fn request_microphone_permission(&self, _sender: Option<&AnyObject>) {
+            self.ivars().microphone_permission_requested.set(true);
+            if let Err(error) = permissions::request_microphone_access() {
+                log::error!("failed to request microphone access: {}", error);
+            }
+
             let flow = self.current_hotkey_permission_flow();
-            let result = if matches!(
+            if matches!(
                 flow.microphone_state,
                 permissions::GlobalHotkeyPermissionState::Requested
             ) {
-                self.open_system_settings_and_activate(permissions::microphone_settings_urls())
-            } else {
-                self.ivars().microphone_permission_requested.set(true);
-                permissions::request_microphone_access()
-            };
-
-            if let Err(error) = result {
-                log::error!("failed to request microphone access: {}", error);
+                if let Err(error) = self.open_system_settings_and_activate(permissions::microphone_settings_urls()) {
+                    log::error!("failed to open microphone settings: {}", error);
+                }
             }
+
             self.sync_hotkey_permissions_ui();
         }
 
