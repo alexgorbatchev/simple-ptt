@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+pkill -9 simple-ptt 2>/dev/null || true
+sleep 0.5
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
@@ -54,7 +57,7 @@ plutil -replace CFBundleShortVersionString -string "$test_version" "${app_bundle
 codesign --force --deep --options runtime --sign - "$app_bundle_path"
 
 echo "launching test app bundle ($app_bundle_path)..."
-open "$app_bundle_path"
+open -n "$app_bundle_path"
 
 echo ""
 echo "============================================================"
