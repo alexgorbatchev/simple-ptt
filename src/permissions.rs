@@ -102,9 +102,15 @@ pub fn request_input_monitoring_access() -> Result<bool, String> {
     Ok(CGRequestListenEventAccess())
 }
 
-pub fn request_microphone_access() -> Result<(), String> {
+pub fn request_microphone_access(
+    on_complete: impl Fn(bool) + Send + Sync + 'static,
+) -> Result<(), String> {
     let media_type = audio_media_type()?;
-    let completion = RcBlock::new(|_granted| {});
+    let on_complete = std::sync::Arc::new(on_complete);
+    let completion = RcBlock::new(move |granted: objc2::runtime::Bool| {
+        let on_complete = on_complete.clone();
+        on_complete(granted.as_bool());
+    });
     unsafe {
         AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &completion);
     }

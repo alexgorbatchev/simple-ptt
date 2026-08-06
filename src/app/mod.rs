@@ -347,28 +347,28 @@ define_class!(
             let already_requested = self.ivars().microphone_permission_requested.get();
             self.ivars().microphone_permission_requested.set(true);
 
-            if let Err(error) = permissions::request_microphone_access() {
-                log::error!("failed to request microphone access: {}", error);
-            }
-
-            let current_flow = self.current_hotkey_permission_flow();
-            if current_flow.permissions.microphone_granted {
-                self.sync_hotkey_permissions_ui();
-                return;
-            }
-
-            if already_requested
-                || matches!(
-                    permissions::microphone_authorization_status(),
-                    permissions::AVAuthorizationStatus::Denied
-                        | permissions::AVAuthorizationStatus::Restricted
-                )
+            let status = permissions::microphone_authorization_status();
+            if matches!(
+                status,
+                permissions::AVAuthorizationStatus::Denied
+                    | permissions::AVAuthorizationStatus::Restricted
+            ) || already_requested
             {
                 if let Err(error) =
                     self.open_system_settings_and_activate(permissions::microphone_settings_urls())
                 {
                     log::error!("failed to open microphone settings: {}", error);
                 }
+            }
+
+            if let Err(error) = permissions::request_microphone_access(|granted| {
+                if granted {
+                    log::info!("microphone access granted by user");
+                } else {
+                    log::info!("microphone access denied by user");
+                }
+            }) {
+                log::error!("failed to request microphone access: {}", error);
             }
 
             self.sync_hotkey_permissions_ui();
