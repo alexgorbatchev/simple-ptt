@@ -163,15 +163,19 @@ define_class!(
                     ns_string!(""),
                 )
             };
-            unsafe {
-                check_updates_item.setTarget(Some(self));
-            }
 
             let app_updater = crate::updater::AppUpdater::init(mtm);
             if let Some(ref updater) = app_updater {
                 updater.set_automatically_checks_for_updates(
                     self.ivars().config_store.current().ui.auto_check_updates,
                 );
+                unsafe {
+                    check_updates_item.setTarget(Some(updater.controller()));
+                }
+            } else {
+                unsafe {
+                    check_updates_item.setTarget(Some(self));
+                }
             }
             menu.addItem(&check_updates_item);
             let _ = self.ivars().app_updater.set(app_updater);

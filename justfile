@@ -33,6 +33,9 @@ start app_path="$HOME/Applications/simple-ptt.app":
     test -d "{{app_path}}"
     open -g "{{app_path}}"
 
+test-update:
+    ./scripts/test-sparkle-update.sh
+
 list-devices app_path="$HOME/Applications/simple-ptt.app":
     test -x "{{app_path}}/Contents/MacOS/simple-ptt"
     "{{app_path}}/Contents/MacOS/simple-ptt" --list-devices
