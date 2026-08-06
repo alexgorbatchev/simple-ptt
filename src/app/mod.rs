@@ -309,6 +309,7 @@ define_class!(
 
         #[unsafe(method(checkForUpdates:))]
         fn check_for_updates(&self, sender: Option<&AnyObject>) {
+            self.promote_for_window_presentation();
             if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
                 updater.check_for_updates(sender);
             }
