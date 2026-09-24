@@ -702,9 +702,26 @@ fn current_unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_model_names, filter_completion_model_names, normalize_model_names, MAX_MODEL_COUNT,
+        extract_model_names, filter_completion_model_names, normalize_model_names,
+        TransformationProviderRequest, MAX_MODEL_COUNT,
     };
     use serde_json::json;
+
+    #[test]
+    fn account_fingerprint_is_stable_sha256_prefix() {
+        // The fingerprint is persisted in the models cache, so it must stay the
+        // first 8 bytes of SHA-256(provider || 0x00 || api key) across upgrades.
+        let with_key = TransformationProviderRequest::new(
+            "OpenAI".to_owned(),
+            Some("sk-test".to_owned()),
+            "gpt-4o".to_owned(),
+        );
+        let without_key =
+            TransformationProviderRequest::new("openai".to_owned(), None, "gpt-4o".to_owned());
+
+        assert_eq!(with_key.account_fingerprint(), "5d43f605b5bbc62f");
+        assert_eq!(without_key.account_fingerprint(), "a5115c737f57d969");
+    }
 
     #[test]
     fn extracts_openai_style_model_ids() {
