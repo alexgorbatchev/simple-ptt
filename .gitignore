@@ -3,3 +3,5 @@
 /config.toml
 /.tmp
 /vendor
+/.codegraph/.gitignore
+/.codegraph
