@@ -248,7 +248,7 @@ define_class!(
                 .expect("permissions dialog must only be set once");
 
             if config_file_missing || deepgram_api_key_missing || audio_startup_failed {
-                self.present_startup_settings_window();
+                self.present_settings_window();
             }
 
             if startup_permissions_missing {
@@ -799,25 +799,6 @@ impl AppDelegate {
         self.promote_for_window_presentation();
         self.ivars().state.set_settings_window_visible(true);
         settings_window.show(MainThreadMarker::from(self));
-    }
-
-    fn present_startup_settings_window(&self) {
-        let Some(settings_window) = self.ivars().settings_window.get() else {
-            return;
-        };
-
-        self.ivars().hotkey_capture_controller.cancel();
-        settings_window.cancel_hotkey_capture();
-
-        let current_file_config = self.ivars().config_store.current_file();
-        let _ = settings_window.load_from_config(
-            &current_file_config,
-            None,
-        );
-        self.sync_transformation_provider_ui();
-        self.promote_for_window_presentation();
-        self.ivars().state.set_settings_window_visible(true);
-        settings_window.show_startup(MainThreadMarker::from(self));
     }
 
     fn disable_settings_window_hotkey_blocking(&self) {
