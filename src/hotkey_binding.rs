@@ -1,4 +1,4 @@
-use rdev::Key;
+use crate::key::Key;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct HotkeyModifiers {
@@ -68,7 +68,7 @@ fn modifier_group_for_key(key: Key) -> Option<ModifierGroup> {
     match key {
         Key::ShiftLeft | Key::ShiftRight => Some(ModifierGroup::Shift),
         Key::ControlLeft | Key::ControlRight => Some(ModifierGroup::Control),
-        Key::Alt | Key::AltGr => Some(ModifierGroup::Alt),
+        Key::AltLeft | Key::AltRight => Some(ModifierGroup::Alt),
         Key::MetaLeft | Key::MetaRight => Some(ModifierGroup::Meta),
         _ => None,
     }
@@ -88,7 +88,7 @@ pub fn format_hotkey_binding(binding: HotkeyBinding) -> Option<String> {
     if binding.modifiers.meta {
         tokens.push("Cmd");
     }
-    tokens.push(key_name(binding.key)?);
+    tokens.push(key_name(binding.key));
     Some(tokens.join("+"))
 }
 
@@ -198,80 +198,79 @@ fn parse_modifier_token(token: &str) -> Option<ModifierGroup> {
     None
 }
 
-pub fn key_name(key: Key) -> Option<&'static str> {
+pub fn key_name(key: Key) -> &'static str {
     match key {
-        Key::KeyA => Some("A"),
-        Key::KeyB => Some("B"),
-        Key::KeyC => Some("C"),
-        Key::KeyD => Some("D"),
-        Key::KeyE => Some("E"),
-        Key::KeyF => Some("F"),
-        Key::KeyG => Some("G"),
-        Key::KeyH => Some("H"),
-        Key::KeyI => Some("I"),
-        Key::KeyJ => Some("J"),
-        Key::KeyK => Some("K"),
-        Key::KeyL => Some("L"),
-        Key::KeyM => Some("M"),
-        Key::KeyN => Some("N"),
-        Key::KeyO => Some("O"),
-        Key::KeyP => Some("P"),
-        Key::KeyQ => Some("Q"),
-        Key::KeyR => Some("R"),
-        Key::KeyS => Some("S"),
-        Key::KeyT => Some("T"),
-        Key::KeyU => Some("U"),
-        Key::KeyV => Some("V"),
-        Key::KeyW => Some("W"),
-        Key::KeyX => Some("X"),
-        Key::KeyY => Some("Y"),
-        Key::KeyZ => Some("Z"),
-        Key::Num0 => Some("0"),
-        Key::Num1 => Some("1"),
-        Key::Num2 => Some("2"),
-        Key::Num3 => Some("3"),
-        Key::Num4 => Some("4"),
-        Key::Num5 => Some("5"),
-        Key::Num6 => Some("6"),
-        Key::Num7 => Some("7"),
-        Key::Num8 => Some("8"),
-        Key::Num9 => Some("9"),
-        Key::F1 => Some("F1"),
-        Key::F2 => Some("F2"),
-        Key::F3 => Some("F3"),
-        Key::F4 => Some("F4"),
-        Key::F5 => Some("F5"),
-        Key::F6 => Some("F6"),
-        Key::F7 => Some("F7"),
-        Key::F8 => Some("F8"),
-        Key::F9 => Some("F9"),
-        Key::F10 => Some("F10"),
-        Key::F11 => Some("F11"),
-        Key::F12 => Some("F12"),
-        Key::Escape => Some("Escape"),
-        Key::Space => Some("Space"),
-        Key::Tab => Some("Tab"),
-        Key::CapsLock => Some("CapsLock"),
-        Key::ShiftLeft => Some("LeftShift"),
-        Key::ShiftRight => Some("RightShift"),
-        Key::ControlLeft => Some("LeftControl"),
-        Key::ControlRight => Some("RightControl"),
-        Key::Alt => Some("LeftAlt"),
-        Key::AltGr => Some("RightAlt"),
-        Key::MetaLeft => Some("LeftMeta"),
-        Key::MetaRight => Some("RightMeta"),
-        Key::Return => Some("Return"),
-        Key::Backspace => Some("Backspace"),
-        Key::Delete => Some("ForwardDelete"),
-        Key::Home => Some("Home"),
-        Key::End => Some("End"),
-        Key::PageUp => Some("PageUp"),
-        Key::PageDown => Some("PageDown"),
-        Key::UpArrow => Some("UpArrow"),
-        Key::DownArrow => Some("DownArrow"),
-        Key::LeftArrow => Some("LeftArrow"),
-        Key::RightArrow => Some("RightArrow"),
-        _ => None,
+        Key::KeyA => "A",
+        Key::KeyB => "B",
+        Key::KeyC => "C",
+        Key::KeyD => "D",
+        Key::KeyE => "E",
+        Key::KeyF => "F",
+        Key::KeyG => "G",
+        Key::KeyH => "H",
+        Key::KeyI => "I",
+        Key::KeyJ => "J",
+        Key::KeyK => "K",
+        Key::KeyL => "L",
+        Key::KeyM => "M",
+        Key::KeyN => "N",
+        Key::KeyO => "O",
+        Key::KeyP => "P",
+        Key::KeyQ => "Q",
+        Key::KeyR => "R",
+        Key::KeyS => "S",
+        Key::KeyT => "T",
+        Key::KeyU => "U",
+        Key::KeyV => "V",
+        Key::KeyW => "W",
+        Key::KeyX => "X",
+        Key::KeyY => "Y",
+        Key::KeyZ => "Z",
+        Key::Num0 => "0",
+        Key::Num1 => "1",
+        Key::Num2 => "2",
+        Key::Num3 => "3",
+        Key::Num4 => "4",
+        Key::Num5 => "5",
+        Key::Num6 => "6",
+        Key::Num7 => "7",
+        Key::Num8 => "8",
+        Key::Num9 => "9",
+        Key::F1 => "F1",
+        Key::F2 => "F2",
+        Key::F3 => "F3",
+        Key::F4 => "F4",
+        Key::F5 => "F5",
+        Key::F6 => "F6",
+        Key::F7 => "F7",
+        Key::F8 => "F8",
+        Key::F9 => "F9",
+        Key::F10 => "F10",
+        Key::F11 => "F11",
+        Key::F12 => "F12",
+        Key::Escape => "Escape",
+        Key::Space => "Space",
+        Key::Tab => "Tab",
+        Key::CapsLock => "CapsLock",
+        Key::ShiftLeft => "LeftShift",
+        Key::ShiftRight => "RightShift",
+        Key::ControlLeft => "LeftControl",
+        Key::ControlRight => "RightControl",
+        Key::AltLeft => "LeftAlt",
+        Key::AltRight => "RightAlt",
+        Key::MetaLeft => "LeftMeta",
+        Key::MetaRight => "RightMeta",
+        Key::Return => "Return",
+        Key::Backspace => "Backspace",
+        Key::ForwardDelete => "ForwardDelete",
+        Key::Home => "Home",
+        Key::End => "End",
+        Key::PageUp => "PageUp",
+        Key::PageDown => "PageDown",
+        Key::UpArrow => "UpArrow",
+        Key::DownArrow => "DownArrow",
+        Key::LeftArrow => "LeftArrow",
+        Key::RightArrow => "RightArrow",
     }
 }
 
@@ -383,13 +382,13 @@ pub fn parse_key(name: &str) -> Option<Key> {
         || name.eq_ignore_ascii_case("lalt")
         || name.eq_ignore_ascii_case("leftoption")
     {
-        return Some(Key::Alt);
+        return Some(Key::AltLeft);
     }
     if name.eq_ignore_ascii_case("rightalt")
         || name.eq_ignore_ascii_case("ralt")
         || name.eq_ignore_ascii_case("rightoption")
     {
-        return Some(Key::AltGr);
+        return Some(Key::AltRight);
     }
     if name.eq_ignore_ascii_case("leftmeta")
         || name.eq_ignore_ascii_case("leftcommand")
@@ -410,7 +409,7 @@ pub fn parse_key(name: &str) -> Option<Key> {
         return Some(Key::Backspace);
     }
     if name.eq_ignore_ascii_case("forwarddelete") {
-        return Some(Key::Delete);
+        return Some(Key::ForwardDelete);
     }
     if name.eq_ignore_ascii_case("home") {
         return Some(Key::Home);
@@ -444,7 +443,7 @@ mod tests {
     use super::{
         format_hotkey_binding, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
     };
-    use rdev::Key;
+    use crate::key::Key;
 
     #[test]
     fn parses_single_key_bindings() {

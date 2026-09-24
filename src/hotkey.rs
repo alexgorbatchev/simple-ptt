@@ -1,7 +1,6 @@
 #[path = "hotkey_macos.rs"]
 mod platform;
 
-use rdev::Key;
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -12,6 +11,7 @@ use crate::hotkey_binding::{
     is_modifier_key, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
 };
 use crate::hotkey_capture::HotkeyCaptureController;
+use crate::key::Key;
 use crate::settings::LiveConfigStore;
 use crate::state::{
     AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
@@ -599,7 +599,7 @@ mod tests {
         stop_recording_and_transform_and_paste,
     };
     use crate::hotkey_binding::HotkeyModifiers;
-    use rdev::Key;
+    use crate::key::Key;
 
     #[test]
     fn clipboard_insert_shortcut_requires_exact_command_v() {

@@ -73,9 +73,6 @@ objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFMachPo
 objc2-core-graphics = { version = "0.3", features = ["CGEvent", "CGEventTypes"] }
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
 
-# Global hotkey capture and synthetic paste shortcut on macOS
-rdev = { version = "0.5", features = ["unstable_grab"] }
-
 # Audio capture (CoreAudio on macOS)
 cpal = "0.18"
 
