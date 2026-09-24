@@ -18,7 +18,12 @@ use crate::state::AppState;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformationPreviewMode<'a> {
     ReplaceOverlay,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "inline correction preview (5fd64e9) lost its only constructor when 2719264 \
+                  rewrote the correction-apply path to use ReplaceOverlay; restoring it is \
+                  pending an owner decision"
+    )]
     InlineCorrection { original_text: &'a str },
 }
 

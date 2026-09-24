@@ -1,8 +1,6 @@
-#![allow(dead_code)]
-
 use objc2::rc::Retained;
-use objc2::runtime::{AnyClass, AnyObject, Sel};
-use objc2::{msg_send, sel, MainThreadMarker};
+use objc2::runtime::{AnyClass, AnyObject};
+use objc2::{msg_send, MainThreadMarker};
 
 #[derive(Debug)]
 pub struct AppUpdater {
@@ -107,10 +105,6 @@ impl AppUpdater {
         unsafe {
             let _: () = msg_send![&self.controller, checkForUpdates: sender];
         }
-    }
-
-    pub fn check_for_updates_selector() -> Sel {
-        sel!(checkForUpdates:)
     }
 }
 

@@ -35,7 +35,6 @@ pub struct ActiveSession {
 }
 
 impl ActiveSession {
-    #[allow(dead_code)]
     pub fn kind(&self) -> SessionKind {
         self.kind
     }

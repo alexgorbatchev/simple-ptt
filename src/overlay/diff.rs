@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InlinePreviewRender {
     pub text: String,
