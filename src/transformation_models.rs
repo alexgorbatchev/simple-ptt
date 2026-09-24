@@ -702,9 +702,59 @@ fn current_unix_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        extract_model_names, filter_completion_model_names, normalize_model_names, MAX_MODEL_COUNT,
+        extract_model_names, filter_completion_model_names, normalize_model_names,
+        TransformationModelsCache, TransformationProviderRequest, CACHE_VERSION, MAX_MODEL_COUNT,
     };
     use serde_json::json;
+
+    #[test]
+    fn models_cache_file_parses_and_roundtrips_through_toml() {
+        let cache_contents = concat!(
+            "version = 2\n",
+            "\n",
+            "[[entries]]\n",
+            "provider = \"openai\"\n",
+            "account_fingerprint = \"5d43f605b5bbc62f\"\n",
+            "updated_at_unix_seconds = 1767225600\n",
+            "models = [\n",
+            "    \"gpt-4.1\",\n",
+            "    \"gpt-4o\",\n",
+            "]\n",
+        );
+
+        let cache: TransformationModelsCache = toml::from_str(cache_contents).unwrap();
+        let serialized = toml::to_string_pretty(&cache).unwrap();
+        let reparsed: TransformationModelsCache = toml::from_str(&serialized).unwrap();
+
+        for parsed in [&cache, &reparsed] {
+            assert_eq!(parsed.version, CACHE_VERSION);
+            assert_eq!(parsed.entries.len(), 1);
+            let entry = &parsed.entries[0];
+            assert_eq!(entry.provider, "openai");
+            assert_eq!(entry.account_fingerprint, "5d43f605b5bbc62f");
+            assert_eq!(entry.updated_at_unix_seconds, 1_767_225_600);
+            assert_eq!(
+                entry.models,
+                vec!["gpt-4.1".to_owned(), "gpt-4o".to_owned()]
+            );
+        }
+    }
+
+    #[test]
+    fn account_fingerprint_is_stable_sha256_prefix() {
+        // The fingerprint is persisted in the models cache, so it must stay the
+        // first 8 bytes of SHA-256(provider || 0x00 || api key) across upgrades.
+        let with_key = TransformationProviderRequest::new(
+            "OpenAI".to_owned(),
+            Some("sk-test".to_owned()),
+            "gpt-4o".to_owned(),
+        );
+        let without_key =
+            TransformationProviderRequest::new("openai".to_owned(), None, "gpt-4o".to_owned());
+
+        assert_eq!(with_key.account_fingerprint(), "5d43f605b5bbc62f");
+        assert_eq!(without_key.account_fingerprint(), "a5115c737f57d969");
+    }
 
     #[test]
     fn extracts_openai_style_model_ids() {

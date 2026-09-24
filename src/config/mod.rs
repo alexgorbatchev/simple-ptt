@@ -996,6 +996,106 @@ mod tests {
             .contains("correction_system_prompt = \"Apply the spoken correction.\""));
     }
 
+    const EXAMPLE_CONFIG: &str = include_str!("../../config.example.toml");
+
+    fn assert_example_config_values(config: &Config) {
+        assert!(!config.ui.start_on_login);
+        assert!(config.ui.auto_check_updates);
+        assert_eq!(config.ui.hotkey, "F5");
+        assert_eq!(config.ui.correction_key, "LeftMeta");
+        assert_eq!(config.ui.font_name, None);
+        assert_eq!(config.ui.font_size, 12.0);
+        assert_eq!(config.ui.footer_font_size, None);
+        assert_eq!(config.ui.meter_style, UiMeterStyle::AnimatedColor);
+        assert_eq!(config.mic.audio_device, None);
+        assert_eq!(config.mic.sample_rate, 16000);
+        assert_eq!(config.mic.gain, 4.0);
+        assert_eq!(config.mic.hold_ms, 300);
+        assert!(config.mic.always_on);
+        assert_eq!(
+            config.deepgram.api_key.as_deref(),
+            Some("YOUR_DEEPGRAM_API_KEY")
+        );
+        assert_eq!(config.deepgram.project_id, None);
+        assert_eq!(config.deepgram.language, "en-US");
+        assert!(config.deepgram.keyterms.is_empty());
+        assert_eq!(config.deepgram.model, "nova-3");
+        assert_eq!(config.deepgram.endpointing_ms, 300);
+        assert_eq!(config.deepgram.utterance_end_ms, 1000);
+        assert_eq!(config.transformation.hotkey, "F6");
+        assert!(config.transformation.auto);
+        assert_eq!(config.transformation.provider, None);
+        assert_eq!(config.transformation.api_key, None);
+        assert_eq!(
+            config.transformation.system_prompt,
+            default_transformation_system_prompt()
+        );
+        assert_eq!(
+            config.transformation.correction_system_prompt,
+            default_transformation_correction_system_prompt()
+        );
+    }
+
+    #[test]
+    fn example_config_parses_with_expected_values() {
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+
+        assert_example_config_values(&config);
+    }
+
+    #[test]
+    fn save_config_keeps_every_example_config_line_in_order_and_reparses() {
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-example-config-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+
+        save_config(&path, &config).unwrap();
+        let updated_contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        // Every original line (comments, blank lines, headers, and unchanged
+        // key/value lines) must survive in its original order.
+        let mut updated_lines = updated_contents.lines();
+        for original_line in EXAMPLE_CONFIG.lines() {
+            assert!(
+                updated_lines.any(|updated_line| updated_line == original_line),
+                "line {:?} was lost or reordered in:\n{}",
+                original_line,
+                updated_contents
+            );
+        }
+
+        let reparsed: Config = toml::from_str(&updated_contents).unwrap();
+        assert_example_config_values(&reparsed);
+    }
+
+    #[test]
+    fn save_config_writes_keyterms_as_inline_string_array() {
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-keyterms-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+
+        let mut config = Config::default();
+        config.deepgram.keyterms = vec!["macOS".to_owned(), "GitHub".to_owned()];
+        save_config(&path, &config).unwrap();
+        let updated_contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert!(
+            updated_contents.contains("keyterms = [\"macOS\", \"GitHub\"]\n"),
+            "unexpected keyterms rendering in:\n{}",
+            updated_contents
+        );
+        let reparsed: Config = toml::from_str(&updated_contents).unwrap();
+        assert_eq!(reparsed.deepgram.keyterms, config.deepgram.keyterms);
+    }
+
     #[test]
     fn materialize_runtime_config_keeps_deepgram_key_when_present() {
         let mut config = Config::default();
