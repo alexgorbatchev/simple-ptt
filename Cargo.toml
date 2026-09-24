@@ -86,7 +86,12 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 time = { version = "0.3", features = ["formatting", "local-offset"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-rig-core = "0.34"
+# Held at 0.39: rig-core 0.40 removed the `galadriel` provider, which simple-ptt
+# still offers as a transformation provider (0xPlaygrounds/rig#2041). Moving to
+# 0.40+ requires deciding to drop Galadriel support first.
+# The default `derive` feature is disabled because the app uses no rig macros and
+# rig-derive pulls a second toml_edit (via deluxe -> proc-macro-crate 1.x).
+rig-core = { version = "0.39", default-features = false, features = ["reqwest", "rustls"] }
 
 # Configuration
 serde = { version = "1", features = ["derive"] }

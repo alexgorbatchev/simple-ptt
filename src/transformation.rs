@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use rig::agent::{Agent, MultiTurnStreamItem};
-use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::{CompletionModel, GetTokenUsage};
-use rig::message::{ReasoningContent, Text};
-use rig::providers::{
+use rig_core::agent::{Agent, MultiTurnStreamItem};
+use rig_core::client::{CompletionClient, ProviderClient, ProviderClientError};
+use rig_core::completion::{CompletionModel, GetTokenUsage};
+use rig_core::message::{ReasoningContent, Text};
+use rig_core::providers::{
     anthropic, cohere, deepseek, galadriel, gemini, groq, huggingface, hyperbolic, mira, mistral,
     moonshot, ollama, openai, openrouter, perplexity, together, xai,
 };
-use rig::streaming::{StreamedAssistantContent, StreamingPrompt};
+use rig_core::streaming::{StreamedAssistantContent, StreamingPrompt};
 use tokio_stream::StreamExt;
 
 use crate::state::AppState;
@@ -110,7 +110,9 @@ pub async fn transform_text(
         "moonshot" => stream_with_client!(
             moonshot::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
         ),
-        "ollama" => stream_with_client!(ollama::Client::from_env()),
+        "ollama" => stream_with_client!(
+            ollama::Client::from_env().map_err(format_provider_client_error)?
+        ),
         "openai" => stream_with_client!(
             openai::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
         ),
@@ -161,7 +163,7 @@ where
         match chunk {
             MultiTurnStreamItem::StreamAssistantItem(content) => {
                 match content {
-                    StreamedAssistantContent::Text(Text { text }) => {
+                    StreamedAssistantContent::Text(Text { text, .. }) => {
                         if text.is_empty() {
                             continue;
                         }
@@ -321,7 +323,11 @@ fn required_api_key<'a>(config: &'a TransformationRuntimeConfig) -> Result<&'a s
         })
 }
 
-fn format_http_client_error(error: rig::http_client::Error) -> String {
+fn format_http_client_error(error: rig_core::http_client::Error) -> String {
+    format!("{}", error)
+}
+
+fn format_provider_client_error(error: ProviderClientError) -> String {
     format!("{}", error)
 }
 
@@ -333,6 +339,43 @@ fn normalize_provider_name(provider_name: &str) -> String {
 mod tests {
     use super::*;
     use tokio_stream::StreamExt;
+
+    #[tokio::test]
+    async fn every_supported_hosted_provider_client_and_agent_build_offline() {
+        macro_rules! assert_client_builds {
+            ($($provider:ident),+ $(,)?) => {{
+                $(
+                    let client = $provider::Client::new("test-key").unwrap_or_else(|error| {
+                        panic!(
+                            "{} client failed to build: {}",
+                            stringify!($provider),
+                            format_http_client_error(error)
+                        )
+                    });
+                    let _agent = client.agent("test-model").preamble("test preamble").build();
+                )+
+            }};
+        }
+
+        assert_client_builds!(
+            anthropic,
+            cohere,
+            deepseek,
+            galadriel,
+            gemini,
+            groq,
+            huggingface,
+            hyperbolic,
+            mira,
+            mistral,
+            moonshot,
+            openai,
+            openrouter,
+            perplexity,
+            together,
+            xai,
+        );
+    }
 
     #[tokio::test]
     async fn test_gemini_streaming_items() {
