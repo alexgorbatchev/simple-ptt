@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod builder;
 pub mod helpers;
 
@@ -8,7 +9,7 @@ use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
-use objc2::{msg_send, sel, MainThreadOnly};
+use objc2::{msg_send, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSButton, NSColor, NSComboBox,
     NSControlStateValueOff, NSControlStateValueOn, NSPopUpButton, NSScrollView, NSSlider,
@@ -23,6 +24,7 @@ use crate::config::Config;
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
 use crate::ui_meter::UiMeterView;
+use actions::SettingsAction;
 
 #[derive(Debug)]
 pub struct SettingsWindow {
@@ -140,7 +142,7 @@ impl SettingsWindow {
             mtm,
             &mut current_y,
             "Dictation shortcut",
-            sel!(captureRecordHotkeyPressed:),
+            SettingsAction::CaptureRecordHotkey,
         );
         let (ui_correction_key_field, ui_correction_key_capture_button) =
             add_labeled_hotkey_field(
@@ -149,7 +151,7 @@ impl SettingsWindow {
                 mtm,
                 &mut current_y,
                 "Correction key",
-                sel!(captureCorrectionKeyPressed:),
+                SettingsAction::CaptureCorrectionKey,
             );
         let available_font_names = available_font_family_names(mtm);
         let ui_font_name_popup =
@@ -174,7 +176,7 @@ impl SettingsWindow {
             mtm,
             &mut current_y,
             "Audio device",
-            sel!(micAudioDeviceChanged:),
+            SettingsAction::MicAudioDeviceChanged,
         );
         let mic_sample_rate_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Sample rate");
@@ -185,7 +187,7 @@ impl SettingsWindow {
                 mtm,
                 &mut current_y,
                 "Mic gain (dB)",
-                sel!(micGainSliderChanged:),
+                SettingsAction::MicGainSliderChanged,
             );
         let mic_hold_ms_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Silence pad (ms)");
@@ -205,7 +207,7 @@ impl SettingsWindow {
                 &mut current_y,
                 "API key",
                 "Check",
-                sel!(checkDeepgramApiKeyPressed:),
+                SettingsAction::CheckDeepgramConnection,
             );
         let (deepgram_project_id_field, deepgram_project_id_env_hint_field) =
             add_labeled_text_field_with_hint(
@@ -246,7 +248,7 @@ impl SettingsWindow {
                 mtm,
                 &mut current_y,
                 "Transform shortcut",
-                sel!(captureTransformHotkeyPressed:),
+                SettingsAction::CaptureTransformHotkey,
             );
         let transformation_auto_checkbox = add_checkbox_with_hint(
             &content_view,
@@ -261,7 +263,7 @@ impl SettingsWindow {
             mtm,
             &mut current_y,
             "Provider",
-            sel!(refreshTransformationModelsPressed:),
+            SettingsAction::TransformationProviderChanged,
         );
         let (transformation_api_key_field, transformation_api_key_env_hint_field) =
             add_labeled_text_field_with_hint(
@@ -281,9 +283,9 @@ impl SettingsWindow {
             &mut current_y,
             "Model",
             "Fetch models",
-            sel!(refreshTransformationModelsPressed:),
+            SettingsAction::RefreshTransformationModels,
             "Check",
-            sel!(testTransformationModelPressed:),
+            SettingsAction::CheckTransformationProvider,
         );
         let transformation_system_prompt_view = add_prompt_editor(
             &content_view,
@@ -331,7 +333,7 @@ impl SettingsWindow {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Save"),
                 Some(target),
-                Some(sel!(applySettingsPressed:)),
+                Some(SettingsAction::SaveSettings.selector()),
                 mtm,
             )
         };
@@ -348,7 +350,7 @@ impl SettingsWindow {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Cancel"),
                 Some(target),
-                Some(sel!(cancelSettingsPressed:)),
+                Some(SettingsAction::CancelSettings.selector()),
                 mtm,
             )
         };

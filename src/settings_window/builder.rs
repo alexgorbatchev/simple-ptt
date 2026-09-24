@@ -1,5 +1,5 @@
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::AnyObject;
 use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_foundation::ns_string;
 use objc2_app_kit::{
@@ -18,6 +18,7 @@ extern "C" {
 
 use crate::config::UiMeterStyle;
 use crate::ui_meter::{self, UiMeterView};
+use super::actions::SettingsAction;
 use super::helpers::{
     DEEPGRAM_MODEL_OPTIONS, SYSTEM_DEFAULT_FONT_LABEL, TRANSFORMATION_PROVIDER_DISABLED_LABEL,
 };
@@ -302,7 +303,7 @@ pub fn add_labeled_slider_with_meter(
     mtm: MainThreadMarker,
     current_y: &mut f64,
     label: &str,
-    slider_action: Sel,
+    slider_action: SettingsAction,
 ) -> (Retained<NSTextField>, Retained<NSSlider>, UiMeterView) {
     let base_y = *current_y - 2.0;
 
@@ -318,8 +319,9 @@ pub fn add_labeled_slider_with_meter(
     );
     content_view.addSubview(&label_field);
 
-    let slider =
-        unsafe { NSSlider::sliderWithTarget_action(Some(target), Some(slider_action), mtm) };
+    let slider = unsafe {
+        NSSlider::sliderWithTarget_action(Some(target), Some(slider_action.selector()), mtm)
+    };
     slider.setMinValue(0.0);
     slider.setMaxValue(10.0);
     slider.setContinuous(true);
@@ -361,7 +363,7 @@ pub fn add_labeled_hotkey_field(
     mtm: MainThreadMarker,
     current_y: &mut f64,
     label: &str,
-    action: Sel,
+    action: SettingsAction,
 ) -> (Retained<NSTextField>, Retained<NSButton>) {
     let text_field_y = *current_y - 2.0;
     let button_height = FIELD_HEIGHT + 2.0;
@@ -397,7 +399,7 @@ pub fn add_labeled_hotkey_field(
         NSButton::buttonWithTitle_target_action(
             ns_string!("Capture…"),
             Some(target),
-            Some(action),
+            Some(action.selector()),
             mtm,
         )
     };
@@ -422,9 +424,9 @@ pub fn add_labeled_combo_box_with_buttons(
     current_y: &mut f64,
     label: &str,
     leading_button_title: &str,
-    leading_action: Sel,
+    leading_action: SettingsAction,
     trailing_button_title: &str,
-    trailing_action: Sel,
+    trailing_action: SettingsAction,
 ) -> (
     Retained<NSComboBox>,
     Retained<NSButton>,
@@ -463,7 +465,7 @@ pub fn add_labeled_combo_box_with_buttons(
         NSButton::buttonWithTitle_target_action(
             &NSString::from_str(leading_button_title),
             Some(target),
-            Some(leading_action),
+            Some(leading_action.selector()),
             mtm,
         )
     };
@@ -481,7 +483,7 @@ pub fn add_labeled_combo_box_with_buttons(
         NSButton::buttonWithTitle_target_action(
             &NSString::from_str(trailing_button_title),
             Some(target),
-            Some(trailing_action),
+            Some(trailing_action.selector()),
             mtm,
         )
     };
@@ -509,12 +511,12 @@ pub fn add_labeled_pop_up_button_with_action(
     mtm: MainThreadMarker,
     current_y: &mut f64,
     label: &str,
-    action: Sel,
+    action: SettingsAction,
 ) -> Retained<NSPopUpButton> {
     let popup_button = add_labeled_pop_up_button(content_view, mtm, current_y, label);
     unsafe {
         popup_button.setTarget(Some(target));
-        popup_button.setAction(Some(action));
+        popup_button.setAction(Some(action.selector()));
     }
     popup_button
 }
@@ -563,7 +565,7 @@ pub fn add_labeled_text_field_with_hint_and_button(
     current_y: &mut f64,
     label: &str,
     button_title: &str,
-    action: Sel,
+    action: SettingsAction,
 ) -> (
     Retained<NSTextField>,
     Retained<NSButton>,
@@ -601,7 +603,7 @@ pub fn add_labeled_text_field_with_hint_and_button(
         NSButton::buttonWithTitle_target_action(
             &NSString::from_str(button_title),
             Some(target),
-            Some(action),
+            Some(action.selector()),
             mtm,
         )
     };

@@ -291,6 +291,9 @@ define_class!(
     }
 
     impl AppDelegate {
+        // AppDelegate must implement a method for every
+        // `settings_window::actions::SettingsAction::selector()`; enforced by the
+        // `app_delegate_implements_every_settings_window_action` test.
         #[unsafe(method(micGainSliderChanged:))]
         fn mic_gain_slider_changed(&self, _sender: Option<&AnyObject>) {
             let Some(settings_window) = self.ivars().settings_window.get() else {
@@ -481,19 +484,9 @@ define_class!(
             self.start_deepgram_connection_check();
         }
 
-        #[unsafe(method(cancelSettings:))]
-        fn cancel_settings_action(&self, _sender: Option<&AnyObject>) {
-            self.cancel_settings();
-        }
-
         #[unsafe(method(cancelSettingsPressed:))]
         fn cancel_settings_pressed(&self, _sender: Option<&AnyObject>) {
             self.cancel_settings();
-        }
-
-        #[unsafe(method(saveSettings:))]
-        fn save_settings_action(&self, _sender: Option<&AnyObject>) {
-            self.save_settings();
         }
 
         #[unsafe(method(applySettingsPressed:))]
@@ -1629,11 +1622,14 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
+    use objc2::ClassType;
+
     use super::{
         billing_menu_text, config_file_is_missing, overlay_style_from_config,
-        validate_settings_config,
+        validate_settings_config, AppDelegate,
     };
     use crate::config::Config;
+    use crate::settings_window::actions::SettingsAction;
 
     #[test]
     fn config_file_is_missing_only_reports_not_found_paths() {
@@ -1707,6 +1703,21 @@ mod tests {
             Some("Deepgram (Apr 2026): $12.34")
         );
         assert_eq!(billing_menu_text("Billing (Apr 2026): $12.34"), None);
+    }
+
+    #[test]
+    fn app_delegate_implements_every_settings_window_action() {
+        let delegate_class = AppDelegate::class();
+        let missing: Vec<_> = SettingsAction::ALL
+            .iter()
+            .filter(|action| !delegate_class.responds_to(action.selector()))
+            .map(|action| (*action, action.selector()))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "AppDelegate does not implement settings actions: {missing:?}"
+        );
     }
 }
 
