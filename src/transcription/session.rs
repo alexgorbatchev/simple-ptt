@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use deepgram::common::options::{Encoding, Endpointing, Options};
 use deepgram::common::stream_response::{Channel, StreamResponse};
-use deepgram::listen::websocket::TranscriptionStream;
+use deepgram::listen::websocket::{TranscriptionStream, WebsocketBuilder};
 use deepgram::Deepgram;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -74,42 +74,16 @@ pub fn start_session(
     let transcription_stream = runtime.block_on(async move {
         let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
             .map_err(format_deepgram_error)?;
-        let mut options_builder = Options::builder()
-            .punctuate(true)
-            .smart_format(true)
-            .dictation(true)
-            .query_params([
-                ("model".to_owned(), deepgram_config.model.clone()),
-                ("language".to_owned(), deepgram_config.language.clone()),
-            ]);
+        let transcription = client.transcription();
 
-        let keyterm_refs: Vec<&str> = deepgram_config
-            .keyterms
-            .iter()
-            .map(String::as_str)
-            .collect();
-        if !keyterm_refs.is_empty() {
-            options_builder = options_builder.keyterms(keyterm_refs);
-        }
-
-        let options = options_builder.build();
-
-        client
-            .transcription()
-            .stream_request_with_options(options)
-            .encoding(Encoding::Linear16)
-            .sample_rate(sample_rate)
-            .channels(1)
-            .endpointing(Endpointing::CustomDurationMs(u32::from(
-                deepgram_config.endpointing_ms,
-            )))
-            .utterance_end_ms(deepgram_config.utterance_end_ms)
-            .interim_results(true)
-            .vad_events(true)
-            .keep_alive()
-            .stream(ReceiverStream::new(audio_rx))
-            .await
-            .map_err(format_deepgram_error)
+        configure_stream_request(
+            transcription.stream_request_with_options(stream_options(&deepgram_config)),
+            &deepgram_config,
+            sample_rate,
+        )
+        .stream(ReceiverStream::new(audio_rx))
+        .await
+        .map_err(format_deepgram_error)
     })?;
 
     log::info!(
@@ -131,6 +105,42 @@ pub fn start_session(
         kind: session_kind,
         task,
     })
+}
+
+fn stream_options(config: &DeepgramConfig) -> Options {
+    let mut options_builder = Options::builder()
+        .punctuate(true)
+        .smart_format(true)
+        .dictation(true)
+        .query_params([
+            ("model".to_owned(), config.model.clone()),
+            ("language".to_owned(), config.language.clone()),
+        ]);
+
+    let keyterm_refs: Vec<&str> = config.keyterms.iter().map(String::as_str).collect();
+    if !keyterm_refs.is_empty() {
+        options_builder = options_builder.keyterms(keyterm_refs);
+    }
+
+    options_builder.build()
+}
+
+fn configure_stream_request<'a>(
+    builder: WebsocketBuilder<'a>,
+    config: &DeepgramConfig,
+    sample_rate: u32,
+) -> WebsocketBuilder<'a> {
+    builder
+        .encoding(Encoding::Linear16)
+        .sample_rate(sample_rate)
+        .channels(1)
+        .endpointing(Endpointing::CustomDurationMs(u32::from(
+            config.endpointing_ms,
+        )))
+        .utterance_end_ms(config.utterance_end_ms)
+        .interim_results(true)
+        .vad_events(true)
+        .keep_alive()
 }
 
 pub async fn run_transcription_stream(
@@ -275,5 +285,49 @@ mod tests {
     #[test]
     fn audio_queue_capacity_provides_ample_buffer_depth() {
         assert!(AUDIO_QUEUE_CAPACITY >= 256);
+    }
+
+    #[test]
+    fn stream_request_sends_configured_live_transcription_options() {
+        let config = DeepgramConfig {
+            keyterms: vec!["macOS".to_owned(), "GitHub".to_owned()],
+            api_key: Some("test-key".to_owned()),
+            project_id: None,
+            language: "en-US".to_owned(),
+            model: "nova-3".to_owned(),
+            endpointing_ms: 300,
+            utterance_end_ms: 1000,
+        };
+        let client = Deepgram::new("test-key").unwrap();
+        let transcription = client.transcription();
+
+        let query = configure_stream_request(
+            transcription.stream_request_with_options(stream_options(&config)),
+            &config,
+            16000,
+        )
+        .urlencoded()
+        .unwrap();
+
+        let mut pairs: Vec<&str> = query.split('&').collect();
+        pairs.sort_unstable();
+        let mut expected = vec![
+            "punctuate=true",
+            "smart_format=true",
+            "dictation=true",
+            "model=nova-3",
+            "language=en-US",
+            "keyterm=macOS",
+            "keyterm=GitHub",
+            "encoding=linear16",
+            "sample_rate=16000",
+            "channels=1",
+            "endpointing=300",
+            "utterance_end_ms=1000",
+            "interim_results=true",
+            "vad_events=true",
+        ];
+        expected.sort_unstable();
+        assert_eq!(pairs, expected, "unexpected query: {}", query);
     }
 }
