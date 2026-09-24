@@ -156,22 +156,16 @@ fn run_graphical_application() -> Result<(), String> {
         config_store,
         startup_hotkey_permissions,
         initial_audio_error,
-        hotkey_capture_controller.clone(),
-        transformation_models_controller.clone(),
-        deepgram_connection_controller.clone(),
-        billing_controller,
-        audio_controller,
-        shared_state.clone(),
-    );
-    ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-
-    app::setup_status_polling(
-        delegate.clone(),
-        shared_state,
         hotkey_capture_controller,
         transformation_models_controller,
         deepgram_connection_controller,
+        billing_controller,
+        audio_controller,
+        shared_state,
     );
+    ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+
+    app::setup_status_polling(&delegate);
 
     log::info!("starting NSApplication run loop");
     ns_app.run();

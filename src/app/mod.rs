@@ -1,4 +1,4 @@
-use std::cell::{Cell, OnceCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,7 +14,8 @@ use objc2_app_kit::{
     NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSString, NSURL,
+    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSRunLoop,
+    NSRunLoopCommonModes, NSString, NSTimer, NSURL,
 };
 
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
@@ -69,6 +70,7 @@ pub struct Ivars {
     settings_window: OnceCell<SettingsWindow>,
     transformation_models_controller: TransformationModelsController,
     status_item: OnceCell<Retained<NSStatusItem>>,
+    status_poll: RefCell<StatusPollState>,
 }
 
 define_class!(
@@ -312,6 +314,13 @@ define_class!(
             let device = settings_window.mic_audio_device_value();
             self.ivars().audio_controller.set_preview_audio_device(device);
             self.ivars().audio_controller.apply_pending_if_idle();
+        }
+
+        // Target of the repeating main-run-loop timer scheduled by
+        // `setup_status_polling`; its selector is `status_poll_selector()`.
+        #[unsafe(method(pollStatus:))]
+        fn poll_status(&self, _timer: &NSTimer) {
+            self.run_status_poll_tick(MainThreadMarker::from(self));
         }
 
         #[unsafe(method(checkForUpdates:))]
@@ -563,6 +572,7 @@ impl AppDelegate {
             settings_window: OnceCell::new(),
             transformation_models_controller,
             status_item: OnceCell::new(),
+            status_poll: RefCell::new(StatusPollState::new()),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1195,6 +1205,56 @@ impl AppDelegate {
         }
     }
 
+    fn run_status_poll_tick(&self, mtm: MainThreadMarker) {
+        let ivars = self.ivars();
+        ivars.audio_controller.sync_stream_state();
+
+        let snapshot = UiSnapshot::capture(&ivars.state);
+        let controller_updates_pending = ivars.hotkey_capture_controller.has_pending_ui_update()
+            || ivars
+                .transformation_models_controller
+                .has_pending_ui_update()
+            || ivars.deepgram_connection_controller.has_pending_ui_update();
+        // The poll state borrow ends with this statement, before `update_ui` runs.
+        let outcome = ivars
+            .status_poll
+            .borrow_mut()
+            .advance(&snapshot, controller_updates_pending);
+        let StatusPollOutcome::Refresh { ui_changed } = outcome else {
+            return;
+        };
+
+        if ui_changed {
+            let label = match snapshot.state {
+                STATE_RECORDING => "recording",
+                STATE_PROCESSING => "processing",
+                STATE_BUFFER_READY => "buffer-ready",
+                STATE_TRANSFORMING => "transforming",
+                STATE_ERROR => "error",
+                _ => "idle",
+            };
+            log::info!(
+                "ui update: state={}, transcript_len={}",
+                label,
+                snapshot.overlay_text.len()
+            );
+        }
+
+        self.update_ui(
+            mtm,
+            snapshot.state,
+            snapshot.deepgram_connection_status,
+            snapshot.overlay_dismissed,
+            &snapshot.overlay_text,
+            &snapshot.overlay_error_text,
+            &snapshot.overlay_correction_text,
+            snapshot.overlay_correction_active,
+            snapshot.overlay_text_opacity,
+            &snapshot.overlay_footer_text,
+            snapshot.mic_meter,
+        );
+    }
+
     pub fn update_ui(
         &self,
         mtm: MainThreadMarker,
@@ -1557,17 +1617,15 @@ fn update_overlay_window(
     }
 }
 
-extern "C" {
-    static _dispatch_main_q: std::ffi::c_void;
-    fn dispatch_async_f(
-        queue: *const std::ffi::c_void,
-        context: *mut std::ffi::c_void,
-        work: extern "C" fn(*mut std::ffi::c_void),
-    );
-}
+const STATUS_POLL_INTERVAL_SECONDS: f64 = 0.075;
+// Refresh at least every ~1.5 seconds (20 ticks of 75 ms) so `update_ui` can
+// recheck the current audio input device default if it changed.
+const STATUS_POLL_BACKGROUND_REFRESH_TICKS: u64 = 20;
 
-struct UiUpdate {
-    delegate_addr: usize,
+/// The `AppState` values the status poll compares between ticks.
+#[derive(Clone)]
+struct UiSnapshot {
+    state: u8,
     deepgram_connection_status: DeepgramConnectionStatus,
     mic_meter: MicMeterSnapshot,
     overlay_dismissed: bool,
@@ -1577,26 +1635,105 @@ struct UiUpdate {
     overlay_text: Arc<str>,
     overlay_error_text: Arc<str>,
     overlay_text_opacity: f64,
-    state: u8,
 }
 
-extern "C" fn perform_ui_update(ctx: *mut std::ffi::c_void) {
-    let update = unsafe { Box::from_raw(ctx as *mut UiUpdate) };
-    let mtm = MainThreadMarker::new().expect("perform_ui_update must run on main thread");
-    let delegate = unsafe { &*(update.delegate_addr as *const AppDelegate) };
-    delegate.update_ui(
-        mtm,
-        update.state,
-        update.deepgram_connection_status,
-        update.overlay_dismissed,
-        &update.overlay_text,
-        &update.overlay_error_text,
-        &update.overlay_correction_text,
-        update.overlay_correction_active,
-        update.overlay_text_opacity,
-        &update.overlay_footer_text,
-        update.mic_meter,
-    );
+impl UiSnapshot {
+    fn initial() -> Self {
+        Self {
+            state: STATE_IDLE,
+            deepgram_connection_status: DeepgramConnectionStatus::Unknown,
+            mic_meter: MicMeterSnapshot::default(),
+            overlay_dismissed: false,
+            overlay_footer_text: Arc::from(""),
+            overlay_correction_active: false,
+            overlay_correction_text: Arc::from(""),
+            overlay_text: Arc::from(""),
+            overlay_error_text: Arc::from(""),
+            overlay_text_opacity: 1.0,
+        }
+    }
+
+    fn capture(state: &AppState) -> Self {
+        Self {
+            state: state.get_state(),
+            deepgram_connection_status: state.deepgram_connection_status(),
+            mic_meter: state.mic_meter_snapshot(),
+            overlay_dismissed: state.is_overlay_dismissed(),
+            overlay_footer_text: state.overlay_footer_text(),
+            overlay_correction_active: state.is_overlay_correction_active(),
+            overlay_correction_text: state.overlay_correction_text(),
+            overlay_text: state.overlay_text(),
+            overlay_error_text: state.overlay_error_text(),
+            overlay_text_opacity: state.overlay_text_opacity(),
+        }
+    }
+
+    /// Text fields compare by `Arc` identity: `AppState` hands out a new `Arc`
+    /// whenever the text is replaced.
+    fn ui_differs_from(&self, other: &Self) -> bool {
+        self.state != other.state
+            || self.deepgram_connection_status != other.deepgram_connection_status
+            || self.overlay_dismissed != other.overlay_dismissed
+            || !Arc::ptr_eq(&self.overlay_footer_text, &other.overlay_footer_text)
+            || self.overlay_correction_active != other.overlay_correction_active
+            || !Arc::ptr_eq(
+                &self.overlay_correction_text,
+                &other.overlay_correction_text,
+            )
+            || !Arc::ptr_eq(&self.overlay_text, &other.overlay_text)
+            || !Arc::ptr_eq(&self.overlay_error_text, &other.overlay_error_text)
+            || (self.overlay_text_opacity - other.overlay_text_opacity).abs() > f64::EPSILON
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StatusPollOutcome {
+    Skip,
+    Refresh { ui_changed: bool },
+}
+
+/// Per-tick bookkeeping for the status poll, owned by `AppDelegate`.
+struct StatusPollState {
+    last: UiSnapshot,
+    frame_count: u64,
+}
+
+impl StatusPollState {
+    fn new() -> Self {
+        Self {
+            last: UiSnapshot::initial(),
+            frame_count: 0,
+        }
+    }
+
+    /// Records `current` as the latest snapshot and decides whether this tick
+    /// must refresh the UI.
+    fn advance(
+        &mut self,
+        current: &UiSnapshot,
+        controller_updates_pending: bool,
+    ) -> StatusPollOutcome {
+        self.frame_count += 1;
+        let ui_changed = current.ui_differs_from(&self.last);
+        let mic_meter_changed = current.mic_meter != self.last.mic_meter;
+        let should_animate_meter = current.state == STATE_RECORDING;
+        let should_animate_overlay = matches!(current.state, STATE_PROCESSING | STATE_TRANSFORMING)
+            && !current.overlay_dismissed;
+        let background_refresh_due = self.frame_count % STATUS_POLL_BACKGROUND_REFRESH_TICKS == 0;
+
+        if !ui_changed
+            && !mic_meter_changed
+            && !should_animate_meter
+            && !should_animate_overlay
+            && !controller_updates_pending
+            && !background_refresh_due
+        {
+            return StatusPollOutcome::Skip;
+        }
+
+        self.last = current.clone();
+        StatusPollOutcome::Refresh { ui_changed }
+    }
 }
 
 fn show_modal_alert(message_text: &str, informative_text: &str) {
@@ -1622,14 +1759,18 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use objc2::ClassType;
 
     use super::{
-        billing_menu_text, config_file_is_missing, overlay_style_from_config,
-        validate_settings_config, AppDelegate,
+        billing_menu_text, config_file_is_missing, overlay_style_from_config, status_poll_selector,
+        validate_settings_config, AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
+        STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
     use crate::config::Config;
     use crate::settings_window::actions::SettingsAction;
+    use crate::state::{MicMeterSnapshot, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING};
 
     #[test]
     fn config_file_is_missing_only_reports_not_found_paths() {
@@ -1719,138 +1860,170 @@ mod tests {
             "AppDelegate does not implement settings actions: {missing:?}"
         );
     }
+
+    #[test]
+    fn app_delegate_implements_status_poll_timer_selector() {
+        assert!(
+            AppDelegate::class().responds_to(status_poll_selector()),
+            "AppDelegate does not implement the status poll timer selector {:?}",
+            status_poll_selector()
+        );
+    }
+
+    fn idle_snapshot() -> UiSnapshot {
+        UiSnapshot::initial()
+    }
+
+    #[test]
+    fn status_poll_refreshes_on_first_tick_because_text_identity_differs() {
+        let mut poll_state = StatusPollState::new();
+
+        assert_eq!(
+            poll_state.advance(&idle_snapshot(), false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
+    }
+
+    #[test]
+    fn status_poll_skips_unchanged_idle_ticks_until_background_refresh() {
+        let mut poll_state = StatusPollState::new();
+        let snapshot = idle_snapshot();
+        poll_state.advance(&snapshot, false);
+
+        for tick in 2..STATUS_POLL_BACKGROUND_REFRESH_TICKS {
+            assert_eq!(
+                poll_state.advance(&snapshot, false),
+                StatusPollOutcome::Skip,
+                "tick {tick} should not refresh the UI"
+            );
+        }
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: false }
+        );
+    }
+
+    #[test]
+    fn status_poll_refreshes_once_when_ui_state_changes() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        poll_state.advance(&snapshot, false);
+        snapshot.state = STATE_ERROR;
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Skip
+        );
+    }
+
+    #[test]
+    fn status_poll_treats_replaced_overlay_text_as_changed() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        poll_state.advance(&snapshot, false);
+        snapshot.overlay_text = Arc::from("");
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
+    }
+
+    #[test]
+    fn status_poll_refreshes_every_tick_while_recording() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        snapshot.state = STATE_RECORDING;
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: false }
+        );
+    }
+
+    #[test]
+    fn status_poll_animates_processing_overlay_only_while_visible() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        snapshot.state = STATE_PROCESSING;
+        poll_state.advance(&snapshot, false);
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: false }
+        );
+
+        snapshot.overlay_dismissed = true;
+        poll_state.advance(&snapshot, false);
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Skip
+        );
+    }
+
+    #[test]
+    fn status_poll_refreshes_for_mic_meter_changes_and_pending_controller_updates() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        poll_state.advance(&snapshot, false);
+        snapshot.mic_meter = MicMeterSnapshot {
+            level: 10,
+            ..MicMeterSnapshot::default()
+        };
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: false }
+        );
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Skip
+        );
+        assert_eq!(
+            poll_state.advance(&snapshot, true),
+            StatusPollOutcome::Refresh { ui_changed: false }
+        );
+    }
 }
 
-pub fn setup_status_polling(
-    delegate: Retained<AppDelegate>,
-    state: Arc<AppState>,
-    hotkey_capture_controller: HotkeyCaptureController,
-    transformation_models_controller: TransformationModelsController,
-    deepgram_connection_controller: DeepgramConnectionController,
-) {
-    let delegate_addr = Retained::as_ptr(&delegate) as usize;
-    std::mem::forget(delegate);
+fn status_poll_selector() -> objc2::runtime::Sel {
+    sel!(pollStatus:)
+}
 
-    std::thread::Builder::new()
-        .name("ui-poller".into())
-        .spawn(move || {
-            let mut last_deepgram_connection_status = DeepgramConnectionStatus::Unknown;
-            let mut last_mic_meter = MicMeterSnapshot::default();
-            let mut last_overlay_dismissed = false;
-            let mut last_overlay_footer_text: Arc<str> = Arc::from("");
-            let mut last_overlay_correction_active = false;
-            let mut last_overlay_correction_text: Arc<str> = Arc::from("");
-            let mut last_overlay_text: Arc<str> = Arc::from("");
-            let mut last_overlay_error_text: Arc<str> = Arc::from("");
-            let mut last_overlay_text_opacity = 1.0;
-            let mut last_state = STATE_IDLE;
-            let mut frame_count = 0u64;
-
-            loop {
-                std::thread::sleep(std::time::Duration::from_millis(75));
-                let delegate_ref = unsafe { &*(delegate_addr as *const AppDelegate) };
-                delegate_ref.ivars().audio_controller.sync_stream_state();
-
-                frame_count += 1;
-                let current_state = state.get_state();
-                let current_deepgram_connection_status = state.deepgram_connection_status();
-                let current_mic_meter = state.mic_meter_snapshot();
-                let current_overlay_dismissed = state.is_overlay_dismissed();
-                let current_overlay_footer_text = state.overlay_footer_text();
-                let current_overlay_correction_active = state.is_overlay_correction_active();
-                let current_overlay_correction_text = state.overlay_correction_text();
-                let current_overlay_text = state.overlay_text();
-                let current_overlay_error_text = state.overlay_error_text();
-                let current_overlay_text_opacity = state.overlay_text_opacity();
-                let ui_changed = current_state != last_state
-                    || current_deepgram_connection_status != last_deepgram_connection_status
-                    || current_overlay_dismissed != last_overlay_dismissed
-                    || !Arc::ptr_eq(&current_overlay_footer_text, &last_overlay_footer_text)
-                    || current_overlay_correction_active != last_overlay_correction_active
-                    || !Arc::ptr_eq(
-                        &current_overlay_correction_text,
-                        &last_overlay_correction_text,
-                    )
-                    || !Arc::ptr_eq(&current_overlay_text, &last_overlay_text)
-                    || !Arc::ptr_eq(&current_overlay_error_text, &last_overlay_error_text)
-                    || (current_overlay_text_opacity - last_overlay_text_opacity).abs()
-                        > f64::EPSILON;
-                let mic_meter_changed = current_mic_meter != last_mic_meter;
-                let should_animate_meter = current_state == STATE_RECORDING;
-                let should_animate_overlay =
-                    matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING)
-                        && !current_overlay_dismissed;
-                let hotkey_capture_update_pending =
-                    hotkey_capture_controller.has_pending_ui_update();
-                let transformation_models_update_pending =
-                    transformation_models_controller.has_pending_ui_update();
-                let deepgram_connection_update_pending =
-                    deepgram_connection_controller.has_pending_ui_update();
-
-                // Always post an update every ~1.5 seconds (about 20 ticks of 75ms)
-                // so we can recheck the current audio input device default if it changed.
-                let background_poll_trigger = (frame_count % 20) == 0;
-
-                if !ui_changed
-                    && !mic_meter_changed
-                    && !should_animate_meter
-                    && !should_animate_overlay
-                    && !hotkey_capture_update_pending
-                    && !transformation_models_update_pending
-                    && !deepgram_connection_update_pending
-                    && !background_poll_trigger
-                {
-                    continue;
-                }
-
-                last_state = current_state;
-                last_deepgram_connection_status = current_deepgram_connection_status;
-                last_mic_meter = current_mic_meter;
-                last_overlay_dismissed = current_overlay_dismissed;
-                last_overlay_footer_text = Arc::clone(&current_overlay_footer_text);
-                last_overlay_correction_active = current_overlay_correction_active;
-                last_overlay_correction_text = Arc::clone(&current_overlay_correction_text);
-                last_overlay_text = Arc::clone(&current_overlay_text);
-                last_overlay_error_text = Arc::clone(&current_overlay_error_text);
-                last_overlay_text_opacity = current_overlay_text_opacity;
-
-                if ui_changed {
-                    let label = match current_state {
-                        STATE_RECORDING => "recording",
-                        STATE_PROCESSING => "processing",
-                        STATE_BUFFER_READY => "buffer-ready",
-                        STATE_TRANSFORMING => "transforming",
-                        STATE_ERROR => "error",
-                        _ => "idle",
-                    };
-                    log::info!(
-                        "ui update: state={}, transcript_len={}",
-                        label,
-                        current_overlay_text.len()
-                    );
-                }
-
-                let update = Box::new(UiUpdate {
-                    delegate_addr,
-                    deepgram_connection_status: current_deepgram_connection_status,
-                    mic_meter: current_mic_meter,
-                    overlay_dismissed: current_overlay_dismissed,
-                    overlay_footer_text: current_overlay_footer_text,
-                    overlay_correction_active: current_overlay_correction_active,
-                    overlay_correction_text: current_overlay_correction_text,
-                    overlay_text: current_overlay_text,
-                    overlay_error_text: current_overlay_error_text,
-                    overlay_text_opacity: current_overlay_text_opacity,
-                    state: current_state,
-                });
-                unsafe {
-                    dispatch_async_f(
-                        &_dispatch_main_q,
-                        Box::into_raw(update) as *mut std::ffi::c_void,
-                        perform_ui_update,
-                    );
-                }
-            }
-        })
-        .expect("failed to spawn ui-poller thread");
+/// Schedules the repeating status poll on the main run loop.
+///
+/// Every tick runs on the main thread, so it reaches the main-thread-only
+/// `AppDelegate` (and the `!Send` `AudioController` it owns) through a normal
+/// `&AppDelegate`. The timer is added in `NSRunLoopCommonModes`, the modes in
+/// which the main run loop also drains the main dispatch queue, so it keeps
+/// firing while menus are tracked or modal alerts run.
+pub fn setup_status_polling(delegate: &AppDelegate) {
+    // SAFETY: `delegate` is an `AppDelegate`, which implements
+    // `status_poll_selector()` taking the firing `NSTimer`; `userInfo` is nil.
+    // The timer retains its target until invalidated and the run loop retains
+    // the timer, so the delegate outlives every tick.
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            STATUS_POLL_INTERVAL_SECONDS,
+            delegate,
+            status_poll_selector(),
+            None,
+            true,
+        )
+    };
+    // SAFETY: `NSRunLoop` is not thread-safe; this runs on the main thread (a
+    // `&AppDelegate` only exists there), which owns the main run loop.
+    // `NSRunLoopCommonModes` is an immutable Foundation constant, and the timer
+    // is freshly created and not yet scheduled on any run loop.
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
 }
