@@ -21,10 +21,10 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Keep secrets out of the repo. Use placeholders in `config.example.toml`; do not commit real Deepgram or LLM API keys.
 
 ## Conventions
-- Keep AppKit work on the main thread. Follow the `MainThreadMarker` and AppDelegate patterns in `src/main.rs` and `src/app.rs`; do not move Cocoa/AppKit calls onto worker threads.
-- When adding or changing a setting, update all three layers together: `src/settings_window.rs` (UI read/write), `src/config.rs` (defaults, resolution, persistence), and `validate_settings_config` in `src/app.rs`.
+- Keep AppKit work on the main thread. Follow the `MainThreadMarker` and AppDelegate patterns in `src/main.rs` and `src/app/mod.rs`; do not move Cocoa/AppKit calls onto worker threads.
+- When adding or changing a setting, update all three layers together: `src/settings_window/mod.rs` (UI read/write), `src/config/mod.rs` (defaults, resolution, persistence), and `validate_settings_config` in `src/app/mod.rs`.
 - Settings window controls send target/action messages to `AppDelegate`. Define each action once as a row of the `settings_actions!` table in `src/settings_window/actions.rs`, and implement the matching `#[unsafe(method(...))]` on `AppDelegate` in `src/app/mod.rs`. Do not pass raw `sel!` selectors to settings controls; `app_delegate_implements_every_settings_window_action` fails when a selector is not implemented.
-- Preserve user config comments and unknown TOML sections by writing through `config::save_config` in `src/config.rs`. It intentionally uses `toml_edit`; do not replace it with a lossy serializer.
+- Preserve user config comments and unknown TOML sections by writing through `config::save_config` in `src/config/mod.rs`. It intentionally uses `toml_edit`; do not replace it with a lossy serializer.
 - Permission changes are stateful and may require relaunch after grant. Follow the `NeedsRelaunch` flow in `src/permissions.rs` and `src/permissions_dialog.rs` instead of shortcutting it.
 - Keep packaging changes aligned across `scripts/build-macos-app.sh`, `scripts/build-macos-dmg.sh`, and `.github/workflows/release.yml`.
 

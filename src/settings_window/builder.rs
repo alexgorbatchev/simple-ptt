@@ -42,8 +42,6 @@ pub const FIELD_WITH_ACTION_BUTTON_WIDTH: f64 =
 pub const FIELD_X: f64 = HORIZONTAL_PADDING + LABEL_WIDTH + 12.0;
 pub const ROW_GAP: f64 = 10.0;
 pub const SECTION_BREAK_GAP: f64 = 12.0;
-#[allow(dead_code)]
-pub const SECTION_GAP: f64 = 20.0;
 pub const SECTION_HEIGHT: f64 = 22.0;
 pub const SECTION_TITLE_BOTTOM_GAP: f64 = 10.0;
 pub const PROMPT_HEIGHT: f64 = 270.0;
@@ -70,66 +68,6 @@ define_class!(
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             false
-        }
-    }
-);
-
-#[allow(dead_code)]
-fn calculate_centered_title_rect(cell: &SettingsCenteredTextFieldCell, bounds: NSRect) -> NSRect {
-    let mut rect: NSRect = unsafe { msg_send![super(cell), titleRectForBounds: bounds] };
-    let font_size = cell.font().map(|font| font.pointSize()).unwrap_or(12.0);
-    let text_height = (font_size * 1.25).ceil();
-
-    if bounds.size.height > text_height {
-        rect.origin.y = bounds.origin.y + ((bounds.size.height - text_height) / 2.0).floor();
-        rect.size.height = text_height;
-    }
-
-    rect
-}
-
-define_class!(
-    #[unsafe(super(objc2_app_kit::NSTextFieldCell))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "SettingsCenteredTextFieldCell"]
-    pub struct SettingsCenteredTextFieldCell;
-
-    impl SettingsCenteredTextFieldCell {
-        #[unsafe(method(titleRectForBounds:))]
-        fn title_rect_for_bounds(&self, bounds: NSRect) -> NSRect {
-            calculate_centered_title_rect(self, bounds)
-        }
-
-        #[unsafe(method(drawInteriorWithFrame:inView:))]
-        fn draw_interior_with_frame(&self, cell_frame: NSRect, control_view: &NSView) {
-            let title_rect = calculate_centered_title_rect(self, cell_frame);
-            unsafe {
-                let _: () = msg_send![super(self), drawInteriorWithFrame: title_rect, inView: control_view];
-            }
-        }
-
-        #[unsafe(method(selectWithFrame:inView:editor:delegate:start:length:))]
-        fn select_with_frame(
-            &self,
-            rect: NSRect,
-            control_view: &NSView,
-            text_obj: &AnyObject,
-            delegate: Option<&AnyObject>,
-            sel_start: isize,
-            sel_length: isize,
-        ) {
-            let title_rect = calculate_centered_title_rect(self, rect);
-            unsafe {
-                let _: () = msg_send![
-                    super(self),
-                    selectWithFrame: title_rect,
-                    inView: control_view,
-                    editor: text_obj,
-                    delegate: delegate,
-                    start: sel_start,
-                    length: sel_length
-                ];
-            }
         }
     }
 );

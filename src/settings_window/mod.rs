@@ -218,13 +218,16 @@ impl SettingsWindow {
             );
         let deepgram_language_field =
             add_labeled_text_field(&content_view, mtm, &mut current_y, "Language");
-        let deepgram_keyterms_field = add_labeled_text_field_with_hint(
+        let (deepgram_keyterms_field, deepgram_keyterms_hint) = add_labeled_text_field_with_hint(
             &content_view,
             mtm,
             &mut current_y,
             "Keyterms",
-        )
-        .0;
+        );
+        set_hint_text(
+            &deepgram_keyterms_hint,
+            Some("Comma-separated (e.g. 'macOS, GitHub')".to_string()),
+        );
         let deepgram_model_popup =
             add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Model");
         let deepgram_endpointing_ms_field = add_labeled_text_field(
@@ -417,11 +420,6 @@ impl SettingsWindow {
         window_obj
     }
 
-    #[allow(dead_code)]
-    pub fn window(&self) -> &NSWindow {
-        &self.window
-    }
-
     pub fn is_visible(&self) -> bool {
         self.window.isVisible()
     }
@@ -433,10 +431,6 @@ impl SettingsWindow {
         self.window.orderFrontRegardless();
         let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
         self.scroll_to_top();
-    }
-
-    pub fn show_startup(&self, mtm: MainThreadMarker) {
-        self.show(mtm);
     }
 
     pub fn update_meter(&self, meter: Option<MicMeterSnapshot>) {
@@ -761,12 +755,6 @@ impl SettingsWindow {
     }
 
     pub fn set_hotkey_capture_preview(&self, target: HotkeyCaptureTarget, value: &str) {
-        self.set_hotkey_value(target, value);
-    }
-
-    #[allow(dead_code)]
-    pub fn set_hotkey_capture_outcome(&self, target: HotkeyCaptureTarget, value: &str) {
-        self.set_hotkey_capture_state(None);
         self.set_hotkey_value(target, value);
     }
 

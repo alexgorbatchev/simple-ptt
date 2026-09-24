@@ -24,8 +24,6 @@ enum RecordHotkeyAction {
     StartRecording,
     StopAndPaste,
     StopAndTransformAndPaste,
-    #[allow(dead_code)]
-    PasteBuffer,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -434,16 +432,6 @@ fn handle_key_release(
             RecordHotkeyAction::StopAndTransformAndPaste => {
                 stop_recording_and_transform_and_paste(state, controller, "tap");
             }
-            RecordHotkeyAction::PasteBuffer => match controller.paste_buffer() {
-                Ok(()) => {
-                    state.set_state(STATE_PROCESSING);
-                    log::info!("pasting buffered text");
-                }
-                Err(error) => {
-                    log::error!("failed to paste buffered text: {}", error);
-                    state.report_error(error.to_string());
-                }
-            },
         }
 
         return true;
