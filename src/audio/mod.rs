@@ -4,7 +4,7 @@ pub mod stream;
 pub use devices::*;
 pub use stream::*;
 
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{HostTrait, StreamTrait};
 use cpal::Stream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Once};
@@ -39,11 +39,26 @@ pub struct AudioController {
 
 struct ActiveAudioStream {
     configured_audio_device: Option<String>,
+    actual_device: cpal::Device,
     actual_audio_device_name: Option<String>,
     requested_sample_rate: u32,
     _stream: Stream,
     healthy: Arc<AtomicBool>,
     last_callback_millis: Arc<AtomicU64>,
+}
+
+impl ActiveAudioStream {
+    fn new(handle: InputStreamHandle, mic_config: &MicConfig) -> Self {
+        Self {
+            configured_audio_device: mic_config.audio_device.clone(),
+            actual_device: handle.device,
+            actual_audio_device_name: handle.device_name,
+            requested_sample_rate: mic_config.sample_rate,
+            _stream: handle.stream,
+            healthy: handle.healthy,
+            last_callback_millis: handle.last_callback_millis,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,9 +74,9 @@ pub fn validate_mic_config(mic_config: &MicConfig) -> Result<(), String> {
     let stream_config = config.config();
 
     match config.sample_format() {
-        cpal::SampleFormat::F32 => build_validation_stream::<f32>(&device, &stream_config)?,
-        cpal::SampleFormat::I16 => build_validation_stream::<i16>(&device, &stream_config)?,
-        cpal::SampleFormat::U16 => build_validation_stream::<u16>(&device, &stream_config)?,
+        cpal::SampleFormat::F32 => build_validation_stream::<f32>(&device, stream_config)?,
+        cpal::SampleFormat::I16 => build_validation_stream::<i16>(&device, stream_config)?,
+        cpal::SampleFormat::U16 => build_validation_stream::<u16>(&device, stream_config)?,
         sample_format => {
             return Err(format!(
                 "unsupported audio input sample format: {:?}",
@@ -112,19 +127,9 @@ impl AudioController {
             config_store.clone(),
             &mic_config,
         ) {
-            Ok((stream, actual_rate, actual_audio_device_name, healthy, last_callback_millis)) => {
-                transcription_controller.set_sample_rate(actual_rate);
-                (
-                    Some(ActiveAudioStream {
-                        configured_audio_device: mic_config.audio_device.clone(),
-                        actual_audio_device_name,
-                        requested_sample_rate: mic_config.sample_rate,
-                        _stream: stream,
-                        healthy,
-                        last_callback_millis,
-                    }),
-                    None,
-                )
+            Ok(handle) => {
+                transcription_controller.set_sample_rate(handle.sample_rate);
+                (Some(ActiveAudioStream::new(handle, &mic_config)), None)
             }
             Err(error) => {
                 log::error!("failed to initialize audio input stream: {}", error);
@@ -230,10 +235,7 @@ impl AudioController {
                 return true;
             }
             let host = cpal::default_host();
-            let current_default_name = host
-                .default_input_device()
-                .and_then(|device| device.name().ok());
-            if current_default_name != active.actual_audio_device_name {
+            if host.default_input_device().as_ref() != Some(&active.actual_device) {
                 return true;
             }
         }
@@ -345,7 +347,7 @@ impl AudioController {
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let (stream, actual_rate, actual_audio_device_name, healthy, last_callback_millis) = build_input_stream(
+        let handle = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
@@ -355,19 +357,12 @@ impl AudioController {
         #[cfg(target_os = "macos")]
         core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
 
-        self.transcription_controller.set_sample_rate(actual_rate);
+        self.transcription_controller.set_sample_rate(handle.sample_rate);
         let mut active_stream = self
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
-        *active_stream = Some(ActiveAudioStream {
-            configured_audio_device: mic_config.audio_device.clone(),
-            actual_audio_device_name,
-            requested_sample_rate: mic_config.sample_rate,
-            _stream: stream,
-            healthy,
-            last_callback_millis,
-        });
+        *active_stream = Some(ActiveAudioStream::new(handle, mic_config));
         Ok(())
     }
 }
@@ -376,9 +371,85 @@ impl AudioController {
 mod tests {
     use super::{
         build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
-        normalize_meter_amplitude, normalized_configured_audio_device, smooth_meter_value,
-        AudioController, AudioInputDeviceChoice, InputDeviceDescriptor,
+        config_with_preferred_rate, normalize_meter_amplitude, normalized_configured_audio_device,
+        smooth_meter_value, stream_error_response, AudioController, AudioInputDeviceChoice,
+        InputDeviceDescriptor, StreamErrorResponse,
     };
+    use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+
+    #[test]
+    fn stream_errors_that_keep_the_stream_running_are_ignored() {
+        for kind in [
+            ErrorKind::Xrun,
+            ErrorKind::DeviceChanged,
+            ErrorKind::RealtimeDenied,
+        ] {
+            assert_eq!(
+                stream_error_response(&kind.into()),
+                StreamErrorResponse::Ignore,
+                "{:?}",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn invalidated_stream_is_rebuilt_without_reporting_an_error() {
+        assert_eq!(
+            stream_error_response(&ErrorKind::StreamInvalidated.into()),
+            StreamErrorResponse::Rebuild
+        );
+    }
+
+    #[test]
+    fn stream_failures_are_rebuilt_and_reported() {
+        for kind in [
+            ErrorKind::DeviceNotAvailable,
+            ErrorKind::BackendError,
+            ErrorKind::Other,
+        ] {
+            assert_eq!(
+                stream_error_response(&kind.into()),
+                StreamErrorResponse::RebuildAndReport,
+                "{:?}",
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn config_with_preferred_rate_picks_first_range_containing_rate() {
+        let ranges = [
+            SupportedStreamConfigRange::new(
+                1,
+                44_100,
+                44_100,
+                SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            ),
+            SupportedStreamConfigRange::new(
+                2,
+                8_000,
+                48_000,
+                SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            ),
+            SupportedStreamConfigRange::new(
+                1,
+                16_000,
+                16_000,
+                SupportedBufferSize::Unknown,
+                SampleFormat::F32,
+            ),
+        ];
+
+        let selected = config_with_preferred_rate(ranges.clone(), 16_000).unwrap();
+        assert_eq!(selected.sample_rate(), 16_000);
+        assert_eq!(selected.channels(), 2);
+        assert_eq!(selected.sample_format(), SampleFormat::F32);
+
+        assert!(config_with_preferred_rate(ranges, 96_000).is_none());
+    }
 
     #[test]
     fn decorated_system_default_audio_device_value_is_detected() {

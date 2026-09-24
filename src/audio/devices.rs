@@ -24,11 +24,20 @@ pub struct InputDeviceDescriptor {
     pub name: Option<String>,
 }
 
+/// Human-readable device name. On CoreAudio this is `kAudioDevicePropertyDeviceNameCFString`,
+/// the same value `mic.audio_device` has always been matched against.
+pub fn device_name(device: &cpal::Device) -> Option<String> {
+    device
+        .description()
+        .ok()
+        .map(|description| description.name().to_owned())
+}
+
 pub fn available_audio_input_devices() -> Result<AvailableAudioInputDevices, String> {
     let host = cpal::default_host();
     let default_device_name = host
         .default_input_device()
-        .and_then(|device| device.name().ok());
+        .and_then(|device| device_name(&device));
     let devices = enumerate_input_devices(&host)?;
 
     Ok(AvailableAudioInputDevices {
@@ -41,7 +50,7 @@ pub fn print_input_devices() -> Result<(), String> {
     let host = cpal::default_host();
     let default_device_name = host
         .default_input_device()
-        .and_then(|device| device.name().ok());
+        .and_then(|device| device_name(&device));
     let devices = enumerate_input_devices(&host)?;
 
     match default_device_name {
@@ -74,7 +83,7 @@ pub fn enumerate_input_devices(host: &Host) -> Result<Vec<InputDeviceDescriptor>
         .enumerate()
         .map(|(index, device)| InputDeviceDescriptor {
             index,
-            name: device.name().ok(),
+            name: device_name(&device),
         })
         .collect())
 }
@@ -138,9 +147,7 @@ pub fn resolve_input_device(
     }
 
     if let Some(device) = devices.iter().find(|device| {
-        device
-            .name()
-            .ok()
+        device_name(device)
             .map(|name| name.eq_ignore_ascii_case(raw_configured))
             .unwrap_or(false)
     }) {

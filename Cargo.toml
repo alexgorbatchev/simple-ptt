@@ -77,7 +77,7 @@ objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMedia
 rdev = { version = "0.5", features = ["unstable_grab"] }
 
 # Audio capture (CoreAudio on macOS)
-cpal = "0.15"
+cpal = "0.18"
 
 # Deepgram streaming and management
 bytes = "1"

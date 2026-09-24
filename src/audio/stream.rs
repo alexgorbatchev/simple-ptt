@@ -1,5 +1,8 @@
 use cpal::traits::{DeviceTrait, StreamTrait};
-use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig};
+use cpal::{
+    FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig,
+    SupportedStreamConfigRange,
+};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -7,32 +10,35 @@ use std::time::Instant;
 use crate::settings::LiveConfigStore;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
-use super::devices::{encode_pcm_mono, normalize_meter_amplitude, resolve_input_device, smooth_meter_value};
+use super::devices::{
+    device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
+    smooth_meter_value,
+};
+
+pub struct InputStreamHandle {
+    pub stream: Stream,
+    pub sample_rate: u32,
+    pub device: cpal::Device,
+    pub device_name: Option<String>,
+    pub healthy: Arc<AtomicBool>,
+    pub last_callback_millis: Arc<AtomicU64>,
+}
 
 pub fn build_input_stream(
     state: Arc<AppState>,
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     mic_config: &crate::config::MicConfig,
-) -> Result<
-    (
-        Stream,
-        u32,
-        Option<String>,
-        Arc<AtomicBool>,
-        Arc<AtomicU64>,
-    ),
-    String,
-> {
+) -> Result<InputStreamHandle, String> {
     let host = cpal::default_host();
     let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
 
     let config = select_input_config(&device, mic_config.sample_rate)?;
-    let actual_rate = config.sample_rate().0;
+    let actual_rate = config.sample_rate();
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
 
-    let actual_audio_device_name = device.name().ok();
+    let actual_audio_device_name = device_name(&device);
     log::info!(
         "using audio input device: {:?}",
         actual_audio_device_name.as_deref().unwrap_or("<unknown>")
@@ -82,13 +88,14 @@ pub fn build_input_stream(
         .map_err(|error| format!("failed to start audio stream: {}", error))?;
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
-    Ok((
+    Ok(InputStreamHandle {
         stream,
-        actual_rate,
-        actual_audio_device_name,
+        sample_rate: actual_rate,
+        device,
+        device_name: actual_audio_device_name,
         healthy,
         last_callback_millis,
-    ))
+    })
 }
 
 pub fn select_input_config(
@@ -99,11 +106,8 @@ pub fn select_input_config(
         .supported_input_configs()
         .map_err(|error| format!("failed to query supported input configs: {}", error))?;
 
-    let preferred_rate = cpal::SampleRate(preferred_sample_rate);
-    for config in supported_configs {
-        if config.min_sample_rate() <= preferred_rate && preferred_rate <= config.max_sample_rate() {
-            return Ok(config.with_sample_rate(preferred_rate));
-        }
+    if let Some(config) = config_with_preferred_rate(supported_configs, preferred_sample_rate) {
+        return Ok(config);
     }
 
     let default_config = device
@@ -113,9 +117,20 @@ pub fn select_input_config(
     log::warn!(
         "preferred sample rate {}Hz is unsupported; falling back to device default {}Hz",
         preferred_sample_rate,
-        default_config.sample_rate().0
+        default_config.sample_rate()
     );
     Ok(default_config)
+}
+
+/// First supported input config whose sample-rate range contains `preferred_sample_rate`,
+/// in the order the device reports them.
+pub fn config_with_preferred_rate(
+    supported_configs: impl IntoIterator<Item = SupportedStreamConfigRange>,
+    preferred_sample_rate: u32,
+) -> Option<SupportedStreamConfig> {
+    supported_configs
+        .into_iter()
+        .find_map(|config| config.try_with_sample_rate(preferred_sample_rate))
 }
 
 fn build_stream_for_format<T>(
@@ -146,7 +161,7 @@ where
 
     device
         .build_input_stream(
-            &stream_config,
+            stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
                 callback_last_millis.store(
                     PROCESS_START.elapsed().as_millis() as u64,
@@ -197,19 +212,55 @@ where
                     }
                 }
             },
-            move |error| {
-                log::error!("audio stream error: {}", error);
-                stream_healthy.store(false, Ordering::SeqCst);
-                error_state.report_error(error.to_string());
+            move |error| match stream_error_response(&error) {
+                StreamErrorResponse::Ignore => {
+                    // Xruns are delivered on the real-time audio thread; keep this cheap.
+                    log::debug!("audio stream glitch: {}", error);
+                }
+                StreamErrorResponse::Rebuild => {
+                    log::warn!("audio stream invalidated, rebuilding: {}", error);
+                    stream_healthy.store(false, Ordering::SeqCst);
+                }
+                StreamErrorResponse::RebuildAndReport => {
+                    log::error!("audio stream error: {}", error);
+                    stream_healthy.store(false, Ordering::SeqCst);
+                    error_state.report_error(error.to_string());
+                }
             },
             None,
         )
         .map_err(|error| format!("failed to build audio stream: {}", error))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StreamErrorResponse {
+    /// The stream keeps delivering audio; log only.
+    Ignore,
+    /// The stream stopped for a recoverable reason; mark it unhealthy so it is rebuilt.
+    Rebuild,
+    /// The stream failed; rebuild it and surface the error to the user.
+    RebuildAndReport,
+}
+
+/// How the input stream reacts to an error from cpal's error callback.
+/// - `Xrun`: CoreAudio processor overload; the stream keeps running.
+/// - `DeviceChanged`: cpal rerouted the stream itself and it remains active.
+/// - `RealtimeDenied`: real-time thread promotion was refused; the stream keeps running.
+/// - `StreamInvalidated`: CoreAudio pauses the stream on any device sample-rate change
+///   (including our own validation stream or another app); a rebuild recovers it.
+pub fn stream_error_response(error: &cpal::Error) -> StreamErrorResponse {
+    match error.kind() {
+        cpal::ErrorKind::Xrun
+        | cpal::ErrorKind::DeviceChanged
+        | cpal::ErrorKind::RealtimeDenied => StreamErrorResponse::Ignore,
+        cpal::ErrorKind::StreamInvalidated => StreamErrorResponse::Rebuild,
+        _ => StreamErrorResponse::RebuildAndReport,
+    }
+}
+
 pub fn build_validation_stream<T>(
     device: &cpal::Device,
-    stream_config: &cpal::StreamConfig,
+    stream_config: cpal::StreamConfig,
 ) -> Result<(), String>
 where
     T: Sample + SizedSample + Send + 'static,
