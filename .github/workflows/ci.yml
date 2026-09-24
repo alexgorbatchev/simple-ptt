@@ -13,11 +13,18 @@ concurrency:
 
 jobs:
   build:
-    name: Build macOS app
+    name: Check, test, and build macOS app
     runs-on: macos-14
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
+      TARGET_TRIPLE: aarch64-apple-darwin
+      # Job-wide so every cargo step shares one RUSTFLAGS value: RUSTFLAGS is part
+      # of Cargo's fingerprint and unit hash, so a step-only value would rebuild
+      # the dependency graph and leave the rust-cache key unaware of the flags.
+      # Cargo passes `--cap-lints allow` to dependencies, so this only denies
+      # warnings in this crate.
+      RUSTFLAGS: "-D warnings"
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -28,9 +35,26 @@ jobs:
           set -euo pipefail
           rustup toolchain install stable --profile minimal
           rustup default stable
+          rustup target add "$TARGET_TRIPLE"
 
-      - name: Build app
+      # Must run after toolchain setup: the cache key includes the rustc version.
+      - name: Cache cargo registry and target directory
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check all targets
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked
+          cargo check --locked --all-targets
+
+      - name: Run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET_TRIPLE"
