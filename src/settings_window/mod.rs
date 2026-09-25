@@ -23,9 +23,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSImage,
-    NSLayoutAttribute, NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow,
-    NSStackView, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextField,
+    NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSImage, NSLayoutAttribute,
+    NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow, NSStackView,
+    NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView, NSViewController, NSWindow, NSWindowDelegate,
     NSWindowStyleMask, NSWindowToolbarStyle,
 };
@@ -201,15 +201,22 @@ impl SettingsWindow {
         self.window.isVisible()
     }
 
-    pub fn show(&self, mtm: MainThreadMarker) {
-        let app = NSApplication::sharedApplication(mtm);
-        app.activate();
-        self.tab_view_controller.setSelectedTabViewItemIndex(0);
+    /// Orders the window front as the key window. `AppDelegate` calls this
+    /// only while the app is active: a key window in an inactive app does not
+    /// open its pop-up button menus (#16). A window that is already on screen
+    /// keeps its pane and focus: a request that waited for activation can be
+    /// presented by the user's click into that window.
+    pub fn show(&self) {
+        let opening = !self.window.isVisible();
+        if opening {
+            self.tab_view_controller.setSelectedTabViewItemIndex(0);
+        }
         self.window.makeKeyAndOrderFront(None);
-        self.window.orderFrontRegardless();
-        let _ = self
-            .window
-            .makeFirstResponder(Some(&*self.general.hotkey_field));
+        if opening {
+            let _ = self
+                .window
+                .makeFirstResponder(Some(&*self.general.hotkey_field));
+        }
     }
 
     pub fn update_meter(&self, meter: Option<MicMeterSnapshot>) {

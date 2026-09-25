@@ -14,9 +14,15 @@ use objc2_app_kit::{
     NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
-    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectProtocol, NSRunLoop,
-    NSRunLoopCommonModes, NSString, NSTimer, NSURL,
+    ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectNSDelayedPerforming,
+    NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer, NSURL,
 };
+
+mod settings_presentation;
+mod startup_windows;
+
+use settings_presentation::{SettingsPresentation, SettingsPresentationStep};
+use startup_windows::StartupWindows;
 
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
 use crate::billing::BillingController;
@@ -69,6 +75,8 @@ pub struct Ivars {
     input_monitoring_permission_requested: Cell<bool>,
     microphone_permission_requested: Cell<bool>,
     settings_window: OnceCell<SettingsWindow>,
+    settings_presentation: Cell<SettingsPresentation>,
+    permissions_dialog_returns_in_front_of_settings: Cell<bool>,
     transformation_models_controller: TransformationModelsController,
     status_item: OnceCell<Retained<NSStatusItem>>,
     status_poll: RefCell<StatusPollState>,
@@ -98,12 +106,14 @@ define_class!(
                 .is_err();
             let audio_startup_failed = self.ivars().initial_audio_error.is_some();
             let startup_permissions_missing = !self.ivars().startup_hotkey_permissions.all_granted();
-            let startup_ui_required = config_file_missing
-                || deepgram_api_key_missing
-                || audio_startup_failed
-                || startup_permissions_missing;
+            let startup_windows = StartupWindows::plan(
+                config_file_missing,
+                deepgram_api_key_missing,
+                audio_startup_failed,
+                startup_permissions_missing,
+            );
 
-            if startup_ui_required {
+            if startup_windows.settings || startup_windows.permissions_dialog {
                 app.setActivationPolicy(NSApplicationActivationPolicy::Regular);
                 app.activate();
             } else {
@@ -248,33 +258,49 @@ define_class!(
                 .set(PermissionsDialog::new(self, mtm))
                 .expect("permissions dialog must only be set once");
 
-            if config_file_missing || deepgram_api_key_missing || audio_startup_failed {
-                self.present_settings_window();
-            }
-
             if startup_permissions_missing {
                 self.sync_hotkey_permissions_ui();
+            }
+            if startup_windows.settings {
+                self.ivars()
+                    .permissions_dialog_returns_in_front_of_settings
+                    .set(startup_windows.permissions_dialog_returns_in_front_of_settings());
+                self.present_settings_window();
+                if let Some(audio_error) = self.ivars().initial_audio_error.as_deref() {
+                    if let Some(settings_window) = self.ivars().settings_window.get() {
+                        settings_window.set_status(audio_error);
+                    }
+                }
+            }
+
+            if startup_windows.permissions_dialog {
                 self.present_startup_hotkey_permissions_window();
             }
 
-            if !deepgram_api_key_missing && config_file_missing {
+            if startup_windows.missing_config_alert {
                 show_modal_alert(
                     "simple-ptt didn't find a config.toml yet",
                     &missing_config_alert_text(self.ivars().config_store.path()),
                 );
             }
 
-            if let Some(audio_error) = self.ivars().initial_audio_error.as_deref() {
-                if let Some(settings_window) = self.ivars().settings_window.get() {
-                    settings_window.set_status(audio_error);
+            if startup_windows.audio_failure_alert {
+                if let Some(audio_error) = self.ivars().initial_audio_error.as_deref() {
+                    show_modal_alert(
+                        "simple-ptt couldn't start audio input",
+                        &audio_startup_failure_alert_text(audio_error),
+                    );
                 }
-                show_modal_alert(
-                    "simple-ptt couldn't start audio input",
-                    &audio_startup_failure_alert_text(audio_error),
-                );
             }
 
             log::info!("menu bar initialized");
+        }
+
+        #[unsafe(method(applicationDidBecomeActive:))]
+        fn did_become_active(&self, _notification: &NSNotification) {
+            let step =
+                self.advance_settings_presentation(SettingsPresentation::app_did_become_active);
+            self.perform_settings_presentation_step(step);
         }
     }
 
@@ -309,6 +335,19 @@ define_class!(
             self.run_status_poll_tick(MainThreadMarker::from(self));
         }
 
+        // Performed in the default run loop mode by
+        // `perform_settings_presentation_step`; its selector is
+        // `settings_presentation_turn_selector()`.
+        #[unsafe(method(runSettingsPresentationTurn))]
+        fn run_settings_presentation_turn(&self) {
+            let app_is_active =
+                NSApplication::sharedApplication(MainThreadMarker::from(self)).isActive();
+            let step = self.advance_settings_presentation(|presentation| {
+                presentation.default_mode_turn(app_is_active)
+            });
+            self.perform_settings_presentation_step(step);
+        }
+
         #[unsafe(method(checkForUpdates:))]
         fn check_for_updates(&self, sender: Option<&AnyObject>) {
             self.promote_for_window_presentation();
@@ -324,6 +363,12 @@ define_class!(
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
+            // A request from the menu puts Settings in front, even if the
+            // launch-time request that would have kept the permissions dialog
+            // in front is still waiting for activation.
+            self.ivars()
+                .permissions_dialog_returns_in_front_of_settings
+                .set(false);
             self.present_settings_window();
         }
 
@@ -515,8 +560,7 @@ define_class!(
 
         #[unsafe(method(windowWillClose:))]
         fn window_will_close(&self, _notification: &NSNotification) {
-            self.disable_settings_window_hotkey_blocking();
-            self.restore_accessory_activation_policy_if_possible();
+            self.settings_window_closed();
         }
     }
 
@@ -566,6 +610,8 @@ impl AppDelegate {
             input_monitoring_permission_requested: Cell::new(false),
             microphone_permission_requested: Cell::new(false),
             settings_window: OnceCell::new(),
+            settings_presentation: Cell::new(SettingsPresentation::default()),
+            permissions_dialog_returns_in_front_of_settings: Cell::new(false),
             transformation_models_controller,
             status_item: OnceCell::new(),
             status_poll: RefCell::new(StatusPollState::new()),
@@ -661,7 +707,10 @@ impl AppDelegate {
     }
 
     fn restore_accessory_activation_policy_if_possible(&self) {
-        if self.settings_window_is_visible() || self.permissions_dialog_is_visible() {
+        if self.settings_window_is_visible()
+            || self.ivars().settings_presentation.get().is_pending()
+            || self.permissions_dialog_is_visible()
+        {
             return;
         }
 
@@ -792,9 +841,111 @@ impl AppDelegate {
             None,
         );
         self.sync_transformation_provider_ui();
-        self.promote_for_window_presentation();
-        self.ivars().state.set_settings_window_visible(true);
-        settings_window.show(MainThreadMarker::from(self));
+
+        if self
+            .ivars()
+            .settings_presentation
+            .get()
+            .is_awaiting_activation()
+        {
+            log::warn!(
+                "macOS has not activated simple-ptt since Settings was last requested; requesting activation again"
+            );
+        }
+        // A regular app appears in the Dock, so the user can also activate it
+        // there if macOS declines the activation request.
+        NSApplication::sharedApplication(MainThreadMarker::from(self))
+            .setActivationPolicy(NSApplicationActivationPolicy::Regular);
+        let step = self.advance_settings_presentation(SettingsPresentation::request);
+        self.perform_settings_presentation_step(step);
+    }
+
+    /// Every way of leaving Settings (close button, Cancel, Save) ends here.
+    fn settings_window_closed(&self) {
+        self.disable_settings_window_hotkey_blocking();
+        self.cancel_pending_settings_presentation();
+        self.restore_accessory_activation_policy_if_possible();
+    }
+
+    /// Called when Settings closes, so that a request still waiting for
+    /// activation does not reopen it on the next activation.
+    fn cancel_pending_settings_presentation(&self) {
+        let mut presentation = self.ivars().settings_presentation.get();
+        presentation.cancel();
+        self.ivars().settings_presentation.set(presentation);
+        self.ivars()
+            .permissions_dialog_returns_in_front_of_settings
+            .set(false);
+        // SAFETY: `self` is a live `AppDelegate`, the selector is the valid
+        // selector it implements, and nil is the argument that
+        // `perform_settings_presentation_step` scheduled the turn with, so this
+        // matches and drops that turn.
+        unsafe {
+            NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+                self,
+                settings_presentation_turn_selector(),
+                None,
+            );
+        }
+    }
+
+    fn advance_settings_presentation(
+        &self,
+        transition: impl FnOnce(&mut SettingsPresentation) -> SettingsPresentationStep,
+    ) -> SettingsPresentationStep {
+        let mut presentation = self.ivars().settings_presentation.get();
+        let step = transition(&mut presentation);
+        self.ivars().settings_presentation.set(presentation);
+        step
+    }
+
+    /// Carries out a step decided by `SettingsPresentation`. The new state is
+    /// stored before this runs, so `applicationDidBecomeActive:` sees
+    /// `AwaitingActivation` even if AppKit delivers it before `activate()`
+    /// returns.
+    fn perform_settings_presentation_step(&self, step: SettingsPresentationStep) {
+        let mtm = MainThreadMarker::from(self);
+        match step {
+            SettingsPresentationStep::Wait => {}
+            SettingsPresentationStep::ScheduleDefaultModeTurn => {
+                // `performSelector:withObject:afterDelay:` runs the selector only
+                // when the run loop is in the default mode. Menu tracking runs it
+                // in the event tracking mode, so the turn comes after the status
+                // item menu has been dismissed.
+                // SAFETY: `AppDelegate` implements
+                // `settings_presentation_turn_selector()`, which takes no
+                // argument, so the nil argument is not passed to it. `main`
+                // holds the delegate for the whole `NSApplication::run`.
+                unsafe {
+                    self.performSelector_withObject_afterDelay(
+                        settings_presentation_turn_selector(),
+                        None,
+                        0.0,
+                    );
+                }
+            }
+            SettingsPresentationStep::RequestActivation => {
+                log::info!(
+                    "requested app activation; Settings opens once macOS activates simple-ptt"
+                );
+                NSApplication::sharedApplication(mtm).activate();
+            }
+            SettingsPresentationStep::Present => {
+                let Some(settings_window) = self.ivars().settings_window.get() else {
+                    return;
+                };
+                self.ivars().state.set_settings_window_visible(true);
+                settings_window.show();
+                if self
+                    .ivars()
+                    .permissions_dialog_returns_in_front_of_settings
+                    .replace(false)
+                    && self.permissions_dialog_is_visible()
+                {
+                    self.present_startup_hotkey_permissions_window();
+                }
+            }
+        }
     }
 
     fn disable_settings_window_hotkey_blocking(&self) {
@@ -1038,9 +1189,8 @@ impl AppDelegate {
 
         let previous_file_config = self.ivars().config_store.current_file();
         let _ = settings_window.load_from_config(&previous_file_config, None);
-        self.disable_settings_window_hotkey_blocking();
         settings_window.hide();
-        self.restore_accessory_activation_policy_if_possible();
+        self.settings_window_closed();
     }
 
     fn save_settings(&self) {
@@ -1128,9 +1278,8 @@ impl AppDelegate {
         }
 
         self.sync_transformation_provider_ui();
-        self.disable_settings_window_hotkey_blocking();
         settings_window.hide();
-        self.restore_accessory_activation_policy_if_possible();
+        self.settings_window_closed();
     }
 
     fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -1311,7 +1460,7 @@ fn config_file_is_missing(path: &Path) -> bool {
 fn missing_config_alert_text(config_path: &Path) -> String {
     format!(
         concat!(
-            "Settings opened so you can create one on first launch.\n",
+            "Settings opens so you can create one on first launch.\n",
             "Review the defaults, then click {save_button} to write:\n\n",
             "{config_path}\n\n",
             "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
@@ -1785,13 +1934,13 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 mod tests {
     use std::sync::Arc;
 
-    use objc2::ClassType;
+    use objc2::{sel, ClassType};
 
     use super::{
         audio_startup_failure_alert_text, billing_menu_text, config_file_is_missing,
-        missing_config_alert_text, overlay_style_from_config, status_poll_selector,
-        validate_settings_config, AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
-        STATUS_POLL_BACKGROUND_REFRESH_TICKS,
+        missing_config_alert_text, overlay_style_from_config, settings_presentation_turn_selector,
+        status_poll_selector, validate_settings_config, AppDelegate, StatusPollOutcome,
+        StatusPollState, UiSnapshot, STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
     use crate::config::Config;
     use crate::settings_window::actions::SettingsAction;
@@ -1812,6 +1961,8 @@ mod tests {
         );
         assert!(!text.contains("Save and Apply"), "{text}");
         assert!(text.contains("/tmp/config.toml"), "{text}");
+        // The alert is modal, so it shows before the deferred Settings window.
+        assert!(text.starts_with("Settings opens so"), "{text}");
     }
 
     #[test]
@@ -1941,6 +2092,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn app_delegate_implements_settings_presentation_selectors() {
+        let delegate_class = AppDelegate::class();
+
+        assert!(
+            delegate_class.responds_to(settings_presentation_turn_selector()),
+            "AppDelegate does not implement the settings presentation turn selector {:?}",
+            settings_presentation_turn_selector()
+        );
+        assert!(
+            delegate_class.responds_to(sel!(applicationDidBecomeActive:)),
+            "AppDelegate does not implement applicationDidBecomeActive:"
+        );
+    }
+
     fn idle_snapshot() -> UiSnapshot {
         UiSnapshot::initial()
     }
@@ -2067,6 +2233,10 @@ mod tests {
 
 fn status_poll_selector() -> objc2::runtime::Sel {
     sel!(pollStatus:)
+}
+
+fn settings_presentation_turn_selector() -> objc2::runtime::Sel {
+    sel!(runSettingsPresentationTurn)
 }
 
 /// Schedules the repeating status poll on the main run loop.
