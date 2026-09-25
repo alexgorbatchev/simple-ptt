@@ -72,6 +72,8 @@ You can specify custom `keyterms` in the configuration to boost the transcriptio
 
 If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default.
 
+**Settings** groups the options into toolbar panes: **General** (record and correction shortcuts, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain with a live meter, silence pad), **Deepgram** (API key, project ID, language, keyterms, model, endpointing, utterance end), **Transformation** (transform shortcut, auto-transform, provider, API key, model), and **Prompts** (the dictation and correction prompts). **Save** writes every pane to the config file.
+
 The correction interrupt is configured separately from the record and transform hotkeys via `ui.correction_key`. This must be a single specific key such as `LeftMeta`, `RightMeta`, `LeftAlt`, or `F7`, and it must not overlap with the record or transform triggers.
 
 Transformation now has two separate prompts:

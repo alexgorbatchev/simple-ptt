@@ -1,11 +1,6 @@
-use objc2_app_kit::{NSComboBox, NSPopUpButton, NSTextField};
-
 use crate::audio::AvailableAudioInputDevices;
-use crate::config::UiMeterStyle;
 
-pub const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
 pub const SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL: &str = "System default";
-pub const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
 
 // Source: Deepgram model docs and live streaming docs.
 // - https://developers.deepgram.com/docs/model
@@ -134,120 +129,6 @@ pub fn find_mic_audio_device_option_title<'a>(
 
 pub fn environment_hint_message(variable_name: &str) -> String {
     format!("Using ${} from environment.", variable_name)
-}
-
-pub fn read_required_string(field: &NSTextField, field_name: &str) -> Result<String, String> {
-    let value = field.stringValue().to_string();
-    let trimmed_value = value.trim();
-    if trimmed_value.is_empty() {
-        return Err(format!("{} is required", field_name));
-    }
-    Ok(trimmed_value.to_owned())
-}
-
-pub fn read_optional_string(field: &NSTextField) -> Option<String> {
-    let value = field.stringValue().to_string();
-    let trimmed_value = value.trim();
-    if trimmed_value.is_empty() {
-        None
-    } else {
-        Some(trimmed_value.to_owned())
-    }
-}
-
-pub fn read_optional_pop_up_button_string(popup_button: &NSPopUpButton) -> Option<String> {
-    let selected_title = popup_button.titleOfSelectedItem()?.to_string();
-    let trimmed_value = selected_title.trim();
-    if trimmed_value.is_empty() || trimmed_value == SYSTEM_DEFAULT_FONT_LABEL {
-        None
-    } else {
-        Some(trimmed_value.to_owned())
-    }
-}
-
-pub fn read_optional_provider_pop_up_button_string(popup_button: &NSPopUpButton) -> Option<String> {
-    let selected_title = popup_button.titleOfSelectedItem()?.to_string();
-    let trimmed_value = selected_title.trim();
-    if trimmed_value.is_empty() || trimmed_value == TRANSFORMATION_PROVIDER_DISABLED_LABEL {
-        None
-    } else {
-        Some(trimmed_value.to_owned())
-    }
-}
-
-pub fn read_required_combo_box_string(
-    combo_box: &NSComboBox,
-    field_name: &str,
-) -> Result<String, String> {
-    let value = combo_box.stringValue().to_string();
-    let trimmed_value = value.trim();
-    if trimmed_value.is_empty() {
-        Err(format!("{} is required", field_name))
-    } else {
-        Ok(trimmed_value.to_owned())
-    }
-}
-
-pub fn read_required_pop_up_button_string(
-    popup_button: &NSPopUpButton,
-    field_name: &str,
-) -> Result<String, String> {
-    let selected_title = popup_button
-        .titleOfSelectedItem()
-        .ok_or_else(|| format!("{} is required", field_name))?
-        .to_string();
-    let trimmed_value = selected_title.trim();
-    if trimmed_value.is_empty() {
-        Err(format!("{} is required", field_name))
-    } else {
-        Ok(trimmed_value.to_owned())
-    }
-}
-
-pub fn read_required_f64(field: &NSTextField, field_name: &str) -> Result<f64, String> {
-    read_required_string(field, field_name)?
-        .parse::<f64>()
-        .map_err(|error| format!("{} must be a number: {}", field_name, error))
-}
-
-pub fn read_optional_f64(field: &NSTextField, field_name: &str) -> Result<Option<f64>, String> {
-    match read_optional_string(field) {
-        Some(value) => value
-            .parse::<f64>()
-            .map(Some)
-            .map_err(|error| format!("{} must be a number: {}", field_name, error)),
-        None => Ok(None),
-    }
-}
-
-pub fn read_required_u32(field: &NSTextField, field_name: &str) -> Result<u32, String> {
-    read_required_string(field, field_name)?
-        .parse::<u32>()
-        .map_err(|error| format!("{} must be an unsigned integer: {}", field_name, error))
-}
-
-pub fn read_required_u64(field: &NSTextField, field_name: &str) -> Result<u64, String> {
-    read_required_string(field, field_name)?
-        .parse::<u64>()
-        .map_err(|error| format!("{} must be an unsigned integer: {}", field_name, error))
-}
-
-pub fn read_required_u16(field: &NSTextField, field_name: &str) -> Result<u16, String> {
-    read_required_string(field, field_name)?
-        .parse::<u16>()
-        .map_err(|error| format!("{} must be an unsigned integer: {}", field_name, error))
-}
-
-pub fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
-    match raw_value.trim() {
-        "none" => Ok(UiMeterStyle::None),
-        "animated-height" => Ok(UiMeterStyle::AnimatedHeight),
-        "animated-color" => Ok(UiMeterStyle::AnimatedColor),
-        other_value => Err(format!(
-            "Meter style must be one of: animated-color, animated-height, none (got '{}')",
-            other_value
-        )),
-    }
 }
 
 #[cfg(test)]
