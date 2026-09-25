@@ -1358,9 +1358,7 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
         }
     }
 
-    if !config.mic.gain.is_finite() {
-        return Err("Gain must be a finite number".to_owned());
-    }
+    config::validate_mic_gain(config.mic.gain)?;
 
     validate_mic_config(&config.mic)?;
 
@@ -1864,6 +1862,19 @@ mod tests {
             validate_settings_config(&config).unwrap_err(),
             "record hotkey and correction key must be different"
         );
+    }
+
+    #[test]
+    fn validate_settings_rejects_mic_gain_outside_slider_range() {
+        for gain in [-0.5, 10.5, f32::NAN, f32::INFINITY] {
+            let mut config = Config::default();
+            config.mic.gain = gain;
+
+            assert_eq!(
+                validate_settings_config(&config).unwrap_err(),
+                "Gain must be between 0 and 10 dB"
+            );
+        }
     }
 
     #[test]

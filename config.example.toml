@@ -43,7 +43,7 @@ meter_style = "animated-color"
 # Recording sample rate in Hz.
 sample_rate = 16000
 
-# Input gain multiplier applied before sending audio upstream.
+# Input gain in dB (0-10) applied before sending audio upstream. 0 leaves the input unchanged.
 gain = 4.0
 
 # Press-and-hold threshold in milliseconds.

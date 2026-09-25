@@ -219,12 +219,8 @@ pub fn meter_style_title(meter_style: UiMeterStyle) -> &'static str {
         .expect("every meter style has a popup title")
 }
 
-/// Mic gain label text shown when the window loads a config.
-pub fn loaded_mic_gain_label(gain: f32) -> String {
-    format!("{:.1}", gain / 1.5)
-}
-
-/// Mic gain label text shown while the gain slider moves.
+/// Mic gain label text, shown both when the window loads a config and while
+/// the gain slider moves. `mic.gain` is in decibels.
 pub fn mic_gain_label(gain_db: f32) -> String {
     format!("{:.1} dB", gain_db)
 }
@@ -277,8 +273,8 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        loaded_mic_gain_label, mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm,
-        PromptsForm, SettingsForm, TransformationForm,
+        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, PromptsForm, SettingsForm,
+        TransformationForm,
     };
     use crate::config::{
         Config, DeepgramConfig, MicConfig, TransformationConfig, UiConfig, UiMeterStyle,
@@ -645,11 +641,11 @@ mod tests {
         assert_eq!(SettingsForm::from_config(&config).to_config(), Ok(config));
     }
 
-    // Current label semantics (#5): the loaded label divides the gain by 1.5
-    // without a unit, while slider changes show the raw gain with a dB unit.
     #[test]
-    fn mic_gain_labels_keep_current_formats() {
-        assert_eq!(loaded_mic_gain_label(4.5), "3.0");
+    fn mic_gain_label_shows_the_gain_in_db() {
+        assert_eq!(mic_gain_label(0.0), "0.0 dB");
+        assert_eq!(mic_gain_label(4.0), "4.0 dB");
         assert_eq!(mic_gain_label(4.5), "4.5 dB");
+        assert_eq!(mic_gain_label(10.0), "10.0 dB");
     }
 }
