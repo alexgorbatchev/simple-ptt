@@ -1255,10 +1255,15 @@ api_key = "test-key"
 "#;
 
         let config: Config = toml::from_str(toml_content).expect("should parse TOML");
-        let result = config.resolve_transformation_config();
-        
-        assert!(result.is_err(), "should reject galadriel provider");
-        let error = result.unwrap_err();
-        assert!(error.contains("unsupported transformation.provider 'galadriel'"));
+        let error = config
+            .resolve_transformation_config()
+            .expect_err("should reject galadriel provider");
+
+        assert_eq!(
+            error,
+            "unsupported transformation.provider 'galadriel'. Supported values: \
+             anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, \
+             moonshot, ollama, openai, openrouter, perplexity, together, xai."
+        );
     }
 }
