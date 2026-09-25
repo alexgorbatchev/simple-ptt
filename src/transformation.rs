@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rig_core::client::{CompletionClient, ProviderClient, ProviderClientError};
 use rig_core::completion::CompletionModel;
-use rig_core::message::{AssistantContent, Reasoning, ReasoningContent, Text};
+use rig_core::message::{Reasoning, ReasoningContent, Text};
 use rig_core::providers::{
     anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, moonshot,
     ollama, openai, openrouter, perplexity, together, xai,
@@ -176,8 +176,9 @@ async fn drain_stream(
 ) -> Result<String, String> {
     let mut accumulator = StreamAccumulator::default();
 
-    // Drained to the end rather than stopped at `Final`: rig fills
-    // `stream.choice` only once the inner stream is exhausted.
+    // Drained to the end rather than stopped at `Final`: rig passes provider
+    // events through in order and does not end the stream at the terminal
+    // record, so text can still follow it.
     while let Some(chunk_result) = stream.next().await {
         if state.is_abort_requested() {
             return Err("transformation aborted".to_owned());
@@ -190,10 +191,6 @@ async fn drain_stream(
         if let Some(update) = accumulator.apply(chunk) {
             apply_overlay_update(state, preview_mode, update);
         }
-    }
-
-    if let Some(update) = accumulator.apply_final_choice(&stream.choice) {
-        apply_overlay_update(state, preview_mode, update);
     }
 
     accumulator.into_final_text()
@@ -262,36 +259,6 @@ impl StreamAccumulator {
             }
             _ => None,
         }
-    }
-
-    /// Falls back to the aggregated `choice` text when the stream produced no
-    /// usable text deltas, as the rig 0.39 agent stream did.
-    ///
-    /// In rig-core 0.42 `choice` text is aggregated from the same `Text` deltas
-    /// this reducer already received, so this yields text only if a later rig
-    /// version fills `choice` some other way.
-    fn apply_final_choice(&mut self, choice: &[AssistantContent]) -> Option<OverlayUpdate> {
-        if !self.transformed_text.trim().is_empty() {
-            return None;
-        }
-
-        let choice_text: String = choice
-            .iter()
-            .filter_map(|content| match content {
-                AssistantContent::Text(text) => Some(text.text.as_str()),
-                _ => None,
-            })
-            .collect();
-        let choice_text = choice_text.trim();
-        if choice_text.is_empty() {
-            return None;
-        }
-
-        self.transformed_text = choice_text.to_owned();
-        Some(OverlayUpdate {
-            reset_with_opacity: Some(ANSWER_TEXT_OPACITY),
-            text: self.transformed_text.clone(),
-        })
     }
 
     fn into_final_text(self) -> Result<String, String> {
@@ -468,7 +435,6 @@ mod tests {
             update(None, "Hello ")
         );
         assert_eq!(accumulator.apply(final_item()), None);
-        assert_eq!(accumulator.apply_final_choice(&[]), None);
         assert_eq!(accumulator.into_final_text(), Ok("Hello".to_owned()));
     }
 
@@ -585,58 +551,23 @@ mod tests {
     }
 
     #[test]
-    fn final_text_falls_back_to_the_aggregated_choice_without_text_deltas() {
+    fn final_text_is_an_error_when_only_reasoning_arrives() {
         let mut accumulator = StreamAccumulator::default();
         accumulator.apply(reasoning_delta("X", None, "a"));
+        accumulator.apply(completed_reasoning("X", Reasoning::new("a")));
         accumulator.apply(final_item());
 
-        let choice = [
-            AssistantContent::Reasoning(Reasoning::new("a")),
-            AssistantContent::text("  from "),
-            AssistantContent::text("choice  "),
-        ];
         assert_eq!(
-            accumulator.apply_final_choice(&choice),
-            update(Some(ANSWER_TEXT_OPACITY), "from choice")
+            accumulator.into_final_text(),
+            Err("transformation completed without returning any text".to_owned())
         );
-        assert_eq!(accumulator.into_final_text(), Ok("from choice".to_owned()));
     }
 
     #[test]
-    fn final_text_falls_back_to_the_choice_when_deltas_are_only_whitespace() {
+    fn final_text_is_an_error_when_text_is_only_whitespace() {
         let mut accumulator = StreamAccumulator::default();
         accumulator.apply(StreamedAssistantContent::text(" \n"));
 
-        assert_eq!(
-            accumulator.apply_final_choice(&[AssistantContent::text("done")]),
-            update(Some(ANSWER_TEXT_OPACITY), "done")
-        );
-        assert_eq!(accumulator.into_final_text(), Ok("done".to_owned()));
-    }
-
-    #[test]
-    fn final_text_prefers_streamed_text_over_the_choice() {
-        let mut accumulator = StreamAccumulator::default();
-        accumulator.apply(StreamedAssistantContent::text("streamed"));
-
-        assert_eq!(
-            accumulator.apply_final_choice(&[AssistantContent::text("choice")]),
-            None
-        );
-        assert_eq!(accumulator.into_final_text(), Ok("streamed".to_owned()));
-    }
-
-    #[test]
-    fn final_text_is_an_error_when_neither_stream_nor_choice_has_text() {
-        let mut accumulator = StreamAccumulator::default();
-        accumulator.apply(reasoning_delta("X", None, "a"));
-        accumulator.apply(final_item());
-
-        let choice = [
-            AssistantContent::Reasoning(Reasoning::new("a")),
-            AssistantContent::text("   "),
-        ];
-        assert_eq!(accumulator.apply_final_choice(&choice), None);
         assert_eq!(
             accumulator.into_final_text(),
             Err("transformation completed without returning any text".to_owned())
@@ -645,9 +576,8 @@ mod tests {
 
     #[test]
     fn final_text_is_an_error_for_an_empty_stream() {
-        let mut accumulator = StreamAccumulator::default();
+        let accumulator = StreamAccumulator::default();
 
-        assert_eq!(accumulator.apply_final_choice(&[]), None);
         assert_eq!(
             accumulator.into_final_text(),
             Err("transformation completed without returning any text".to_owned())
