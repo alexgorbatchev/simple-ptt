@@ -542,7 +542,6 @@ fn transformation_api_key_env_vars(provider: &str) -> &'static [&'static str] {
         "anthropic" => &["ANTHROPIC_API_KEY"],
         "cohere" => &["COHERE_API_KEY"],
         "deepseek" => &["DEEPSEEK_API_KEY"],
-        "galadriel" => &["GALADRIEL_API_KEY"],
         "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         "groq" => &["GROQ_API_KEY"],
         "huggingface" => &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
@@ -565,7 +564,6 @@ pub(crate) fn supported_transformation_providers() -> &'static [&'static str] {
         "anthropic",
         "cohere",
         "deepseek",
-        "galadriel",
         "gemini",
         "groq",
         "huggingface",
@@ -1243,5 +1241,24 @@ mod tests {
                 Err("Gain must be between 0 and 10 dB".to_owned())
             );
         }
+    }
+
+    #[test]
+    fn galadriel_provider_is_rejected_as_unsupported() {
+        let toml_content = r#"
+[deepgram]
+api_key = "test-key"
+
+[transformation]
+provider = "galadriel"
+api_key = "test-key"
+"#;
+
+        let config: Config = toml::from_str(toml_content).expect("should parse TOML");
+        let result = config.resolve_transformation_config();
+        
+        assert!(result.is_err(), "should reject galadriel provider");
+        let error = result.unwrap_err();
+        assert!(error.contains("unsupported transformation.provider 'galadriel'"));
     }
 }

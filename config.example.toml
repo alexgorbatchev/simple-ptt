@@ -88,7 +88,7 @@ hotkey = "F6"
 auto = true
 
 # Supported providers:
-# anthropic, cohere, deepseek, galadriel, gemini, groq, huggingface,
+# anthropic, cohere, deepseek, gemini, groq, huggingface,
 # hyperbolic, mira, mistral, moonshot, ollama, openai, openrouter,
 # perplexity, together, xai
 # provider = "openai"

@@ -329,10 +329,6 @@ fn fetch_provider_models(request: &TransformationProviderRequest) -> Result<Vec<
             with_bearer_auth(http_client.get("https://api.deepseek.com/models"), request.resolved_api_key.as_deref())?,
             provider,
         )?,
-        "galadriel" => fetch_json_models(
-            with_bearer_auth(http_client.get("https://api.galadriel.com/v1/verified/models"), request.resolved_api_key.as_deref())?,
-            provider,
-        )?,
         "gemini" => fetch_json_models(
             with_google_api_key_query(
                 http_client.get("https://generativelanguage.googleapis.com/v1beta/models"),
