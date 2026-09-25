@@ -39,6 +39,8 @@ settings_actions! {
     TransformationProviderChanged => transformationProviderChanged,
     RefreshTransformationModels => refreshTransformationModels,
     CheckTransformationProvider => checkTransformationProvider,
+    ResetDictationPrompt => resetDictationPrompt,
+    ResetCorrectionPrompt => resetCorrectionPrompt,
     SaveSettings => applySettingsPressed,
     CancelSettings => cancelSettingsPressed,
 }

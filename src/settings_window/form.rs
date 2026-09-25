@@ -9,7 +9,8 @@
 //! config type's range remain to be checked on save.
 
 use crate::config::{
-    Config, DeepgramConfig, MicConfig, TransformationConfig, UiConfig, UiMeterStyle,
+    default_transformation_correction_system_prompt, default_transformation_system_prompt, Config,
+    DeepgramConfig, MicConfig, PromptResets, TransformationConfig, UiConfig, UiMeterStyle,
 };
 
 pub const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
@@ -83,6 +84,39 @@ pub struct TransformationForm {
 pub struct PromptsForm {
     pub system_prompt: String,
     pub correction_system_prompt: String,
+    /// Prompts reset to their default since the form was loaded; saved with
+    /// the config so `save_config` drops their keys (see `PromptResets`).
+    pub resets: PromptResets,
+}
+
+/// One of the prompt editors of the Prompts pane.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Prompt {
+    Dictation,
+    Correction,
+}
+
+impl PromptsForm {
+    pub fn text(&self, prompt: Prompt) -> &str {
+        match prompt {
+            Prompt::Dictation => &self.system_prompt,
+            Prompt::Correction => &self.correction_system_prompt,
+        }
+    }
+
+    /// Replaces the prompt with its built-in default and records the reset.
+    pub fn reset_to_default(&mut self, prompt: Prompt) {
+        match prompt {
+            Prompt::Dictation => {
+                self.system_prompt = default_transformation_system_prompt();
+                self.resets.system_prompt = true;
+            }
+            Prompt::Correction => {
+                self.correction_system_prompt = default_transformation_correction_system_prompt();
+                self.resets.correction_system_prompt = true;
+            }
+        }
+    }
 }
 
 impl SettingsForm {
@@ -136,6 +170,7 @@ impl SettingsForm {
             prompts: PromptsForm {
                 system_prompt: config.transformation.system_prompt.clone(),
                 correction_system_prompt: config.transformation.correction_system_prompt.clone(),
+                resets: PromptResets::default(),
             },
         }
     }
@@ -273,11 +308,13 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, PromptsForm, SettingsForm,
-        TransformationForm,
+        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt, PromptsForm,
+        SettingsForm, TransformationForm,
     };
     use crate::config::{
-        Config, DeepgramConfig, MicConfig, TransformationConfig, UiConfig, UiMeterStyle,
+        default_transformation_correction_system_prompt, default_transformation_system_prompt,
+        Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig, UiConfig,
+        UiMeterStyle,
     };
 
     fn customized_config() -> Config {
@@ -388,6 +425,7 @@ mod tests {
             PromptsForm {
                 system_prompt: "Dictation prompt\nwith two lines".to_owned(),
                 correction_system_prompt: "  Correction prompt keeps whitespace  ".to_owned(),
+                resets: PromptResets::default(),
             }
         );
     }
@@ -468,6 +506,75 @@ mod tests {
             config.transformation.correction_system_prompt,
             "\n  indented\n"
         );
+    }
+
+    #[test]
+    fn resetting_the_dictation_prompt_restores_its_default_and_records_the_reset() {
+        let mut form = SettingsForm::from_config(&customized_config());
+
+        form.prompts.reset_to_default(Prompt::Dictation);
+
+        assert_eq!(
+            form.prompts,
+            PromptsForm {
+                system_prompt: default_transformation_system_prompt(),
+                correction_system_prompt: "  Correction prompt keeps whitespace  ".to_owned(),
+                resets: PromptResets {
+                    system_prompt: true,
+                    correction_system_prompt: false,
+                },
+            }
+        );
+        assert_eq!(
+            form.to_config().unwrap().transformation.system_prompt,
+            default_transformation_system_prompt()
+        );
+    }
+
+    #[test]
+    fn resetting_the_correction_prompt_restores_its_default_and_records_the_reset() {
+        let mut form = SettingsForm::from_config(&customized_config());
+
+        form.prompts.reset_to_default(Prompt::Correction);
+
+        assert_eq!(
+            form.prompts,
+            PromptsForm {
+                system_prompt: "Dictation prompt\nwith two lines".to_owned(),
+                correction_system_prompt: default_transformation_correction_system_prompt(),
+                resets: PromptResets {
+                    system_prompt: false,
+                    correction_system_prompt: true,
+                },
+            }
+        );
+        assert_eq!(
+            form.prompts.text(Prompt::Correction),
+            default_transformation_correction_system_prompt()
+        );
+    }
+
+    #[test]
+    fn editing_a_prompt_after_its_reset_keeps_the_reset_and_the_edit() {
+        let mut form = SettingsForm::from_config(&customized_config());
+        form.prompts.reset_to_default(Prompt::Dictation);
+        form.prompts.system_prompt = "Edited after reset".to_owned();
+
+        assert!(form.prompts.resets.system_prompt);
+        assert_eq!(
+            form.to_config().unwrap().transformation.system_prompt,
+            "Edited after reset"
+        );
+    }
+
+    #[test]
+    fn a_loaded_form_has_no_prompt_resets() {
+        for config in [Config::default(), customized_config()] {
+            assert_eq!(
+                SettingsForm::from_config(&config).prompts.resets,
+                PromptResets::default()
+            );
+        }
     }
 
     #[test]

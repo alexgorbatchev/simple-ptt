@@ -34,6 +34,7 @@ use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
+use crate::settings_window::form::Prompt;
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR,
@@ -476,6 +477,16 @@ define_class!(
         #[unsafe(method(checkDeepgramConnection:))]
         fn check_deepgram_connection(&self, _sender: Option<&AnyObject>) {
             self.start_deepgram_connection_check();
+        }
+
+        #[unsafe(method(resetDictationPrompt:))]
+        fn reset_dictation_prompt(&self, _sender: Option<&AnyObject>) {
+            self.reset_prompt_to_default(Prompt::Dictation);
+        }
+
+        #[unsafe(method(resetCorrectionPrompt:))]
+        fn reset_correction_prompt(&self, _sender: Option<&AnyObject>) {
+            self.reset_prompt_to_default(Prompt::Correction);
         }
 
         #[unsafe(method(cancelSettingsPressed:))]
@@ -1014,6 +1025,12 @@ impl AppDelegate {
         }
     }
 
+    fn reset_prompt_to_default(&self, prompt: Prompt) {
+        if let Some(settings_window) = self.ivars().settings_window.get() {
+            settings_window.reset_prompt_to_default(prompt);
+        }
+    }
+
     fn cancel_settings(&self) {
         let Some(settings_window) = self.ivars().settings_window.get() else {
             return;
@@ -1034,8 +1051,8 @@ impl AppDelegate {
         self.ivars().hotkey_capture_controller.cancel();
         settings_window.cancel_hotkey_capture();
 
-        let proposed_config = match settings_window.read_config() {
-            Ok(config) => config,
+        let (proposed_config, prompt_resets) = match settings_window.read_config() {
+            Ok(read) => read,
             Err(error) => {
                 settings_window.set_status(&error);
                 show_modal_alert("Couldn't save settings", &error);
@@ -1050,10 +1067,21 @@ impl AppDelegate {
         }
 
         let runtime_config = config::materialize_runtime_config(&proposed_config);
-        let previous_file_config = self.ivars().config_store.current_file();
+        let config_file_snapshot =
+            match config::ConfigFileSnapshot::take(self.ivars().config_store.path()) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    settings_window.set_status(&error);
+                    show_modal_alert("Couldn't save settings", &error);
+                    return;
+                }
+            };
 
-        if let Err(error) = config::save_config(self.ivars().config_store.path(), &proposed_config)
-        {
+        if let Err(error) = config::save_config(
+            self.ivars().config_store.path(),
+            &proposed_config,
+            prompt_resets,
+        ) {
             settings_window.set_status(&error);
             show_modal_alert("Couldn't save settings", &error);
             return;
@@ -1070,10 +1098,13 @@ impl AppDelegate {
         let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
             Ok(effect) => effect,
             Err(error) => {
-                let _ = config::save_config(
-                    self.ivars().config_store.path(),
-                    &previous_file_config,
-                );
+                let error = match config_file_snapshot.restore() {
+                    Ok(()) => error,
+                    Err(restore_error) => format!(
+                        "{}; also failed to restore the previous config file, so it keeps the settings that failed to apply: {}",
+                        error, restore_error
+                    ),
+                };
                 settings_window.set_status(&error);
                 show_modal_alert("Couldn't apply audio settings", &error);
                 return;

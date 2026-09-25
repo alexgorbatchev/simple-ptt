@@ -177,6 +177,16 @@ impl Default for TransformationConfig {
     }
 }
 
+/// Prompts the user reset to their built-in default in the settings window.
+/// `save_config` removes a reset prompt's key while its value still equals the
+/// default, even when the file already had the key, so the config follows
+/// future changes to the default again.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct PromptResets {
+    pub system_prompt: bool,
+    pub correction_system_prompt: bool,
+}
+
 fn default_auto_check_updates() -> bool {
     true
 }
@@ -258,11 +268,11 @@ fn default_transformation_auto() -> bool {
     true
 }
 
-fn default_transformation_model() -> String {
+pub(crate) fn default_transformation_model() -> String {
     "gpt-5.4-mini".into()
 }
 
-fn default_transformation_system_prompt() -> String {
+pub(crate) fn default_transformation_system_prompt() -> String {
     concat!(
         "You are editing raw speech-to-text output that was dictated quickly as instructions for ",
         "an LLM agent. Rewrite the input as clean, direct written instructions while preserving ",
@@ -287,7 +297,7 @@ fn default_transformation_system_prompt() -> String {
     .into()
 }
 
-fn default_transformation_correction_system_prompt() -> String {
+pub(crate) fn default_transformation_correction_system_prompt() -> String {
     concat!(
         "You are editing an existing annotation using a spoken correction request. The user will ",
         "provide input with two labeled sections: CURRENT ANNOTATION and CORRECTION REQUEST. ",
@@ -699,6 +709,34 @@ fn set_optional_string_key(
     }
 }
 
+/// Writes a string whose built-in default can change between releases, so a
+/// config that leaves the key out follows the default. Resolution trims the
+/// value and treats a blank one as the default, so a blank value or one equal
+/// to the default after trimming is a default value. A default value removes
+/// the key, unless the file already has it (under `key` or an alias) and
+/// `reset` is false: a key the user wrote stays, while an explicit reset in
+/// the settings window hands the key back to the default.
+fn set_defaulted_string_key(
+    table: &mut Table,
+    key: &str,
+    aliases: &[&str],
+    field_value: &str,
+    default_value: &str,
+    reset: bool,
+) {
+    let trimmed_value = field_value.trim();
+    let is_default = trimmed_value.is_empty() || trimmed_value == default_value.trim();
+    let in_file = table.contains_key(key) || aliases.iter().any(|alias| table.contains_key(alias));
+    if is_default && (trimmed_value.is_empty() || reset || !in_file) {
+        table.remove(key);
+        for alias in aliases {
+            table.remove(alias);
+        }
+    } else {
+        set_required_string_key(table, key, aliases, field_value);
+    }
+}
+
 fn set_float_key(table: &mut Table, key: &str, field_value: f64) {
     table[key] = value(field_value);
 }
@@ -790,38 +828,94 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
     set_string_array_key(table, "keyterms", &deepgram.keyterms);
 }
 
-fn write_transformation_table(document: &mut DocumentMut, transformation: &TransformationConfig) {
+fn write_transformation_table(
+    document: &mut DocumentMut,
+    transformation: &TransformationConfig,
+    prompt_resets: PromptResets,
+) {
     let table = ensure_named_table(document, "transformation");
     set_required_string_key(table, "hotkey", &[], &transformation.hotkey);
     table["auto"] = value(transformation.auto);
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
-    set_required_string_key(table, "model", &[], &transformation.model);
-    if transformation.system_prompt.trim().is_empty() {
-        table.remove("system_prompt");
-    } else {
-        set_required_string_key(table, "system_prompt", &[], &transformation.system_prompt);
-    }
-    if transformation.correction_system_prompt.trim().is_empty() {
-        table.remove("correction_system_prompt");
-        table.remove("instruction_system_prompt");
-    } else {
-        set_required_string_key(
-            table,
-            "correction_system_prompt",
-            &["instruction_system_prompt"],
-            &transformation.correction_system_prompt,
-        );
-    }
+    set_defaulted_string_key(
+        table,
+        "model",
+        &[],
+        &transformation.model,
+        &default_transformation_model(),
+        false,
+    );
+    set_defaulted_string_key(
+        table,
+        "system_prompt",
+        &[],
+        &transformation.system_prompt,
+        &default_transformation_system_prompt(),
+        prompt_resets.system_prompt,
+    );
+    set_defaulted_string_key(
+        table,
+        "correction_system_prompt",
+        &["instruction_system_prompt"],
+        &transformation.correction_system_prompt,
+        &default_transformation_correction_system_prompt(),
+        prompt_resets.correction_system_prompt,
+    );
 }
 
-pub fn save_config(path: &Path, config: &Config) -> Result<(), String> {
+pub fn save_config(
+    path: &Path,
+    config: &Config,
+    prompt_resets: PromptResets,
+) -> Result<(), String> {
     let mut document = load_document(path)?;
     write_ui_table(&mut document, &config.ui);
     write_mic_table(&mut document, &config.mic);
     write_deepgram_table(&mut document, &config.deepgram);
-    write_transformation_table(&mut document, &config.transformation);
+    write_transformation_table(&mut document, &config.transformation, prompt_resets);
     write_document_atomically(path, &document.to_string())
+}
+
+/// The config file exactly as it was on disk, taken before a save so a failed
+/// apply can put the file back. Re-saving the previous `Config` instead would
+/// not restore it: the resolved `Config` no longer records which keys the file
+/// left out, so the default prompts and model would be written back.
+#[derive(Debug)]
+pub struct ConfigFileSnapshot {
+    path: PathBuf,
+    /// `None` when there was no file.
+    contents: Option<String>,
+}
+
+impl ConfigFileSnapshot {
+    pub fn take(path: &Path) -> Result<Self, String> {
+        let contents = match std::fs::read_to_string(path) {
+            Ok(contents) => Some(contents),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("failed to read {}: {}", path.display(), error)),
+        };
+        Ok(Self {
+            path: path.to_owned(),
+            contents,
+        })
+    }
+
+    /// Writes the snapshot back, or removes the file when there was none.
+    pub fn restore(&self) -> Result<(), String> {
+        match &self.contents {
+            Some(contents) => write_document_atomically(&self.path, contents),
+            None => match std::fs::remove_file(&self.path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!(
+                    "failed to remove {}: {}",
+                    self.path.display(),
+                    error
+                )),
+            },
+        }
+    }
 }
 
 pub fn materialize_runtime_config(config: &Config) -> Config {
@@ -963,7 +1057,8 @@ mod tests {
 
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
-        materialize_runtime_config, save_config, validate_mic_gain, Config, UiMeterStyle,
+        materialize_runtime_config, save_config, validate_mic_gain, Config, ConfigFileSnapshot,
+        PromptResets, UiMeterStyle,
     };
 
     fn env_lock() -> &'static Mutex<()> {
@@ -1001,7 +1096,7 @@ mod tests {
         config.ui.meter_style = UiMeterStyle::AnimatedHeight;
         config.transformation.correction_system_prompt = "Apply the spoken correction.".to_owned();
 
-        save_config(&path, &config).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
 
         assert!(updated_contents.contains("# top comment"));
@@ -1073,7 +1168,7 @@ mod tests {
         std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
-        save_config(&path, &config).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1102,7 +1197,7 @@ mod tests {
 
         let mut config = Config::default();
         config.deepgram.keyterms = vec!["macOS".to_owned(), "GitHub".to_owned()];
-        save_config(&path, &config).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1113,6 +1208,260 @@ mod tests {
         );
         let reparsed: Config = toml::from_str(&updated_contents).unwrap();
         assert_eq!(reparsed.deepgram.keyterms, config.deepgram.keyterms);
+    }
+
+    /// Saves `config` over a file holding `initial_contents` (no file when
+    /// `None`) and returns the `[transformation]` table that was written.
+    fn saved_transformation_table(
+        test_name: &str,
+        initial_contents: Option<&str>,
+        config: &Config,
+        prompt_resets: PromptResets,
+    ) -> toml_edit::Table {
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-{}-{}", test_name, std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        if let Some(initial_contents) = initial_contents {
+            std::fs::write(&path, initial_contents).unwrap();
+        }
+
+        save_config(&path, config, prompt_resets).unwrap();
+        let updated_contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        toml::from_str::<Config>(&updated_contents).unwrap();
+        updated_contents.parse::<toml_edit::DocumentMut>().unwrap()["transformation"]
+            .as_table()
+            .expect("save_config writes a [transformation] table")
+            .clone()
+    }
+
+    #[test]
+    fn save_config_leaves_default_prompts_and_model_out_of_a_new_file() {
+        let table = saved_transformation_table(
+            "defaults-new-file",
+            None,
+            &Config::default(),
+            PromptResets::default(),
+        );
+
+        for key in [
+            "model",
+            "system_prompt",
+            "correction_system_prompt",
+            "instruction_system_prompt",
+        ] {
+            assert!(!table.contains_key(key), "{key} was written:\n{table}");
+        }
+    }
+
+    #[test]
+    fn save_config_leaves_default_prompts_and_model_out_of_the_example_config() {
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+
+        let table = saved_transformation_table(
+            "defaults-example",
+            Some(EXAMPLE_CONFIG),
+            &config,
+            PromptResets::default(),
+        );
+
+        for key in ["model", "system_prompt", "correction_system_prompt"] {
+            assert!(!table.contains_key(key), "{key} was written:\n{table}");
+        }
+    }
+
+    #[test]
+    fn save_config_writes_customized_prompts_and_model() {
+        let mut config = Config::default();
+        config.transformation.model = "claude-test".to_owned();
+        config.transformation.system_prompt = "Custom dictation prompt.".to_owned();
+        config.transformation.correction_system_prompt = "Custom correction prompt.".to_owned();
+
+        let table =
+            saved_transformation_table("customized", None, &config, PromptResets::default());
+
+        assert_eq!(table["model"].as_str(), Some("claude-test"));
+        assert_eq!(
+            table["system_prompt"].as_str(),
+            Some("Custom dictation prompt.")
+        );
+        assert_eq!(
+            table["correction_system_prompt"].as_str(),
+            Some("Custom correction prompt.")
+        );
+    }
+
+    /// A key the file already has stays, even at its default value: the user
+    /// (or an earlier Save) put it there, and dropping it would silently
+    /// discard a line of their config.
+    #[test]
+    fn save_config_keeps_default_valued_keys_the_file_already_has() {
+        let initial_contents = format!(
+            "[transformation]\nmodel = {:?}\nsystem_prompt = {:?}\ninstruction_system_prompt = {:?}\n",
+            super::default_transformation_model(),
+            default_transformation_system_prompt(),
+            default_transformation_correction_system_prompt(),
+        );
+
+        let table = saved_transformation_table(
+            "defaults-present",
+            Some(&initial_contents),
+            &Config::default(),
+            PromptResets::default(),
+        );
+
+        assert_eq!(
+            table["model"].as_str(),
+            Some(super::default_transformation_model().as_str())
+        );
+        assert_eq!(
+            table["system_prompt"].as_str(),
+            Some(default_transformation_system_prompt().as_str())
+        );
+        assert_eq!(
+            table["instruction_system_prompt"].as_str(),
+            Some(default_transformation_correction_system_prompt().as_str())
+        );
+        assert!(!table.contains_key("correction_system_prompt"));
+    }
+
+    #[test]
+    fn save_config_removes_reset_prompts_the_file_already_has() {
+        let initial_contents = concat!(
+            "[transformation]\n",
+            "system_prompt = \"Old custom dictation prompt.\"\n",
+            "instruction_system_prompt = \"Old custom correction prompt.\"\n",
+        );
+
+        let table = saved_transformation_table(
+            "reset-present",
+            Some(initial_contents),
+            &Config::default(),
+            PromptResets {
+                system_prompt: true,
+                correction_system_prompt: true,
+            },
+        );
+
+        for key in [
+            "system_prompt",
+            "correction_system_prompt",
+            "instruction_system_prompt",
+        ] {
+            assert!(!table.contains_key(key), "{key} was kept:\n{table}");
+        }
+    }
+
+    /// A reset only drops the key while the editor still holds the default;
+    /// text edited after the reset is a customization and is saved.
+    #[test]
+    fn save_config_writes_prompts_edited_after_a_reset() {
+        let mut config = Config::default();
+        config.transformation.system_prompt = "Edited after reset.".to_owned();
+
+        let table = saved_transformation_table(
+            "reset-edited",
+            Some("[transformation]\nsystem_prompt = \"Old custom prompt.\"\n"),
+            &config,
+            PromptResets {
+                system_prompt: true,
+                correction_system_prompt: true,
+            },
+        );
+
+        assert_eq!(table["system_prompt"].as_str(), Some("Edited after reset."));
+        assert!(!table.contains_key("correction_system_prompt"));
+    }
+
+    /// The runtime trims prompts and treats a blank one as the default, so a
+    /// prompt that differs from the default only in surrounding whitespace is
+    /// the default.
+    #[test]
+    fn save_config_treats_whitespace_padded_default_prompt_as_default() {
+        let mut config = Config::default();
+        config.transformation.system_prompt =
+            format!("\n{}\n", default_transformation_system_prompt());
+        config.transformation.correction_system_prompt = "  ".to_owned();
+
+        let table =
+            saved_transformation_table("defaults-padded", None, &config, PromptResets::default());
+
+        assert!(!table.contains_key("system_prompt"), "{table}");
+        assert!(!table.contains_key("correction_system_prompt"), "{table}");
+    }
+
+    #[test]
+    fn save_config_removes_blank_prompts_the_file_already_has() {
+        let mut config = Config::default();
+        config.transformation.system_prompt = "".to_owned();
+        config.transformation.correction_system_prompt = " \n ".to_owned();
+
+        let table = saved_transformation_table(
+            "blank-present",
+            Some(concat!(
+                "[transformation]\n",
+                "system_prompt = \"Old custom dictation prompt.\"\n",
+                "instruction_system_prompt = \"Old custom correction prompt.\"\n",
+            )),
+            &config,
+            PromptResets::default(),
+        );
+
+        for key in [
+            "system_prompt",
+            "correction_system_prompt",
+            "instruction_system_prompt",
+        ] {
+            assert!(!table.contains_key(key), "{key} was kept:\n{table}");
+        }
+    }
+
+    /// A failed apply restores the file byte for byte, so keys the file left
+    /// out stay out instead of coming back as defaults.
+    #[test]
+    fn config_file_snapshot_restores_the_file_saved_over() {
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-snapshot-restore-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
+
+        let snapshot = ConfigFileSnapshot::take(&path).unwrap();
+        let mut config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+        config.transformation.model = "claude-test".to_owned();
+        config.transformation.system_prompt = "Custom dictation prompt.".to_owned();
+        save_config(&path, &config, PromptResets::default()).unwrap();
+        assert_ne!(std::fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
+
+        snapshot.restore().unwrap();
+        let restored_contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert_eq!(restored_contents, EXAMPLE_CONFIG);
+    }
+
+    #[test]
+    fn config_file_snapshot_of_a_missing_file_removes_the_saved_file() {
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-snapshot-missing-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+
+        let snapshot = ConfigFileSnapshot::take(&path).unwrap();
+        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        assert!(path.exists());
+
+        snapshot.restore().unwrap();
+        let file_exists = path.exists();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert!(!file_exists);
     }
 
     #[test]
@@ -1203,7 +1552,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let path = temp_dir.join("config.toml");
 
-        save_config(&path, &config).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("auto_check_updates = false"));
         std::fs::remove_dir_all(&temp_dir).unwrap();
@@ -1220,7 +1569,7 @@ mod tests {
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
 
-        save_config(&path, &config).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         assert!(updated_contents.contains("always_on = false"));
         std::fs::remove_dir_all(&temp_directory).unwrap();
