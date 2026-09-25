@@ -49,7 +49,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 
 To make sure your voice is captured the exact millisecond you press the hotkey, `simple-ptt` keeps your microphone "warm" and ready in the background. 
 
-Starting up a microphone in macOS normally takes about a quarter of a second, which would cut off the first word or two of your dictation. Keeping it warm ensures a zero-delay experience at a tiny trade-off of around 1.0% to 1.5% CPU usage when the app is idle.
+Starting up a microphone in macOS normally takes about a quarter of a second, which would cut off the first word or two of your dictation. Keeping it warm ensures a zero-delay experience at a tiny trade-off of around 1.0% to 1.5% CPU usage when the app is idle. To save that idle CPU at the cost of the startup delay, clear **Keep microphone connection open** in Settings > Microphone (`mic.always_on = false`); the microphone stream is then paused except while you record or while the Settings window is open.
 
 Additionally, the app automatically and instantly detects when you switch your default system microphone (like plugging in USB headphones or connecting AirPods) without using any heavy background polling or lagging your system.
 
@@ -72,7 +72,7 @@ You can specify custom `keyterms` in the configuration to boost the transcriptio
 
 If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default.
 
-**Settings** groups the options into toolbar panes: **General** (record and correction shortcuts, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain with a live meter, silence pad), **Deepgram** (API key, project ID, language, keyterms, model, endpointing, utterance end), **Transformation** (transform shortcut, auto-transform, provider, API key, model), and **Prompts** (the dictation and correction prompts). **Save** writes every pane to the config file.
+**Settings** groups the options into toolbar panes: **General** (record and correction shortcuts, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain with a live meter, silence pad, keep microphone connection open), **Deepgram** (API key, project ID, language, keyterms, model, endpointing, utterance end), **Transformation** (transform shortcut, auto-transform, provider, API key, model), and **Prompts** (the dictation and correction prompts). **Save** writes every pane to the config file.
 
 The correction interrupt is configured separately from the record and transform hotkeys via `ui.correction_key`. This must be a single specific key such as `LeftMeta`, `RightMeta`, `LeftAlt`, or `F7`, and it must not overlap with the record or transform triggers.
 
