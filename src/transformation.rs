@@ -427,7 +427,7 @@ mod tests {
 
         assert_eq!(
             accumulator.apply(StreamedAssistantContent::text("Hel")),
-            update(Some(ANSWER_TEXT_OPACITY), "Hel")
+            update(Some(1.0), "Hel")
         );
         assert_eq!(accumulator.apply(StreamedAssistantContent::text("")), None);
         assert_eq!(
@@ -444,7 +444,7 @@ mod tests {
 
         assert_eq!(
             accumulator.apply(reasoning_delta("X", None, "a")),
-            update(Some(THINKING_TEXT_OPACITY), "Thinking: a")
+            update(Some(0.6), "Thinking: a")
         );
         assert_eq!(accumulator.apply(reasoning_delta("X", None, "")), None);
         assert_eq!(
@@ -453,7 +453,7 @@ mod tests {
         );
         assert_eq!(
             accumulator.apply(StreamedAssistantContent::text("answer")),
-            update(Some(ANSWER_TEXT_OPACITY), "answer")
+            update(Some(1.0), "answer")
         );
         assert_eq!(accumulator.apply(reasoning_delta("X", None, "c")), None);
         assert_eq!(
@@ -527,7 +527,7 @@ mod tests {
         );
         assert_eq!(
             accumulator.apply(reasoning_delta("Z", None, "a")),
-            update(Some(THINKING_TEXT_OPACITY), "Thinking: a")
+            update(Some(0.6), "Thinking: a")
         );
     }
 
@@ -593,6 +593,7 @@ mod tests {
     #[tokio::test]
     async fn drain_stream_collects_text_that_arrives_after_final() {
         let state = AppState::new();
+        state.set_overlay_text_opacity(0.2);
         let stream = raw_stream(vec![
             Ok(RawStreamingChoice::Message("Hel".to_owned())),
             Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
@@ -606,7 +607,7 @@ mod tests {
 
         assert_eq!(result, Ok("Hello".to_owned()));
         assert_eq!(&*state.overlay_text(), "Hello");
-        assert_eq!(state.overlay_text_opacity(), ANSWER_TEXT_OPACITY);
+        assert_eq!(state.overlay_text_opacity(), 1.0);
     }
 
     #[tokio::test]
@@ -655,6 +656,8 @@ mod tests {
     #[tokio::test]
     async fn every_supported_provider_is_dispatched() {
         let state = AppState::new();
+        // `ollama` takes no API key: its client reads the environment and
+        // would open a real connection to the local server.
         for provider in crate::config::supported_transformation_providers()
             .iter()
             .filter(|provider| **provider != "ollama")
@@ -696,6 +699,7 @@ mod tests {
         }
 
         let state = AppState::new();
+        state.set_overlay_text_opacity(0.2);
         let config = TransformationRuntimeConfig {
             provider: "gemini".to_owned(),
             api_key: Some(api_key),
@@ -716,13 +720,12 @@ mod tests {
 
         assert!(!text.is_empty());
         assert_eq!(state.overlay_text().trim(), text);
-        assert_eq!(state.overlay_text_opacity(), ANSWER_TEXT_OPACITY);
+        assert_eq!(state.overlay_text_opacity(), 1.0);
     }
 
     #[test]
     fn overlay_updates_reset_the_preview_only_when_a_phase_starts() {
         let state = AppState::new();
-        state.set_overlay_text("stale");
         state.set_overlay_text_opacity(0.2);
         let assert_opacity = |expected: f64| {
             let actual = state.overlay_text_opacity();
@@ -743,7 +746,7 @@ mod tests {
             },
         );
         assert_eq!(&*state.overlay_text(), "Thinking: a");
-        assert_opacity(THINKING_TEXT_OPACITY);
+        assert_opacity(0.6);
 
         state.set_overlay_text_opacity(0.2);
         apply_overlay_update(
@@ -766,7 +769,7 @@ mod tests {
             },
         );
         assert_eq!(&*state.overlay_text(), "answer");
-        assert_opacity(ANSWER_TEXT_OPACITY);
+        assert_opacity(1.0);
     }
 
     #[tokio::test]
@@ -783,6 +786,13 @@ mod tests {
                     });
                     let _model = client.completion_model("test-model");
                 )+
+
+                let hosted_providers: Vec<&str> = crate::config::supported_transformation_providers()
+                    .iter()
+                    .copied()
+                    .filter(|provider| *provider != "ollama")
+                    .collect();
+                assert_eq!(vec![$(stringify!($provider)),+], hosted_providers);
             }};
         }
 
