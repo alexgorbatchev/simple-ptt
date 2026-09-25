@@ -9,7 +9,7 @@ const CONFIG_OVERRIDE_ENV_VAR: &str = "SIMPLE_PTT_CONFIG";
 const DEFAULT_CONFIG_FILE_NAME: &str = "config.toml";
 const XDG_APP_NAME: &str = "simple-ptt";
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
@@ -33,7 +33,7 @@ pub enum UiMeterStyle {
     AnimatedColor,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default)]
     pub start_on_login: bool,
@@ -74,7 +74,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct MicConfig {
     pub audio_device: Option<String>,
 
@@ -103,7 +103,7 @@ impl Default for MicConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct DeepgramConfig {
     #[serde(default)]
     pub keyterms: Vec<String>,
@@ -138,7 +138,7 @@ impl Default for DeepgramConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct TransformationConfig {
     #[serde(default = "default_transformation_hotkey")]
     pub hotkey: String,

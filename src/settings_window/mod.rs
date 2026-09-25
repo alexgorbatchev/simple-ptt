@@ -1,418 +1,191 @@
-pub mod actions;
-pub mod builder;
-pub mod helpers;
+//! The settings window: a toolbar-style `NSTabViewController` with one pane per
+//! settings area, above a button bar with the status text and the Cancel and
+//! Save buttons, which stay visible whichever pane is selected.
+//!
+//! Layout is Auto Layout only: each pane is an `NSGridView` form (or a stack of
+//! prompt editors), and the window's minimum content size is the fitting size
+//! of the largest pane plus the button bar. Values move between the controls
+//! and `Config` through the AppKit-free `form::SettingsForm`.
 
-pub use builder::*;
-pub use helpers::*;
+pub mod actions;
+mod controls;
+pub mod form;
+mod grid;
+pub mod helpers;
+mod panes;
+mod popups;
+
+pub use controls::{settings_font, style_button_bezel_and_text};
 
 use std::cell::RefCell;
 
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{msg_send, MainThreadOnly};
+use objc2::runtime::{AnyObject, ProtocolObject};
+use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSApplication, NSBackingStoreType, NSButton, NSColor, NSComboBox,
-    NSControlStateValueOff, NSControlStateValueOn, NSPopUpButton, NSScrollView, NSSlider,
-    NSTextField, NSTextView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSImage,
+    NSLayoutAttribute, NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow,
+    NSStackView, NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSViewController, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
-use objc2_foundation::{
-    ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString,
-};
+use objc2_foundation::{ns_string, MainThreadMarker, NSRect, NSSize, NSString};
 
-use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
 use crate::config::Config;
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
-use crate::ui_meter::UiMeterView;
 use actions::SettingsAction;
+use controls::{for_auto_layout, push_button, set_capture_button_state, status_label};
+use form::SettingsForm;
+use helpers::environment_hint_message;
+use panes::activate;
+use panes::deepgram::{DeepgramEnvironmentHints, DeepgramPane};
+use panes::general::GeneralPane;
+use panes::microphone::MicrophonePane;
+use panes::prompts::PromptsPane;
+use panes::transformation::TransformationPane;
+
+const BUTTON_BAR_MARGIN: f64 = 20.0;
+const BUTTON_BAR_SPACING: f64 = 12.0;
+const STATUS_MAXIMUM_LINES: isize = 3;
 
 #[derive(Debug)]
 pub struct SettingsWindow {
     window: Retained<NSWindow>,
-    scroll_view: Retained<NSScrollView>,
-    ui_hotkey_field: Retained<NSTextField>,
-    ui_hotkey_capture_button: Retained<NSButton>,
-    ui_correction_key_field: Retained<NSTextField>,
-    ui_correction_key_capture_button: Retained<NSButton>,
-    ui_meter_style_popup: Retained<NSPopUpButton>,
-    mic_audio_device_popup: Retained<NSPopUpButton>,
-    mic_audio_device_options: RefCell<Vec<MicAudioDeviceOption>>,
-    mic_sample_rate_field: Retained<NSTextField>,
-    mic_hold_ms_field: Retained<NSTextField>,
-    mic_gain_slider: Retained<NSSlider>,
-    mic_gain_label: Retained<NSTextField>,
-    mic_preview_meter_view: UiMeterView,
-    deepgram_api_key_field: Retained<NSTextField>,
-    deepgram_api_key_env_hint_field: Retained<NSTextField>,
-    deepgram_project_id_field: Retained<NSTextField>,
-    deepgram_project_id_env_hint_field: Retained<NSTextField>,
-    deepgram_language_field: Retained<NSTextField>,
-    deepgram_keyterms_field: Retained<NSTextField>,
-    deepgram_model_popup: Retained<NSPopUpButton>,
-    deepgram_endpointing_ms_field: Retained<NSTextField>,
-    deepgram_utterance_end_ms_field: Retained<NSTextField>,
-    transformation_hotkey_field: Retained<NSTextField>,
-    transformation_hotkey_capture_button: Retained<NSButton>,
-    transformation_auto_checkbox: Retained<NSButton>,
-    transformation_provider_popup: Retained<NSPopUpButton>,
-    transformation_api_key_field: Retained<NSTextField>,
-    transformation_api_key_env_hint_field: Retained<NSTextField>,
-    transformation_model_combo_box: Retained<NSComboBox>,
-    transformation_model_refresh_button: Retained<NSButton>,
-    transformation_model_check_button: Retained<NSButton>,
-    transformation_system_prompt_view: Retained<NSTextView>,
-    transformation_correction_system_prompt_view: Retained<NSTextView>,
-    ui_auto_check_updates_checkbox: Retained<NSButton>,
-    ui_start_on_login_checkbox: Retained<NSButton>,
-    ui_font_name_popup: Retained<NSPopUpButton>,
-    ui_font_size_field: Retained<NSTextField>,
-    ui_footer_font_size_field: Retained<NSTextField>,
-    deepgram_api_key_check_button: Retained<NSButton>,
+    tab_view_controller: Retained<NSTabViewController>,
+    general: GeneralPane,
+    microphone: MicrophonePane,
+    deepgram: DeepgramPane,
+    transformation: TransformationPane,
+    prompts: PromptsPane,
     status_text_field: Retained<NSTextField>,
-    _save_button: Retained<NSButton>,
-    _cancel_button: Retained<NSButton>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
 
 impl SettingsWindow {
     pub fn new(
         mtm: MainThreadMarker,
-        target: &objc2::runtime::AnyObject,
+        target: &AnyObject,
         delegate: &ProtocolObject<dyn NSWindowDelegate>,
     ) -> Self {
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
-                NSRect::new(
-                    NSPoint::new(0.0, 0.0),
-                    NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
-                ),
+                NSRect::ZERO,
                 NSWindowStyleMask::Titled
                     | NSWindowStyleMask::Closable
-                    | NSWindowStyleMask::Miniaturizable,
+                    | NSWindowStyleMask::Miniaturizable
+                    | NSWindowStyleMask::Resizable,
                 NSBackingStoreType::Buffered,
                 false,
             )
         };
-
         window.setTitle(ns_string!("Settings"));
-        window.center();
+        window.setToolbarStyle(NSWindowToolbarStyle::Preference);
         unsafe {
             window.setReleasedWhenClosed(false);
         }
         window.setDelegate(Some(delegate));
 
-        let main_content_view = window.contentView().unwrap();
+        let (general, general_view) = GeneralPane::new(mtm, target);
+        let (microphone, microphone_view) = MicrophonePane::new(mtm, target);
+        let (deepgram, deepgram_view) = DeepgramPane::new(mtm, target);
+        let (transformation, transformation_view) = TransformationPane::new(mtm, target);
+        let (prompts, prompts_view) = PromptsPane::new(mtm);
+        let pane_views = [
+            ("General", "gearshape", general_view),
+            ("Microphone", "mic", microphone_view),
+            ("Deepgram", "waveform", deepgram_view),
+            ("Transformation", "wand.and.stars", transformation_view),
+            ("Prompts", "text.bubble", prompts_view),
+        ];
 
-        let scroll_view = NSScrollView::initWithFrame(
-            NSScrollView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(0.0, BUTTON_BAR_Y + BUTTON_BAR_HEIGHT + 10.0),
-                NSSize::new(
-                    WINDOW_WIDTH,
-                    WINDOW_HEIGHT - (BUTTON_BAR_Y + BUTTON_BAR_HEIGHT + 10.0),
-                ),
-            ),
-        );
-        scroll_view.setHasVerticalScroller(true);
-        scroll_view.setHasHorizontalScroller(false);
-        scroll_view.setAutohidesScrollers(true);
-        scroll_view.setBorderType(objc2_app_kit::NSBorderType::NoBorder);
-        unsafe {
-            let _: () = msg_send![&scroll_view, setHorizontalScrollElasticity: 1isize];
+        let tab_view_controller = NSTabViewController::new(mtm);
+        tab_view_controller.setTabStyle(NSTabViewControllerTabStyle::Toolbar);
+        for (title, symbol_name, view) in &pane_views {
+            tab_view_controller.addTabViewItem(&pane_tab_view_item(mtm, title, symbol_name, view));
         }
 
-        let content_view = unsafe {
-            let view: Retained<SettingsScrollContentView> = msg_send![
-                SettingsScrollContentView::alloc(mtm),
-                initWithFrame: NSRect::new(
-                    NSPoint::new(0.0, 0.0),
-                    NSSize::new(WINDOW_WIDTH - 24.0, CONTENT_HEIGHT),
-                )
-            ];
-            Retained::into_super(view)
-        };
+        let status_text_field = status_label(mtm, STATUS_MAXIMUM_LINES);
+        let cancel_button = push_button(mtm, "Cancel", target, SettingsAction::CancelSettings);
+        let save_button = push_button(mtm, "Save", target, SettingsAction::SaveSettings);
+        let button_bar = button_bar(mtm, &status_text_field, &cancel_button, &save_button);
 
-        let mut current_y = CONTENT_HEIGHT - CONTENT_TOP_PADDING;
+        let root_view = NSView::new(mtm);
+        let tab_view = for_auto_layout(tab_view_controller.view());
+        let separator = for_auto_layout(NSBox::new(mtm));
+        separator.setBoxType(NSBoxType::Separator);
+        root_view.addSubview(&tab_view);
+        root_view.addSubview(&separator);
+        root_view.addSubview(&button_bar);
 
-        current_y = add_section_title(&content_view, mtm, current_y, "Hotkeys & Interface");
-        let (ui_hotkey_field, ui_hotkey_capture_button) = add_labeled_hotkey_field(
-            &content_view,
-            target,
-            mtm,
-            &mut current_y,
-            "Dictation shortcut",
-            SettingsAction::CaptureRecordHotkey,
-        );
-        let (ui_correction_key_field, ui_correction_key_capture_button) =
-            add_labeled_hotkey_field(
-                &content_view,
-                target,
-                mtm,
-                &mut current_y,
-                "Correction key",
-                SettingsAction::CaptureCorrectionKey,
-            );
-        let available_font_names = available_font_family_names(mtm);
-        let ui_font_name_popup =
-            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Overlay font");
-        populate_font_name_popup(&ui_font_name_popup, &available_font_names, None);
-
-        let ui_font_size_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Font size");
-        let ui_footer_font_size_field = add_labeled_text_field(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Footer font size",
-        );
-        let ui_meter_style_popup =
-            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Meter style");
-
-        current_y = add_section_title(&content_view, mtm, current_y, "Microphone");
-        let mic_audio_device_popup = add_labeled_pop_up_button_with_action(
-            &content_view,
-            target,
-            mtm,
-            &mut current_y,
-            "Audio device",
-            SettingsAction::MicAudioDeviceChanged,
-        );
-        let mic_sample_rate_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Sample rate");
-        let (mic_gain_label, mic_gain_slider, mic_preview_meter_view) =
-            add_labeled_slider_with_meter(
-                &content_view,
-                target,
-                mtm,
-                &mut current_y,
-                "Mic gain (dB)",
-                SettingsAction::MicGainSliderChanged,
-            );
-        let mic_hold_ms_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Silence pad (ms)");
-        let _mic_always_on_checkbox = add_checkbox(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Keep microphone connection open",
-        );
-
-        current_y = add_section_title(&content_view, mtm, current_y, "Deepgram");
-        let (deepgram_api_key_field, deepgram_api_key_check_button, deepgram_api_key_env_hint_field) =
-            add_labeled_text_field_with_hint_and_button(
-                &content_view,
-                target,
-                mtm,
-                &mut current_y,
-                "API key",
-                "Check",
-                SettingsAction::CheckDeepgramConnection,
-            );
-        let (deepgram_project_id_field, deepgram_project_id_env_hint_field) =
-            add_labeled_text_field_with_hint(
-                &content_view,
-                mtm,
-                &mut current_y,
-                "Project ID",
-            );
-        let deepgram_language_field =
-            add_labeled_text_field(&content_view, mtm, &mut current_y, "Language");
-        let (deepgram_keyterms_field, deepgram_keyterms_hint) = add_labeled_text_field_with_hint(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Keyterms",
-        );
-        set_hint_text(
-            &deepgram_keyterms_hint,
-            Some("Comma-separated (e.g. 'macOS, GitHub')".to_string()),
-        );
-        let deepgram_model_popup =
-            add_labeled_pop_up_button(&content_view, mtm, &mut current_y, "Model");
-        let deepgram_endpointing_ms_field = add_labeled_text_field(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Endpointing (ms)",
-        );
-        let deepgram_utterance_end_ms_field = add_labeled_text_field(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Utterance end (ms)",
-        );
-
-        current_y = add_section_title(&content_view, mtm, current_y, "Prompt Transformation");
-        let (transformation_hotkey_field, transformation_hotkey_capture_button) =
-            add_labeled_hotkey_field(
-                &content_view,
-                target,
-                mtm,
-                &mut current_y,
-                "Transform shortcut",
-                SettingsAction::CaptureTransformHotkey,
-            );
-        let transformation_auto_checkbox = add_checkbox_with_hint(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Auto-transform on shortcut release",
-            "When enabled, releasing the dictation shortcut runs transformation automatically.",
-        );
-        let transformation_provider_popup = add_labeled_pop_up_button_with_action(
-            &content_view,
-            target,
-            mtm,
-            &mut current_y,
-            "Provider",
-            SettingsAction::TransformationProviderChanged,
-        );
-        let (transformation_api_key_field, transformation_api_key_env_hint_field) =
-            add_labeled_text_field_with_hint(
-                &content_view,
-                mtm,
-                &mut current_y,
-                "API key",
-            );
-        let (
-            transformation_model_combo_box,
-            transformation_model_refresh_button,
-            transformation_model_check_button,
-        ) = add_labeled_combo_box_with_buttons(
-            &content_view,
-            target,
-            mtm,
-            &mut current_y,
-            "Model",
-            "Fetch models",
-            SettingsAction::RefreshTransformationModels,
-            "Check",
-            SettingsAction::CheckTransformationProvider,
-        );
-        let transformation_system_prompt_view = add_prompt_editor(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Dictation prompt",
-        );
-        let transformation_correction_system_prompt_view = add_prompt_editor(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Correction prompt",
-        );
-
-        current_y = add_section_title(&content_view, mtm, current_y, "System");
-        let ui_auto_check_updates_checkbox = add_checkbox(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Automatically check for updates",
-        );
-        let ui_start_on_login_checkbox = add_checkbox(
-            &content_view,
-            mtm,
-            &mut current_y,
-            "Start automatically on login",
-        );
-
-        scroll_view.setDocumentView(Some(&content_view));
-        main_content_view.addSubview(&scroll_view);
-
-        let status_text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
-        configure_wrapping_label(&status_text_field);
-        set_view_frame(
-            &*status_text_field,
-            HORIZONTAL_PADDING,
-            BUTTON_BAR_Y + 5.0,
-            WINDOW_WIDTH - (HORIZONTAL_PADDING * 2.0) - 180.0,
-            STATUS_HEIGHT,
-        );
-        main_content_view.addSubview(&status_text_field);
-
-        let button_width = 80.0;
-        let save_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Save"),
-                Some(target),
-                Some(SettingsAction::SaveSettings.selector()),
-                mtm,
+        // Every pane must fit whichever pane is selected, so the tab view is at
+        // least as large as the largest pane's fitting size.
+        let largest_pane_size = pane_views.iter().fold(NSSize::ZERO, |size, (_, _, view)| {
+            let fitting_size = view.fittingSize();
+            NSSize::new(
+                size.width.max(fitting_size.width),
+                size.height.max(fitting_size.height),
             )
-        };
-        save_button.setFont(Some(&settings_font()));
-        set_view_frame(
-            &*save_button,
-            WINDOW_WIDTH - HORIZONTAL_PADDING - button_width,
-            BUTTON_BAR_Y,
-            button_width,
-            BUTTON_BAR_HEIGHT,
-        );
+        });
+        activate(&[
+            tab_view
+                .topAnchor()
+                .constraintEqualToAnchor(&root_view.topAnchor()),
+            tab_view
+                .leadingAnchor()
+                .constraintEqualToAnchor(&root_view.leadingAnchor()),
+            tab_view
+                .trailingAnchor()
+                .constraintEqualToAnchor(&root_view.trailingAnchor()),
+            tab_view
+                .widthAnchor()
+                .constraintGreaterThanOrEqualToConstant(largest_pane_size.width),
+            tab_view
+                .heightAnchor()
+                .constraintGreaterThanOrEqualToConstant(largest_pane_size.height),
+            separator
+                .topAnchor()
+                .constraintEqualToAnchor(&tab_view.bottomAnchor()),
+            separator
+                .leadingAnchor()
+                .constraintEqualToAnchor(&root_view.leadingAnchor()),
+            separator
+                .trailingAnchor()
+                .constraintEqualToAnchor(&root_view.trailingAnchor()),
+            button_bar
+                .topAnchor()
+                .constraintEqualToAnchor_constant(&separator.bottomAnchor(), BUTTON_BAR_SPACING),
+            button_bar
+                .leadingAnchor()
+                .constraintEqualToAnchor_constant(&root_view.leadingAnchor(), BUTTON_BAR_MARGIN),
+            button_bar
+                .trailingAnchor()
+                .constraintEqualToAnchor_constant(&root_view.trailingAnchor(), -BUTTON_BAR_MARGIN),
+            button_bar
+                .bottomAnchor()
+                .constraintEqualToAnchor_constant(&root_view.bottomAnchor(), -BUTTON_BAR_SPACING),
+        ]);
 
-        let cancel_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Cancel"),
-                Some(target),
-                Some(SettingsAction::CancelSettings.selector()),
-                mtm,
-            )
-        };
-        cancel_button.setFont(Some(&settings_font()));
-        set_view_frame(
-            &*cancel_button,
-            WINDOW_WIDTH - HORIZONTAL_PADDING - (button_width * 2.0) - 10.0,
-            BUTTON_BAR_Y,
-            button_width,
-            BUTTON_BAR_HEIGHT,
-        );
+        let root_view_controller = NSViewController::new(mtm);
+        root_view_controller.setView(&root_view);
+        root_view_controller.addChildViewController(&tab_view_controller);
+        window.setContentViewController(Some(&root_view_controller));
 
-        main_content_view.addSubview(&save_button);
-        main_content_view.addSubview(&cancel_button);
+        let minimum_content_size = root_view.fittingSize();
+        window.setContentMinSize(minimum_content_size);
+        window.setContentSize(minimum_content_size);
+        window.center();
 
         let window_obj = Self {
             window,
-            scroll_view,
-            ui_hotkey_field,
-            ui_hotkey_capture_button,
-            ui_correction_key_field,
-            ui_correction_key_capture_button,
-            ui_meter_style_popup,
-            mic_audio_device_popup,
-            mic_audio_device_options: RefCell::new(Vec::new()),
-            mic_sample_rate_field,
-            mic_hold_ms_field,
-            mic_gain_slider,
-            mic_gain_label,
-            mic_preview_meter_view,
-            deepgram_api_key_field,
-            deepgram_api_key_env_hint_field,
-            deepgram_project_id_field,
-            deepgram_project_id_env_hint_field,
-            deepgram_language_field,
-            deepgram_keyterms_field,
-            deepgram_model_popup,
-            deepgram_endpointing_ms_field,
-            deepgram_utterance_end_ms_field,
-            transformation_hotkey_field,
-            transformation_hotkey_capture_button,
-            transformation_auto_checkbox,
-            transformation_provider_popup,
-            transformation_api_key_field,
-            transformation_api_key_env_hint_field,
-            transformation_model_combo_box,
-            transformation_model_refresh_button,
-            transformation_model_check_button,
-            transformation_system_prompt_view,
-            transformation_correction_system_prompt_view,
-            ui_auto_check_updates_checkbox,
-            ui_start_on_login_checkbox,
-            ui_font_name_popup,
-            ui_font_size_field,
-            ui_footer_font_size_field,
-            deepgram_api_key_check_button,
+            tab_view_controller,
+            general,
+            microphone,
+            deepgram,
+            transformation,
+            prompts,
             status_text_field,
-            _save_button: save_button,
-            _cancel_button: cancel_button,
             hotkey_capture_restore_value: RefCell::new(None),
         };
 
@@ -427,240 +200,99 @@ impl SettingsWindow {
     pub fn show(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
         app.activate();
+        self.tab_view_controller.setSelectedTabViewItemIndex(0);
         self.window.makeKeyAndOrderFront(None);
         self.window.orderFrontRegardless();
-        let _ = self.window.makeFirstResponder(Some(&*self.ui_hotkey_field));
-        self.scroll_to_top();
+        let _ = self
+            .window
+            .makeFirstResponder(Some(&*self.general.hotkey_field));
     }
 
     pub fn update_meter(&self, meter: Option<MicMeterSnapshot>) {
-        self.update_preview_mic_meter(meter);
+        self.microphone.update_meter(meter.unwrap_or_default());
     }
 
     pub fn hide(&self) {
         self.window.orderOut(None);
     }
 
+    /// Loads `config` into every pane, discarding any edit in progress.
     pub fn load_from_config(
         &self,
         config: &Config,
         audio_device_status_message: Option<&str>,
     ) -> Result<(), String> {
-        self.ui_auto_check_updates_checkbox
-            .setState(if config.ui.auto_check_updates {
-                NSControlStateValueOn
-            } else {
-                NSControlStateValueOff
-            });
-        self.ui_start_on_login_checkbox.setState(if config.ui.start_on_login {
-            NSControlStateValueOn
-        } else {
-            NSControlStateValueOff
-        });
-        self.ui_hotkey_field
-            .setStringValue(&NSString::from_str(&config.ui.hotkey));
-        self.ui_correction_key_field
-            .setStringValue(&NSString::from_str(&config.ui.correction_key));
+        // SAFETY: `nil` asks the window to end editing of any field.
+        unsafe { self.window.endEditingFor(None) };
 
-        let available_font_names =
-            available_font_family_names(MainThreadMarker::from(&*self.window));
-        populate_font_name_popup(
-            &self.ui_font_name_popup,
-            &available_font_names,
-            config.ui.font_name.as_deref(),
+        let form = SettingsForm::from_config(config);
+        self.general
+            .load(MainThreadMarker::from(&*self.window), &form.general);
+        self.microphone.load(&form.microphone)?;
+        self.deepgram.load(
+            &form.deepgram,
+            DeepgramEnvironmentHints {
+                api_key: config
+                    .deepgram_api_key_env_var_in_use()
+                    .map(environment_hint_message),
+                project_id: config
+                    .deepgram_project_id_env_var_in_use()
+                    .map(environment_hint_message),
+            },
         );
-
-        self.ui_font_size_field
-            .setStringValue(&NSString::from_str(&config.ui.font_size.to_string()));
-        self.ui_footer_font_size_field.setStringValue(&NSString::from_str(
-            &config
-                .ui
-                .footer_font_size
-                .map(|val| val.to_string())
-                .unwrap_or_default(),
-        ));
-        populate_meter_style_popup(&self.ui_meter_style_popup, config.ui.meter_style);
-
-        self.populate_mic_audio_device_popup(config.mic.audio_device.as_deref())?;
-        self.mic_sample_rate_field
-            .setStringValue(&NSString::from_str(&config.mic.sample_rate.to_string()));
-        self.mic_gain_slider.setDoubleValue(f64::from(config.mic.gain));
-        self.mic_gain_label
-            .setStringValue(&NSString::from_str(&format!(
-                "{:.1}",
-                config.mic.gain / 1.5
-            )));
-        self.mic_hold_ms_field
-            .setStringValue(&NSString::from_str(&config.mic.hold_ms.to_string()));
-
-        self.deepgram_api_key_field
-            .setStringValue(&NSString::from_str(
-                config.deepgram.api_key.as_deref().unwrap_or(""),
-            ));
-        set_hint_text(
-            &self.deepgram_api_key_env_hint_field,
-            config
-                .deepgram_api_key_env_var_in_use()
-                .map(environment_hint_message),
-        );
-        self.deepgram_project_id_field
-            .setStringValue(&NSString::from_str(
-                config.deepgram.project_id.as_deref().unwrap_or(""),
-            ));
-        set_hint_text(
-            &self.deepgram_project_id_env_hint_field,
-            config
-                .deepgram_project_id_env_var_in_use()
-                .map(environment_hint_message),
-        );
-        self.deepgram_language_field
-            .setStringValue(&NSString::from_str(&config.deepgram.language));
-        self.deepgram_keyterms_field
-            .setStringValue(&NSString::from_str(&config.deepgram.keyterms.join(", ")));
-        populate_deepgram_model_popup(&self.deepgram_model_popup, &config.deepgram.model);
-        self.deepgram_endpointing_ms_field
-            .setStringValue(&NSString::from_str(
-                &config.deepgram.endpointing_ms.to_string(),
-            ));
-        self.deepgram_utterance_end_ms_field
-            .setStringValue(&NSString::from_str(
-                &config.deepgram.utterance_end_ms.to_string(),
-            ));
-
-        self.transformation_hotkey_field
-            .setStringValue(&NSString::from_str(&config.transformation.hotkey));
-        self.transformation_auto_checkbox
-            .setState(if config.transformation.auto {
-                NSControlStateValueOn
-            } else {
-                NSControlStateValueOff
-            });
-        populate_transformation_provider_popup(
-            &self.transformation_provider_popup,
-            config.transformation.provider.as_deref(),
-        );
-        self.transformation_api_key_field
-            .setStringValue(&NSString::from_str(
-                config.transformation.api_key.as_deref().unwrap_or(""),
-            ));
-        set_hint_text(
-            &self.transformation_api_key_env_hint_field,
+        self.transformation.load(
+            &form.transformation,
             config
                 .transformation_api_key_env_var_in_use()
                 .map(environment_hint_message),
         );
-        populate_combo_box_with_values(
-            &self.transformation_model_combo_box,
-            &[],
-            &config.transformation.model,
-        );
-        self.set_transformation_model_controls_enabled(
-            self.transformation_provider_value().is_some(),
-        );
-        self.transformation_system_prompt_view
-            .setString(&NSString::from_str(&config.transformation.system_prompt));
-        self.transformation_correction_system_prompt_view
-            .setString(&NSString::from_str(
-                &config.transformation.correction_system_prompt,
-            ));
+        self.prompts.load(&form.prompts);
         self.set_status(audio_device_status_message.unwrap_or(""));
-        self.scroll_to_top();
         Ok(())
     }
 
+    /// Commits the edit in progress and reads every pane into a `Config`.
     pub fn read_config(&self) -> Result<Config, String> {
-        Ok(Config {
-            ui: crate::config::UiConfig {
-                start_on_login: self.ui_start_on_login_checkbox.state() == NSControlStateValueOn,
-                auto_check_updates: self.ui_auto_check_updates_checkbox.state() == NSControlStateValueOn,
-                hotkey: read_required_string(&self.ui_hotkey_field, "Record hotkey")?,
-                correction_key: read_required_string(
-                    &self.ui_correction_key_field,
-                    "Correction key",
-                )?,
-                font_name: read_optional_pop_up_button_string(&self.ui_font_name_popup),
-                font_size: read_required_f64(&self.ui_font_size_field, "Font size")?,
-                footer_font_size: read_optional_f64(
-                    &self.ui_footer_font_size_field,
-                    "Footer font size",
-                )?,
-                meter_style: parse_meter_style(&read_required_pop_up_button_string(
-                    &self.ui_meter_style_popup,
-                    "Meter style",
-                )?)?,
-            },
-            mic: crate::config::MicConfig {
-                audio_device: self.mic_audio_device_value(),
-                sample_rate: read_required_u32(&self.mic_sample_rate_field, "Sample rate")?,
-                gain: self.mic_gain_slider_value(),
-                hold_ms: read_required_u64(&self.mic_hold_ms_field, "Hold ms")?,
-                always_on: true,
-            },
-            deepgram: crate::config::DeepgramConfig {
-                api_key: read_optional_string(&self.deepgram_api_key_field),
-                project_id: read_optional_string(&self.deepgram_project_id_field),
-                language: read_required_string(&self.deepgram_language_field, "Deepgram language")?,
-                keyterms: read_optional_string(&self.deepgram_keyterms_field)
-                    .map(|s| {
-                        s.split(',')
-                            .map(|k| k.trim().to_string())
-                            .filter(|k| !k.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                model: read_required_pop_up_button_string(
-                    &self.deepgram_model_popup,
-                    "Deepgram model",
-                )?,
-                endpointing_ms: read_required_u16(
-                    &self.deepgram_endpointing_ms_field,
-                    "Endpointing ms",
-                )?,
-                utterance_end_ms: read_required_u16(
-                    &self.deepgram_utterance_end_ms_field,
-                    "Utterance end ms",
-                )?,
-            },
-            transformation: crate::config::TransformationConfig {
-                hotkey: read_required_string(
-                    &self.transformation_hotkey_field,
-                    "Transform hotkey",
-                )?,
-                auto: self.transformation_auto_checkbox.state() == NSControlStateValueOn,
-                provider: read_optional_provider_pop_up_button_string(
-                    &self.transformation_provider_popup,
-                ),
-                api_key: read_optional_string(&self.transformation_api_key_field),
-                model: read_required_combo_box_string(
-                    &self.transformation_model_combo_box,
-                    "Transformation model",
-                )?,
-                system_prompt: self.transformation_system_prompt_view.string().to_string(),
-                correction_system_prompt: self
-                    .transformation_correction_system_prompt_view
-                    .string()
-                    .to_string(),
-            },
-        })
+        // Ending editing runs the field's formatter; a field whose text the
+        // formatter rejects keeps first responder status and fails here.
+        if !self.window.makeFirstResponder(Some(&self.window)) {
+            return Err("Correct the value in the field being edited before saving.".to_owned());
+        }
+        self.read_form().to_config()
+    }
+
+    fn read_form(&self) -> SettingsForm {
+        SettingsForm {
+            general: self.general.read(),
+            microphone: self.microphone.read(),
+            deepgram: self.deepgram.read(),
+            transformation: self.transformation.read(),
+            prompts: self.prompts.read(),
+        }
     }
 
     pub fn set_status(&self, message: &str) {
         self.status_text_field
             .setStringValue(&NSString::from_str(message));
-    }
-
-    pub fn update_preview_mic_meter(&self, meter: Option<MicMeterSnapshot>) {
-        let meter = meter.unwrap_or_default();
-        self.mic_preview_meter_view.update(meter, 180.0);
+        // The label truncates after `STATUS_MAXIMUM_LINES`; the tooltip keeps
+        // the whole message readable.
+        self.status_text_field.setToolTip(
+            (!message.is_empty())
+                .then(|| NSString::from_str(message))
+                .as_deref(),
+        );
     }
 
     pub fn update_mic_gain_label(&self, gain_db: f32) {
-        self.mic_gain_label
-            .setStringValue(&NSString::from_str(&format!("{:.1} dB", gain_db)));
+        self.microphone.update_gain_label(gain_db);
     }
 
     pub fn mic_gain_slider_value(&self) -> f32 {
-        self.mic_gain_slider.doubleValue() as f32
+        self.microphone.gain_slider_value()
+    }
+
+    pub fn mic_audio_device_value(&self) -> Option<String> {
+        self.microphone.audio_device_value()
     }
 
     pub fn sync_transformation_api_key_env_hint(&self) {
@@ -669,81 +301,51 @@ impl SettingsWindow {
             self.transformation_api_key_value().as_deref(),
         )
         .map(environment_hint_message);
-        set_hint_text(&self.transformation_api_key_env_hint_field, hint);
+        self.transformation.set_api_key_env_hint(hint);
     }
 
     pub fn deepgram_api_key_value(&self) -> Option<String> {
-        read_optional_string(&self.deepgram_api_key_field)
+        self.deepgram.api_key_value()
     }
 
     pub fn deepgram_project_id_value(&self) -> Option<String> {
-        read_optional_string(&self.deepgram_project_id_field)
+        self.deepgram.project_id_value()
     }
 
     pub fn transformation_provider_value(&self) -> Option<String> {
-        read_optional_provider_pop_up_button_string(&self.transformation_provider_popup)
+        self.transformation.provider_value()
     }
 
     pub fn transformation_api_key_value(&self) -> Option<String> {
-        read_optional_string(&self.transformation_api_key_field)
+        self.transformation.api_key_value()
     }
 
     pub fn transformation_model_value(&self) -> String {
-        self.transformation_model_combo_box
-            .stringValue()
-            .to_string()
+        self.transformation.model_value()
     }
 
     pub fn populate_transformation_model_values(&self, models: &[String]) {
-        let selected_model = self.transformation_model_value();
-        populate_combo_box_with_values(
-            &self.transformation_model_combo_box,
-            models,
-            selected_model.as_str(),
-        );
+        self.transformation.populate_model_values(models);
     }
 
     pub fn set_transformation_model_controls_enabled(&self, enabled: bool) {
-        self.transformation_model_combo_box.setEnabled(enabled);
-        self.transformation_model_refresh_button.setEnabled(enabled);
-        self.transformation_model_check_button.setEnabled(enabled);
+        self.transformation.set_model_controls_enabled(enabled);
     }
 
     pub fn set_transformation_check_result(&self, success: bool) {
-        let (bezel, text) = if success {
-            (
-                Some(NSColor::systemGreenColor()),
-                Some(NSColor::whiteColor()),
-            )
-        } else {
-            (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
-        };
-        style_button_bezel_and_text(
-            &self.transformation_model_check_button,
-            "Check",
-            bezel,
-            text,
-        );
+        style_check_result(&self.transformation.model_check_button, success);
     }
 
     pub fn set_deepgram_check_result(&self, success: bool) {
-        let (bezel, text) = if success {
-            (
-                Some(NSColor::systemGreenColor()),
-                Some(NSColor::whiteColor()),
-            )
-        } else {
-            (Some(NSColor::systemRedColor()), Some(NSColor::whiteColor()))
-        };
-        style_button_bezel_and_text(&self.deepgram_api_key_check_button, "Check", bezel, text);
+        style_check_result(&self.deepgram.api_key_check_button, success);
     }
 
     pub fn reset_transformation_check_button(&self) {
-        style_button_bezel_and_text(&self.transformation_model_check_button, "Check", None, None);
+        style_button_bezel_and_text(&self.transformation.model_check_button, "Check", None, None);
     }
 
     pub fn reset_deepgram_check_button(&self) {
-        style_button_bezel_and_text(&self.deepgram_api_key_check_button, "Check", None, None);
+        style_button_bezel_and_text(&self.deepgram.api_key_check_button, "Check", None, None);
     }
 
     pub fn begin_hotkey_capture(&self, target: HotkeyCaptureTarget) {
@@ -771,112 +373,106 @@ impl SettingsWindow {
     }
 
     pub fn hotkey_value(&self, target: HotkeyCaptureTarget) -> String {
-        match target {
-            HotkeyCaptureTarget::Record => self.ui_hotkey_field.stringValue().to_string(),
-            HotkeyCaptureTarget::Correction => {
-                self.ui_correction_key_field.stringValue().to_string()
-            }
-            HotkeyCaptureTarget::Transform => {
-                self.transformation_hotkey_field.stringValue().to_string()
-            }
-        }
-    }
-
-    fn populate_mic_audio_device_popup(
-        &self,
-        configured_audio_device: Option<&str>,
-    ) -> Result<(), String> {
-        let available_audio_input_devices = available_audio_input_devices();
-        let (audio_device_options, selected_audio_device_title) = mic_audio_device_popup_state(
-            available_audio_input_devices
-                .clone()
-                .unwrap_or(AvailableAudioInputDevices {
-                    default_device_name: None,
-                    choices: Vec::new(),
-                }),
-            configured_audio_device,
-        );
-
-        self.mic_audio_device_popup.removeAllItems();
-        for option in &audio_device_options {
-            self.mic_audio_device_popup
-                .addItemWithTitle(&NSString::from_str(&option.title));
-        }
-        self.mic_audio_device_popup
-            .selectItemWithTitle(&NSString::from_str(&selected_audio_device_title));
-        self.mic_audio_device_options.replace(audio_device_options);
-
-        available_audio_input_devices.map(|_| ())
-    }
-
-    pub fn mic_audio_device_value(&self) -> Option<String> {
-        let selected_title = self
-            .mic_audio_device_popup
-            .titleOfSelectedItem()
-            .map(|selected_title| selected_title.to_string())?;
-
-        if let Some(option) = self
-            .mic_audio_device_options
-            .borrow()
-            .iter()
-            .find(|option| option.title == selected_title)
-        {
-            return option.value.clone();
-        }
-
-        let trimmed_value = selected_title.trim();
-        if trimmed_value.is_empty() {
-            None
-        } else {
-            Some(trimmed_value.to_owned())
-        }
+        self.hotkey_field(target).stringValue().to_string()
     }
 
     pub fn set_hotkey_value(&self, target: HotkeyCaptureTarget, value: &str) {
+        self.hotkey_field(target)
+            .setStringValue(&NSString::from_str(value));
+    }
+
+    fn hotkey_field(&self, target: HotkeyCaptureTarget) -> &NSTextField {
         match target {
-            HotkeyCaptureTarget::Record => {
-                self.ui_hotkey_field
-                    .setStringValue(&NSString::from_str(value));
-            }
-            HotkeyCaptureTarget::Correction => {
-                self.ui_correction_key_field
-                    .setStringValue(&NSString::from_str(value));
-            }
-            HotkeyCaptureTarget::Transform => {
-                self.transformation_hotkey_field
-                    .setStringValue(&NSString::from_str(value));
-            }
+            HotkeyCaptureTarget::Record => &self.general.hotkey_field,
+            HotkeyCaptureTarget::Correction => &self.general.correction_key_field,
+            HotkeyCaptureTarget::Transform => &self.transformation.hotkey_field,
         }
     }
 
     fn set_hotkey_capture_state(&self, active_target: Option<HotkeyCaptureTarget>) {
-        set_capture_button_state(
-            &self.ui_hotkey_capture_button,
-            active_target == Some(HotkeyCaptureTarget::Record),
-            active_target.is_none(),
-        );
-        set_capture_button_state(
-            &self.ui_correction_key_capture_button,
-            active_target == Some(HotkeyCaptureTarget::Correction),
-            active_target.is_none(),
-        );
-        set_capture_button_state(
-            &self.transformation_hotkey_capture_button,
-            active_target == Some(HotkeyCaptureTarget::Transform),
-            active_target.is_none(),
-        );
+        for (target, button) in [
+            (
+                HotkeyCaptureTarget::Record,
+                &self.general.hotkey_capture_button,
+            ),
+            (
+                HotkeyCaptureTarget::Correction,
+                &self.general.correction_key_capture_button,
+            ),
+            (
+                HotkeyCaptureTarget::Transform,
+                &self.transformation.hotkey_capture_button,
+            ),
+        ] {
+            set_capture_button_state(
+                button,
+                active_target == Some(target),
+                active_target.is_none(),
+            );
+        }
     }
+}
 
-    fn scroll_to_top(&self) {
-        let clip_view = self.scroll_view.contentView();
-        let Some(document_view) = self.scroll_view.documentView() else {
-            return;
-        };
+fn style_check_result(button: &NSButton, success: bool) {
+    let bezel = if success {
+        NSColor::systemGreenColor()
+    } else {
+        NSColor::systemRedColor()
+    };
+    style_button_bezel_and_text(button, "Check", Some(bezel), Some(NSColor::whiteColor()));
+}
 
-        let document_height = document_view.frame().size.height;
-        let visible_height = self.scroll_view.contentSize().height;
-        let top_origin_y = (document_height - visible_height).max(0.0);
-        clip_view.scrollToPoint(NSPoint::new(0.0, top_origin_y));
-        self.scroll_view.reflectScrolledClipView(&clip_view);
+fn pane_tab_view_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    symbol_name: &str,
+    view: &NSView,
+) -> Retained<NSTabViewItem> {
+    let title = NSString::from_str(title);
+    let view_controller = NSViewController::new(mtm);
+    view_controller.setView(view);
+    view_controller.setTitle(Some(&title));
+
+    let item = NSTabViewItem::tabViewItemWithViewController(&view_controller);
+    item.setLabel(&title);
+    item.setImage(
+        NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(symbol_name),
+            Some(&title),
+        )
+        .as_deref(),
+    );
+    item
+}
+
+/// Status text on the leading side and Cancel/Save on the trailing side. The
+/// bar is always tall enough for `STATUS_MAXIMUM_LINES` of status text, so a
+/// longer message does not resize the window.
+fn button_bar(
+    mtm: MainThreadMarker,
+    status_text_field: &NSTextField,
+    cancel_button: &NSButton,
+    save_button: &NSButton,
+) -> Retained<NSStackView> {
+    let bar = for_auto_layout(NSStackView::new(mtm));
+    bar.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    bar.setAlignment(NSLayoutAttribute::CenterY);
+    for view in [
+        status_text_field as &NSView,
+        cancel_button as &NSView,
+        save_button as &NSView,
+    ] {
+        bar.addArrangedSubview(view);
     }
+    status_text_field.setContentHuggingPriority_forOrientation(
+        NSLayoutPriorityDefaultLow,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+
+    let status_font = status_text_field.font().expect("labels always have a font");
+    let status_line_height = NSLayoutManager::new().defaultLineHeightForFont(&status_font);
+    bar.heightAnchor()
+        .constraintGreaterThanOrEqualToConstant(status_line_height * STATUS_MAXIMUM_LINES as f64)
+        .setActive(true);
+    bar
 }
