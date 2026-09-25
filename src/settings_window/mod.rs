@@ -45,6 +45,10 @@ use panes::microphone::MicrophonePane;
 use panes::prompts::PromptsPane;
 use panes::transformation::TransformationPane;
 
+/// Title of the button that saves every pane to the config file. Startup
+/// alerts name this button, so they build their text from this constant.
+pub const SAVE_BUTTON_TITLE: &str = "Save";
+
 const BUTTON_BAR_MARGIN: f64 = 20.0;
 const BUTTON_BAR_SPACING: f64 = 12.0;
 const STATUS_MAXIMUM_LINES: isize = 3;
@@ -108,7 +112,7 @@ impl SettingsWindow {
 
         let status_text_field = status_label(mtm, STATUS_MAXIMUM_LINES);
         let cancel_button = push_button(mtm, "Cancel", target, SettingsAction::CancelSettings);
-        let save_button = push_button(mtm, "Save", target, SettingsAction::SaveSettings);
+        let save_button = push_button(mtm, SAVE_BUTTON_TITLE, target, SettingsAction::SaveSettings);
         let button_bar = button_bar(mtm, &status_text_field, &cancel_button, &save_button);
 
         let root_view = NSView::new(mtm);
