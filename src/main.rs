@@ -9,6 +9,7 @@ mod hotkey;
 mod hotkey_binding;
 mod hotkey_capture;
 mod icon;
+mod key;
 mod overlay;
 mod permissions;
 mod permissions_dialog;

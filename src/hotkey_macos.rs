@@ -8,9 +8,9 @@ use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
     CGEventTapProxy, CGEventType,
 };
-use rdev::Key;
 
 use super::HotkeyEvent;
+use crate::key::Key;
 
 const BACKSPACE: u16 = 51;
 const CAPS_LOCK: u16 = 57;
@@ -235,8 +235,8 @@ fn event_type_mask(event_type: CGEventType) -> CGEventMask {
 fn is_modifier_key(key: Key) -> bool {
     matches!(
         key,
-        Key::Alt
-            | Key::AltGr
+        Key::AltLeft
+            | Key::AltRight
             | Key::CapsLock
             | Key::ControlLeft
             | Key::ControlRight
@@ -304,13 +304,13 @@ fn key_from_code(code: u16) -> Option<Key> {
         KEY_X => Some(Key::KeyX),
         KEY_Y => Some(Key::KeyY),
         KEY_Z => Some(Key::KeyZ),
-        FORWARD_DELETE => Some(Key::Delete),
+        FORWARD_DELETE => Some(Key::ForwardDelete),
         HOME => Some(Key::Home),
         LEFT_ARROW => Some(Key::LeftArrow),
         META_LEFT => Some(Key::MetaLeft),
         META_RIGHT => Some(Key::MetaRight),
-        OPTION_LEFT => Some(Key::Alt),
-        OPTION_RIGHT => Some(Key::AltGr),
+        OPTION_LEFT => Some(Key::AltLeft),
+        OPTION_RIGHT => Some(Key::AltRight),
         PAGE_DOWN => Some(Key::PageDown),
         PAGE_UP => Some(Key::PageUp),
         RETURN => Some(Key::Return),
@@ -326,13 +326,53 @@ fn key_from_code(code: u16) -> Option<Key> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::key_from_code;
-    use rdev::Key;
+    use crate::hotkey_binding::{
+        format_hotkey_binding, parse_hotkey_binding, HotkeyBinding, HotkeyModifiers,
+    };
+    use crate::key::Key;
+
+    fn reported_keys() -> HashSet<Key> {
+        (0..=u16::MAX).filter_map(key_from_code).collect()
+    }
 
     #[test]
     fn maps_supported_navigation_and_modifier_keycodes() {
         assert_eq!(key_from_code(62), Some(Key::ControlRight));
-        assert_eq!(key_from_code(117), Some(Key::Delete));
+        assert_eq!(key_from_code(117), Some(Key::ForwardDelete));
         assert_eq!(key_from_code(121), Some(Key::PageDown));
+    }
+
+    #[test]
+    fn every_key_variant_is_reported_by_a_keycode() {
+        let reported = reported_keys();
+        let unreported = Key::ALL
+            .iter()
+            .copied()
+            .filter(|key| !reported.contains(key))
+            .collect::<Vec<_>>();
+        assert!(
+            unreported.is_empty(),
+            "Key variants the event tap can never report: {unreported:?}"
+        );
+    }
+
+    #[test]
+    fn every_reported_key_round_trips_through_binding_strings() {
+        for key in reported_keys() {
+            let binding = HotkeyBinding {
+                modifiers: HotkeyModifiers::default(),
+                key,
+            };
+            let formatted = format_hotkey_binding(binding)
+                .unwrap_or_else(|| panic!("{key:?} has no binding string"));
+            assert_eq!(
+                parse_hotkey_binding(&formatted),
+                Ok(binding),
+                "{key:?} formatted as {formatted:?} did not parse back"
+            );
+        }
     }
 }

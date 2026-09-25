@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use rdev::Key;
+use crate::key::Key;
 
 use crate::hotkey_binding::{
     format_hotkey_binding, is_modifier_key, key_name, HotkeyBinding, HotkeyModifiers,
@@ -215,7 +215,7 @@ impl HotkeyCaptureController {
 fn format_capture_preview(modifiers: HotkeyModifiers, single_modifier_key: Option<Key>) -> String {
     if let Some(key) = single_modifier_key {
         if modifiers == HotkeyModifiers::default().with_key_pressed(key) {
-            return key_name(key).unwrap_or_default().to_owned();
+            return key_name(key).to_owned();
         }
     }
 
@@ -259,7 +259,7 @@ mod tests {
         HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview, HotkeyCaptureTarget,
     };
     use crate::hotkey_binding::{HotkeyBinding, HotkeyModifiers};
-    use rdev::Key;
+    use crate::key::Key;
 
     #[test]
     fn capture_consumes_modifier_chords() {

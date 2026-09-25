@@ -1369,7 +1369,7 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_correction_key(raw: &str) -> Result<rdev::Key, String> {
+fn parse_correction_key(raw: &str) -> Result<crate::key::Key, String> {
     parse_key(raw.trim()).ok_or_else(|| {
         "correction key must be a single supported key such as LeftMeta, RightMeta, LeftAlt, or F7"
             .to_owned()
@@ -1406,16 +1406,16 @@ fn correction_key_hint_label(raw: &str) -> String {
     }
 }
 
-fn hotkey_uses_key(binding: crate::hotkey_binding::HotkeyBinding, key: rdev::Key) -> bool {
+fn hotkey_uses_key(binding: crate::hotkey_binding::HotkeyBinding, key: crate::key::Key) -> bool {
     if binding.key == key {
         return true;
     }
 
     match key {
-        rdev::Key::ShiftLeft | rdev::Key::ShiftRight => binding.modifiers.shift,
-        rdev::Key::ControlLeft | rdev::Key::ControlRight => binding.modifiers.control,
-        rdev::Key::Alt | rdev::Key::AltGr => binding.modifiers.alt,
-        rdev::Key::MetaLeft | rdev::Key::MetaRight => binding.modifiers.meta,
+        crate::key::Key::ShiftLeft | crate::key::Key::ShiftRight => binding.modifiers.shift,
+        crate::key::Key::ControlLeft | crate::key::Key::ControlRight => binding.modifiers.control,
+        crate::key::Key::AltLeft | crate::key::Key::AltRight => binding.modifiers.alt,
+        crate::key::Key::MetaLeft | crate::key::Key::MetaRight => binding.modifiers.meta,
         _ => false,
     }
 }
