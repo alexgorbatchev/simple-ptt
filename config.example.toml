@@ -98,7 +98,8 @@ auto = true
 # for example OPENAI_API_KEY for "openai" or GEMINI_API_KEY for "gemini".
 # api_key = "YOUR_LLM_API_KEY"
 
-# Model name for the selected provider.
+# Model name for the selected provider. Omit to use the built-in default,
+# gpt-5.4-mini, which is an OpenAI model; set it for any other provider.
 # model = "gpt-5.4-mini"
 
 # Optional override. Omit to use the built-in dictation cleanup prompt.

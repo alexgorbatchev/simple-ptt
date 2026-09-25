@@ -31,12 +31,12 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSRect, NSSize, NSString};
 
-use crate::config::Config;
+use crate::config::{Config, PromptResets};
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
 use actions::SettingsAction;
 use controls::{for_auto_layout, push_button, set_capture_button_state, status_label};
-use form::SettingsForm;
+use form::{Prompt, SettingsForm};
 use helpers::environment_hint_message;
 use panes::activate;
 use panes::deepgram::{DeepgramEnvironmentHints, DeepgramPane};
@@ -95,7 +95,7 @@ impl SettingsWindow {
         let (microphone, microphone_view) = MicrophonePane::new(mtm, target);
         let (deepgram, deepgram_view) = DeepgramPane::new(mtm, target);
         let (transformation, transformation_view) = TransformationPane::new(mtm, target);
-        let (prompts, prompts_view) = PromptsPane::new(mtm);
+        let (prompts, prompts_view) = PromptsPane::new(mtm, target);
         let pane_views = [
             ("General", "gearshape", general_view),
             ("Microphone", "mic", microphone_view),
@@ -255,14 +255,22 @@ impl SettingsWindow {
         Ok(())
     }
 
-    /// Commits the edit in progress and reads every pane into a `Config`.
-    pub fn read_config(&self) -> Result<Config, String> {
+    /// Commits the edit in progress and reads every pane into a `Config`,
+    /// together with the prompts reset to their default since the window
+    /// loaded, which `config::save_config` needs to drop their keys.
+    pub fn read_config(&self) -> Result<(Config, PromptResets), String> {
         // Ending editing runs the field's formatter; a field whose text the
         // formatter rejects keeps first responder status and fails here.
         if !self.window.makeFirstResponder(Some(&self.window)) {
             return Err("Correct the value in the field being edited before saving.".to_owned());
         }
-        self.read_form().to_config()
+        let form = self.read_form();
+        Ok((form.to_config()?, form.prompts.resets))
+    }
+
+    /// Puts the built-in default text in `prompt`'s editor.
+    pub fn reset_prompt_to_default(&self, prompt: Prompt) {
+        self.prompts.reset_to_default(prompt);
     }
 
     fn read_form(&self) -> SettingsForm {
