@@ -133,6 +133,11 @@ pub fn config_with_preferred_rate(
         .find_map(|config| config.try_with_sample_rate(preferred_sample_rate))
 }
 
+/// Amplitude multiplier for `mic.gain`, which is in decibels.
+fn db_to_linear_gain(gain_db: f32) -> f32 {
+    10.0f32.powf(gain_db / 20.0)
+}
+
 fn build_stream_for_format<T>(
     device: &cpal::Device,
     config: &SupportedStreamConfig,
@@ -182,11 +187,11 @@ where
                 }
 
                 let current_mic_config = config_store.current().mic;
-                let gain_linear = if let Some(preview_gain) = meter_state.preview_mic_gain() {
-                    10.0f32.powf(preview_gain / 20.0)
-                } else {
-                    10.0f32.powf(current_mic_config.gain / 20.0)
-                };
+                let gain_linear = db_to_linear_gain(
+                    meter_state
+                        .preview_mic_gain()
+                        .unwrap_or(current_mic_config.gain),
+                );
 
                 let (pcm_chunk, clipped_count, level_db, peak_db) =
                     encode_pcm_mono(data, channels, gain_linear);
@@ -279,4 +284,16 @@ where
         .map_err(|error| format!("failed to start validation audio stream: {}", error))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::db_to_linear_gain;
+
+    #[test]
+    fn db_to_linear_gain_converts_decibels_to_an_amplitude_multiplier() {
+        assert_eq!(db_to_linear_gain(0.0), 1.0);
+        assert!((db_to_linear_gain(20.0) - 10.0).abs() < 1e-5);
+        assert!((db_to_linear_gain(6.0) - 1.995_262).abs() < 1e-5);
+    }
 }
