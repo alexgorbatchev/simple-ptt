@@ -48,12 +48,15 @@ pub async fn transform_text(
     }
 
     macro_rules! stream_with_client {
-        ($client:expr) => {{
+        ($client:expr) => {
+            stream_with_client!($client, None)
+        };
+        ($client:expr, $additional_params:expr) => {{
             let model = $client.completion_model(config.model.as_str());
             stream_completion_response(
                 model,
                 &config.system_prompt,
-                None,
+                $additional_params,
                 input_text,
                 Arc::clone(&state),
                 preview_mode,
@@ -74,26 +77,16 @@ pub async fn transform_text(
             stream_with_client!(deepseek::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "gemini" => {
-            let client =
-                gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?;
-            let model = client.completion_model(config.model.as_str());
-            stream_completion_response(
-                model,
-                &config.system_prompt,
-                Some(serde_json::json!({
-                    "generationConfig": {
-                        "thinkingConfig": {
-                            "thinkingBudget": 0
-                        }
+        "gemini" => stream_with_client!(
+            gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?,
+            Some(serde_json::json!({
+                "generationConfig": {
+                    "thinkingConfig": {
+                        "thinkingBudget": 0
                     }
-                })),
-                input_text,
-                Arc::clone(&state),
-                preview_mode,
-            )
-            .await
-        }
+                }
+            }))
+        ),
         "groq" => stream_with_client!(
             groq::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
         ),
