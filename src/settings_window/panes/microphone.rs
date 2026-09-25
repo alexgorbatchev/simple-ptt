@@ -13,9 +13,9 @@ use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
 use crate::config::UiMeterStyle;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    checkbox, fixed_width, for_auto_layout, minimum_width, number_field, pop_up_button_with_action,
-    set_text_value, set_unsigned_value, slider, unsigned_value, NumberFieldKind,
-    NUMBER_FIELD_WIDTH,
+    checkbox, fixed_width, for_auto_layout, is_checked, minimum_width, number_field,
+    pop_up_button_with_action, set_checked, set_text_value, set_unsigned_value, slider,
+    unsigned_value, NumberFieldKind, NUMBER_FIELD_WIDTH,
 };
 use crate::settings_window::form::{loaded_mic_gain_label, mic_gain_label, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
@@ -31,6 +31,7 @@ const METER_WIDTH: f64 = 180.0;
 /// Widest text the gain label shows, which sets its width so the row does not
 /// shift while the slider moves.
 const WIDEST_GAIN_LABEL: &str = "10.0 dB";
+const ALWAYS_ON_HINT: &str = "Prevents delay at the cost of 1-1.5% CPU.";
 
 #[derive(Debug)]
 pub struct MicrophonePane {
@@ -41,8 +42,7 @@ pub struct MicrophonePane {
     gain_label: Retained<NSTextField>,
     meter_view: UiMeterView,
     hold_ms_field: Retained<NSTextField>,
-    // Shown but neither loaded nor read (#4).
-    _always_on_checkbox: Retained<NSButton>,
+    always_on_checkbox: Retained<NSButton>,
 }
 
 impl MicrophonePane {
@@ -116,6 +116,7 @@ impl MicrophonePane {
             &[],
         );
         grid.add_detail_row(&always_on_checkbox, ControlWidth::Intrinsic);
+        grid.add_hint_row(Some(ALWAYS_ON_HINT));
 
         let pane = Self {
             audio_device_popup,
@@ -125,7 +126,7 @@ impl MicrophonePane {
             gain_label,
             meter_view,
             hold_ms_field,
-            _always_on_checkbox: always_on_checkbox,
+            always_on_checkbox,
         };
         let view = pane_view(mtm, grid.view(), PaneContentHeight::Fitting);
         (pane, view)
@@ -140,6 +141,7 @@ impl MicrophonePane {
         self.gain_slider.setDoubleValue(f64::from(form.gain));
         set_text_value(&self.gain_label, &loaded_mic_gain_label(form.gain));
         set_unsigned_value(&self.hold_ms_field, form.hold_ms);
+        set_checked(&self.always_on_checkbox, form.always_on);
         Ok(())
     }
 
@@ -149,6 +151,7 @@ impl MicrophonePane {
             sample_rate: unsigned_value(&self.sample_rate_field),
             gain: self.gain_slider_value(),
             hold_ms: unsigned_value(&self.hold_ms_field),
+            always_on: is_checked(&self.always_on_checkbox),
         }
     }
 

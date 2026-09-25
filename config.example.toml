@@ -50,6 +50,11 @@ gain = 4.0
 # Shorter presses behave like toggle; longer presses behave like hold-to-talk.
 hold_ms = 300
 
+# Keep the microphone stream running while idle, so recording starts without the
+# roughly quarter-second macOS microphone startup delay, at the cost of about
+# 1-1.5% CPU. Set to false to pause the stream while idle.
+always_on = true
+
 [deepgram]
 # Required unless DEEPGRAM_API_KEY is set in the environment.
 api_key = "YOUR_DEEPGRAM_API_KEY"

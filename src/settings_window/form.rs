@@ -53,6 +53,7 @@ pub struct MicrophoneForm {
     pub sample_rate: Option<u64>,
     pub gain: f32,
     pub hold_ms: Option<u64>,
+    pub always_on: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +109,7 @@ impl SettingsForm {
                 sample_rate: Some(u64::from(config.mic.sample_rate)),
                 gain: config.mic.gain,
                 hold_ms: Some(config.mic.hold_ms),
+                always_on: config.mic.always_on,
             },
             deepgram: DeepgramForm {
                 api_key: config.deepgram.api_key.clone().unwrap_or_default(),
@@ -166,9 +168,7 @@ impl SettingsForm {
                 sample_rate: required_integer(microphone.sample_rate, "Sample rate")?,
                 gain: microphone.gain,
                 hold_ms: required_integer(microphone.hold_ms, "Hold ms")?,
-                // The window does not load or read its always-on checkbox yet
-                // (#4), so saving always writes `true`.
-                always_on: true,
+                always_on: microphone.always_on,
             },
             deepgram: DeepgramConfig {
                 api_key: optional_text(&deepgram.api_key),
@@ -301,7 +301,7 @@ mod tests {
                 sample_rate: 48000,
                 gain: 2.25,
                 hold_ms: 750,
-                always_on: true,
+                always_on: false,
             },
             deepgram: DeepgramConfig {
                 keyterms: vec!["macOS".to_owned(), "GitHub".to_owned()],
@@ -362,6 +362,7 @@ mod tests {
                 sample_rate: Some(48000),
                 gain: 2.25,
                 hold_ms: Some(750),
+                always_on: false,
             }
         );
         assert_eq!(
@@ -628,20 +629,20 @@ mod tests {
         }
     }
 
-    // The window has no working control for `mic.always_on` yet (#4): the
-    // checkbox is neither loaded nor read, and saving writes `true`.
     #[test]
-    fn saving_writes_always_on_true_regardless_of_loaded_value() {
-        let mut config = customized_config();
+    fn mic_always_on_false_round_trips_through_form() {
+        let mut config = Config::default();
         config.mic.always_on = false;
 
-        assert!(
-            SettingsForm::from_config(&config)
-                .to_config()
-                .unwrap()
-                .mic
-                .always_on
-        );
+        assert_eq!(SettingsForm::from_config(&config).to_config(), Ok(config));
+    }
+
+    #[test]
+    fn mic_always_on_true_round_trips_through_form() {
+        let mut config = Config::default();
+        config.mic.always_on = true;
+
+        assert_eq!(SettingsForm::from_config(&config).to_config(), Ok(config));
     }
 
     // Current label semantics (#5): the loaded label divides the gain by 1.5
