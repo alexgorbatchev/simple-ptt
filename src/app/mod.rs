@@ -34,7 +34,7 @@ use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
-use crate::settings_window::SettingsWindow;
+use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR,
     STATE_IDLE, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
@@ -259,15 +259,7 @@ define_class!(
             if !deepgram_api_key_missing && config_file_missing {
                 show_modal_alert(
                     "simple-ptt didn't find a config.toml yet",
-                    &format!(
-                        concat!(
-                            "Settings opened so you can create one on first launch.\n",
-                            "Review the defaults, then click Save and Apply to write:\n\n",
-                            "{}\n\n",
-                            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
-                        ),
-                        self.ivars().config_store.path().display()
-                    ),
+                    &missing_config_alert_text(self.ivars().config_store.path()),
                 );
             }
 
@@ -277,14 +269,7 @@ define_class!(
                 }
                 show_modal_alert(
                     "simple-ptt couldn't start audio input",
-                    &format!(
-                        concat!(
-                            "The app launched so you can fix the microphone settings, but audio capture is currently unavailable.\n\n",
-                            "Open Settings, choose a valid input device, and click Save and Apply.\n\n",
-                            "Error: {}"
-                        ),
-                        audio_error
-                    ),
+                    &audio_startup_failure_alert_text(audio_error),
                 );
             }
 
@@ -1288,6 +1273,35 @@ fn config_file_is_missing(path: &Path) -> bool {
     )
 }
 
+// The alert texts name the settings Save button through `SAVE_BUTTON_TITLE`.
+// `concat!` accepts only literals, and `format!` cannot implicitly capture
+// `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
+// title is passed as an explicit named argument.
+fn missing_config_alert_text(config_path: &Path) -> String {
+    format!(
+        concat!(
+            "Settings opened so you can create one on first launch.\n",
+            "Review the defaults, then click {save_button} to write:\n\n",
+            "{config_path}\n\n",
+            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
+        ),
+        save_button = SAVE_BUTTON_TITLE,
+        config_path = config_path.display(),
+    )
+}
+
+fn audio_startup_failure_alert_text(audio_error: &str) -> String {
+    format!(
+        concat!(
+            "The app launched so you can fix the microphone settings, but audio capture is currently unavailable.\n\n",
+            "Open Settings, choose a valid input device, and click {save_button}.\n\n",
+            "Error: {audio_error}"
+        ),
+        save_button = SAVE_BUTTON_TITLE,
+        audio_error = audio_error,
+    )
+}
+
 pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     let overlay_font_size = if config.ui.font_size.is_finite() && config.ui.font_size > 0.0 {
         config.ui.font_size
@@ -1745,13 +1759,47 @@ mod tests {
     use objc2::ClassType;
 
     use super::{
-        billing_menu_text, config_file_is_missing, overlay_style_from_config, status_poll_selector,
+        audio_startup_failure_alert_text, billing_menu_text, config_file_is_missing,
+        missing_config_alert_text, overlay_style_from_config, status_poll_selector,
         validate_settings_config, AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
     use crate::config::Config;
     use crate::settings_window::actions::SettingsAction;
+    use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{MicMeterSnapshot, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING};
+
+    #[test]
+    fn missing_config_alert_names_the_save_button_as_titled() {
+        let text = missing_config_alert_text(std::path::Path::new("/tmp/config.toml"));
+
+        assert!(
+            text.contains(&format!("click {SAVE_BUTTON_TITLE}")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("click {SAVE_BUTTON_TITLE} to write:")),
+            "{text}"
+        );
+        assert!(!text.contains("Save and Apply"), "{text}");
+        assert!(text.contains("/tmp/config.toml"), "{text}");
+    }
+
+    #[test]
+    fn audio_startup_failure_alert_names_the_save_button_as_titled() {
+        let text = audio_startup_failure_alert_text("no input device");
+
+        assert!(
+            text.contains(&format!("click {SAVE_BUTTON_TITLE}")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("click {SAVE_BUTTON_TITLE}.")),
+            "{text}"
+        );
+        assert!(!text.contains("Save and Apply"), "{text}");
+        assert!(text.ends_with("Error: no input device"), "{text}");
+    }
 
     #[test]
     fn config_file_is_missing_only_reports_not_found_paths() {
