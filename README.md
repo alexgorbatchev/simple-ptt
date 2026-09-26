@@ -92,7 +92,7 @@ api_key = "YOUR_DEEPGRAM_API_KEY"
 
 ## Development
 
-For the checked-in development config in this repository:
+For the repo-local development config (`./config.toml`, gitignored; `just run` creates it from `config.example.toml` when it is missing):
 
 ```bash
 just run

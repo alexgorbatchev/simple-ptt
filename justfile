@@ -1,6 +1,7 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 run:
+    if [ ! -f config.toml ]; then cp config.example.toml config.toml && echo "Created config.toml from config.example.toml"; fi
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-config config_path="config.toml":

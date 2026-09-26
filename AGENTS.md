@@ -7,7 +7,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Build (release): `cargo build --locked --release`
 - Test: `cargo test --locked`
 - Build sanity/typecheck: `cargo check --message-format=short`
-- Run with the repo-local dev config: `just run`
+- Run with the repo-local dev config: `just run` (creates the gitignored `./config.toml` from `config.example.toml` when it is missing)
 - Run with an explicit config file: `just run-config path/to/config.toml`
 - Run with normal XDG/home config lookup: `just run-xdg`
 - List audio input devices from an installed app bundle: `just list-devices`
