@@ -24,10 +24,10 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSImage, NSLayoutAttribute,
-    NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow, NSStackView,
-    NSTabViewController, NSTabViewControllerTabStyle, NSTabViewItem, NSTextField,
-    NSUserInterfaceLayoutOrientation, NSView, NSViewController, NSWindow, NSWindowDelegate,
-    NSWindowStyleMask, NSWindowToolbarStyle,
+    NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultHigh,
+    NSLayoutPriorityDefaultLow, NSStackView, NSStackViewDistribution, NSTabViewController,
+    NSTabViewControllerTabStyle, NSTabViewItem, NSTextField, NSUserInterfaceLayoutOrientation,
+    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSRect, NSSize, NSString};
 
@@ -464,8 +464,10 @@ fn pane_tab_view_item(
 }
 
 /// Status text on the leading side and Cancel/Save on the trailing side. The
-/// bar is always tall enough for `STATUS_MAXIMUM_LINES` of status text, so a
-/// longer message does not resize the window.
+/// bar fills its width, the buttons hug their titles, and the status takes the
+/// rest, so Cancel and Save stay at the trailing edge whatever the status says,
+/// including nothing. The bar is always tall enough for `STATUS_MAXIMUM_LINES`
+/// of status text, so a longer message does not resize the window.
 fn button_bar(
     mtm: MainThreadMarker,
     status_text_field: &NSTextField,
@@ -475,12 +477,19 @@ fn button_bar(
     let bar = for_auto_layout(NSStackView::new(mtm));
     bar.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
     bar.setAlignment(NSLayoutAttribute::CenterY);
+    bar.setDistribution(NSStackViewDistribution::Fill);
     for view in [
         status_text_field as &NSView,
         cancel_button as &NSView,
         save_button as &NSView,
     ] {
         bar.addArrangedSubview(view);
+    }
+    for button in [cancel_button, save_button] {
+        button.setContentHuggingPriority_forOrientation(
+            NSLayoutPriorityDefaultHigh,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
     }
     status_text_field.setContentHuggingPriority_forOrientation(
         NSLayoutPriorityDefaultLow,
