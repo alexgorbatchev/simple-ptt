@@ -41,7 +41,9 @@ use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
 use crate::settings_window::form::Prompt;
-use crate::settings_window::helpers::settings_load_status;
+use crate::settings_window::helpers::{
+    manual_model_fetch_message, settings_load_status, unreadable_model_cache_message,
+};
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
@@ -49,8 +51,8 @@ use crate::state::{
     STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation_models::{
-    TransformationModelAction, TransformationModelUpdate, TransformationModelsController,
-    TransformationProviderRequest,
+    api_key_belongs_to_provider, ModelListPlan, ModelListTrigger, TransformationModelAction,
+    TransformationModelUpdate, TransformationModelsController, TransformationProviderRequest,
 };
 
 const APP_DISPLAY_NAME: &str = "simple-ptt";
@@ -503,7 +505,7 @@ define_class!(
 
         #[unsafe(method(transformationProviderChanged:))]
         fn transformation_provider_changed(&self, _sender: Option<&AnyObject>) {
-            self.sync_transformation_provider_ui();
+            self.sync_transformation_provider_ui(ModelListTrigger::ProviderChanged);
         }
 
         #[unsafe(method(refreshTransformationModels:))]
@@ -837,7 +839,8 @@ impl AppDelegate {
 
         let current_file_config = self.ivars().config_store.current_file();
         let load_problems = settings_window.load_from_config(&current_file_config);
-        let transformation_status = self.sync_transformation_provider_controls();
+        let transformation_status =
+            self.sync_transformation_provider_controls(ModelListTrigger::Resync);
         settings_window.set_status(&settings_load_status(
             status_message,
             &load_problems,
@@ -1002,20 +1005,21 @@ impl AppDelegate {
         ))
     }
 
-    fn sync_transformation_provider_ui(&self) {
+    fn sync_transformation_provider_ui(&self, trigger: ModelListTrigger) {
         let Some(settings_window) = self.ivars().settings_window.get() else {
             return;
         };
-        if let Some(message) = self.sync_transformation_provider_controls() {
+        if let Some(message) = self.sync_transformation_provider_controls(trigger) {
             settings_window.set_status(&message);
         }
     }
 
     /// Syncs the transformation controls with the selected provider and
     /// returns the status message for the result, or `None` to leave the
-    /// status unchanged.
+    /// status unchanged. After a provider change, a provider with no cached
+    /// models has them fetched (see `plan_model_list`).
     #[must_use = "the transformation status must be shown in the status area"]
-    fn sync_transformation_provider_controls(&self) -> Option<String> {
+    fn sync_transformation_provider_controls(&self, trigger: ModelListTrigger) -> Option<String> {
         let settings_window = self.ivars().settings_window.get()?;
 
         settings_window.sync_transformation_api_key_env_hint();
@@ -1027,21 +1031,39 @@ impl AppDelegate {
         }
 
         let request = self.current_transformation_provider_request().ok()?;
-        match self
+        let saved = self.ivars().config_store.current_file().transformation;
+        let api_key_belongs = api_key_belongs_to_provider(
+            &request,
+            settings_window.transformation_api_key_value().as_deref(),
+            saved.provider.as_deref(),
+            saved.api_key.as_deref(),
+        );
+        let plan = self
             .ivars()
             .transformation_models_controller
-            .load_cached_models_now(request)
-        {
-            TransformationModelUpdate::CachedModelsLoaded {
-                models, message, ..
-            } => {
-                settings_window.populate_transformation_model_values(&models);
-                Some(message)
+            .plan_model_list(trigger, &request, api_key_belongs);
+        // Without cached models the list is emptied, so it does not keep
+        // offering the previous provider's models.
+        let (models, message) = match plan {
+            ModelListPlan::UseCached { models, message } => (models, message),
+            ModelListPlan::StartFetch => (
+                Vec::new(),
+                self.begin_transformation_model_action(TransformationModelAction::Refresh, request),
+            ),
+            ModelListPlan::AwaitFetch(action) => {
+                (Vec::new(), action.progress_message(&request.provider))
             }
-            TransformationModelUpdate::ActionFailed { message, .. } => Some(message),
-            TransformationModelUpdate::ModelsRefreshed { .. }
-            | TransformationModelUpdate::ConnectionChecked { .. } => None,
-        }
+            ModelListPlan::NeedsManualFetch(reason) => (
+                Vec::new(),
+                manual_model_fetch_message(&request.provider, reason),
+            ),
+            ModelListPlan::CacheUnreadable(error) => {
+                (Vec::new(), unreadable_model_cache_message(&error))
+            }
+            ModelListPlan::ShowError(message) => (Vec::new(), message),
+        };
+        settings_window.populate_transformation_model_values(&models);
+        Some(message)
     }
 
     fn start_transformation_model_action(&self, action: TransformationModelAction) {
@@ -1049,27 +1071,31 @@ impl AppDelegate {
             return;
         };
 
-        let request = match self.current_transformation_provider_request() {
-            Ok(request) => request,
-            Err(error) => {
-                settings_window.set_status(&error);
-                return;
-            }
-        };
-
-        let status_message = match action {
-            TransformationModelAction::Refresh => {
-                format!("Refreshing models for {}…", request.provider)
-            }
-            TransformationModelAction::Check => {
-                settings_window.reset_transformation_check_button();
-                format!("Checking {} connection…", request.provider)
-            }
+        let status_message = match self.current_transformation_provider_request() {
+            Ok(request) => self.begin_transformation_model_action(action, request),
+            Err(error) => error,
         };
         settings_window.set_status(&status_message);
+    }
+
+    /// Starts `action` for `request` and returns the status message to show
+    /// while it runs.
+    #[must_use = "the action's progress must be shown in the status area"]
+    fn begin_transformation_model_action(
+        &self,
+        action: TransformationModelAction,
+        request: TransformationProviderRequest,
+    ) -> String {
+        if let (TransformationModelAction::Check, Some(settings_window)) =
+            (action, self.ivars().settings_window.get())
+        {
+            settings_window.reset_transformation_check_button();
+        }
+        let status_message = action.progress_message(&request.provider);
         self.ivars()
             .transformation_models_controller
             .start_action(action, request);
+        status_message
     }
 
     fn start_deepgram_connection_check(&self) {
@@ -1099,40 +1125,25 @@ impl AppDelegate {
 
         while let Some(update) = self.ivars().transformation_models_controller.take_update() {
             let current_request = self.current_transformation_provider_request().ok();
-            let update_request = match &update {
-                TransformationModelUpdate::CachedModelsLoaded { request, .. }
-                | TransformationModelUpdate::ModelsRefreshed { request, .. }
-                | TransformationModelUpdate::ConnectionChecked { request, .. }
-                | TransformationModelUpdate::ActionFailed { request, .. } => request,
-            };
-            if current_request
-                .as_ref()
-                .map(|request| request.same_source_as(update_request))
-                != Some(true)
-            {
+            if !update.applies_to(current_request.as_ref()) {
                 continue;
             }
 
+            if let Some(success) = update.check_result() {
+                settings_window.set_transformation_check_result(success);
+            }
             match update {
-                TransformationModelUpdate::CachedModelsLoaded {
+                TransformationModelUpdate::ModelsRefreshed {
                     models, message, ..
                 }
-                | TransformationModelUpdate::ModelsRefreshed {
+                | TransformationModelUpdate::ConnectionChecked {
                     models, message, ..
                 } => {
                     settings_window.populate_transformation_model_values(&models);
                     settings_window.set_status(&message);
-                }
-                TransformationModelUpdate::ConnectionChecked {
-                    models, message, ..
-                } => {
-                    settings_window.populate_transformation_model_values(&models);
-                    settings_window.set_status(&message);
-                    settings_window.set_transformation_check_result(true);
                 }
                 TransformationModelUpdate::ActionFailed { message, .. } => {
                     settings_window.set_status(&message);
-                    settings_window.set_transformation_check_result(false);
                 }
             }
         }
@@ -1288,7 +1299,7 @@ impl AppDelegate {
             overlay_window.apply_style(&overlay_style_from_config(&runtime_config));
         }
 
-        self.sync_transformation_provider_ui();
+        self.sync_transformation_provider_ui(ModelListTrigger::Resync);
         settings_window.hide();
         self.settings_window_closed();
     }

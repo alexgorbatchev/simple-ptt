@@ -50,6 +50,11 @@ use panes::transformation::TransformationPane;
 /// alerts name this button, so they build their text from this constant.
 pub const SAVE_BUTTON_TITLE: &str = "Save";
 
+/// Title of the Transformation pane button that fetches the provider's models.
+/// Status messages name this button, so they build their text from this
+/// constant.
+pub const FETCH_MODELS_BUTTON_TITLE: &str = "Fetch models";
+
 const BUTTON_BAR_MARGIN: f64 = 20.0;
 const BUTTON_BAR_SPACING: f64 = 12.0;
 const STATUS_MAXIMUM_LINES: isize = 3;
