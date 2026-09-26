@@ -10,7 +10,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
 use crate::config::DeepgramConfig;
-use crate::state::{AppState, DeepgramConnectionStatus};
+use crate::state::{AppState, DeepgramApiKeyFingerprint, DeepgramConnectionStatus};
 use super::text_builder::{build_overlay_text, join_transcript_parts};
 
 pub const AUDIO_QUEUE_CAPACITY: usize = 512;
@@ -30,11 +30,16 @@ pub enum SessionKind {
 
 pub struct ActiveSession {
     audio_tx: TokioSender<Result<Bytes, std::io::Error>>,
+    api_key: DeepgramApiKeyFingerprint,
     kind: SessionKind,
     task: tokio::task::JoinHandle<Result<String, String>>,
 }
 
 impl ActiveSession {
+    pub fn api_key(&self) -> DeepgramApiKeyFingerprint {
+        self.api_key
+    }
+
     pub fn kind(&self) -> SessionKind {
         self.kind
     }
@@ -55,6 +60,12 @@ impl ActiveSession {
     }
 }
 
+/// The key a session with `config` connects with, as recorded with its
+/// connection status.
+pub fn deepgram_api_key_fingerprint(config: &DeepgramConfig) -> DeepgramApiKeyFingerprint {
+    DeepgramApiKeyFingerprint::of(config.api_key.as_deref().unwrap_or(""))
+}
+
 pub fn start_session(
     runtime: &Runtime,
     state: Arc<AppState>,
@@ -69,6 +80,7 @@ pub fn start_session(
 
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
     let deepgram_config = config.clone();
+    let api_key = deepgram_api_key_fingerprint(config);
 
     let transcription_stream = runtime.block_on(async move {
         let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
@@ -96,11 +108,12 @@ pub fn start_session(
 
     let task = runtime.spawn(async move {
         let mut stream = transcription_stream;
-        run_transcription_stream(&mut stream, state, session_kind, recording_prefix).await
+        run_transcription_stream(&mut stream, state, api_key, session_kind, recording_prefix).await
     });
 
     Ok(ActiveSession {
         audio_tx,
+        api_key,
         kind: session_kind,
         task,
     })
@@ -145,6 +158,7 @@ fn configure_stream_request<'a>(
 pub async fn run_transcription_stream(
     stream: &mut TranscriptionStream,
     state: Arc<AppState>,
+    api_key: DeepgramApiKeyFingerprint,
     session_kind: SessionKind,
     mut recording_prefix: String,
 ) -> Result<String, String> {
@@ -232,7 +246,10 @@ pub async fn run_transcription_stream(
                 log::debug!("ignoring unhandled Deepgram message: {:?}", other_message);
             }
             Err(error) => {
-                state.set_deepgram_connection_status(DeepgramConnectionStatus::Disconnected);
+                state.set_deepgram_connection_status(
+                    DeepgramConnectionStatus::Disconnected,
+                    api_key,
+                );
                 return Err(format_deepgram_error(error));
             }
         }

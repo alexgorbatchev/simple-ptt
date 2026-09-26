@@ -1,10 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use sha2::{Digest, Sha256};
-
 use crate::deepgram_api::{list_projects, DeepgramProjectSummary};
-use crate::state::DeepgramConnectionStatus;
+use crate::state::{DeepgramApiKeyFingerprint, DeepgramConnectionStatus};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeepgramCheckRequest {
@@ -27,14 +25,8 @@ impl DeepgramCheckRequest {
             && self.resolved_project_id == other.resolved_project_id
     }
 
-    fn api_key_fingerprint(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(self.resolved_api_key.as_bytes());
-        let digest = hasher.finalize();
-        digest[..8]
-            .iter()
-            .map(|byte| format!("{:02x}", byte))
-            .collect()
+    pub fn api_key_fingerprint(&self) -> DeepgramApiKeyFingerprint {
+        DeepgramApiKeyFingerprint::of(&self.resolved_api_key)
     }
 }
 

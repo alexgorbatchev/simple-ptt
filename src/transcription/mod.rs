@@ -199,6 +199,7 @@ pub fn spawn_transcription_thread(
                         Ok(session) => {
                             state.set_deepgram_connection_status(
                                 DeepgramConnectionStatus::Connected,
+                                session.api_key(),
                             );
                             active_session = Some(session);
                         }
@@ -209,6 +210,7 @@ pub fn spawn_transcription_thread(
                             state.set_overlay_text_opacity(1.0);
                             state.set_deepgram_connection_status(
                                 DeepgramConnectionStatus::Disconnected,
+                                deepgram_api_key_fingerprint(&deepgram_config),
                             );
                             state.report_error(error.to_string());
                         }
@@ -297,6 +299,7 @@ pub fn spawn_transcription_thread(
                         Ok(session) => {
                             state.set_deepgram_connection_status(
                                 DeepgramConnectionStatus::Connected,
+                                session.api_key(),
                             );
                             active_session = Some(session);
                         }
@@ -305,6 +308,7 @@ pub fn spawn_transcription_thread(
                             state.set_overlay_correction_active(false);
                             state.set_deepgram_connection_status(
                                 DeepgramConnectionStatus::Disconnected,
+                                deepgram_api_key_fingerprint(&deepgram_config),
                             );
                             state.report_error(error.to_string());
                         }
@@ -319,9 +323,11 @@ pub fn spawn_transcription_thread(
                             }
                             PushAudioResult::Closed => {
                                 log::warn!("Deepgram session queue closed");
+                                let session_api_key = session.api_key();
                                 active_session = None;
                                 state.set_deepgram_connection_status(
                                     DeepgramConnectionStatus::Disconnected,
+                                    session_api_key,
                                 );
                                 state.report_error("Deepgram session queue closed unexpectedly");
                             }
@@ -419,12 +425,20 @@ pub fn spawn_transcription_thread(
                             recording_prefix.clone(),
                         ) {
                             Ok(session) => {
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Connected,
+                                    session.api_key(),
+                                );
                                 active_session = Some(session);
                             }
                             Err(error) => {
                                 log::error!(
                                     "failed to resume Deepgram session after clipboard insertion: {}",
                                     error
+                                );
+                                state.set_deepgram_connection_status(
+                                    DeepgramConnectionStatus::Disconnected,
+                                    deepgram_api_key_fingerprint(&deepgram_config),
                                 );
                                 buffered_text = recording_prefix.clone();
                                 recording_prefix.clear();
@@ -550,6 +564,7 @@ pub fn spawn_transcription_thread(
                                         Ok(session) => {
                                             state.set_deepgram_connection_status(
                                                 DeepgramConnectionStatus::Connected,
+                                                session.api_key(),
                                             );
                                             state.set_state(STATE_RECORDING);
                                             active_session = Some(session);
@@ -561,6 +576,7 @@ pub fn spawn_transcription_thread(
                                             );
                                             state.set_deepgram_connection_status(
                                                 DeepgramConnectionStatus::Disconnected,
+                                                deepgram_api_key_fingerprint(&deepgram_config),
                                             );
                                             state.report_error(error.to_string());
                                         }
@@ -747,6 +763,7 @@ pub fn spawn_transcription_thread(
                                     Ok(session) => {
                                         state.set_deepgram_connection_status(
                                             DeepgramConnectionStatus::Connected,
+                                            session.api_key(),
                                         );
                                         state.set_state(STATE_RECORDING);
                                         active_session = Some(session);
@@ -755,6 +772,7 @@ pub fn spawn_transcription_thread(
                                         log::error!("failed to resume session: {}", error);
                                         state.set_deepgram_connection_status(
                                             DeepgramConnectionStatus::Disconnected,
+                                            deepgram_api_key_fingerprint(&deepgram_config),
                                         );
                                         state.report_error(error.to_string());
                                     }
