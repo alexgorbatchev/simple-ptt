@@ -21,6 +21,7 @@ use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow};
 use crate::settings_window::popups::{
     populate_combo_box_with_values, populate_transformation_provider_popup,
 };
+use crate::settings_window::FETCH_MODELS_BUTTON_TITLE;
 
 const AUTO_TRANSFORM_HINT: &str =
     "When enabled, releasing the dictation shortcut runs transformation automatically.";
@@ -60,7 +61,7 @@ impl TransformationPane {
         let model_combo_box = combo_box(mtm);
         let model_refresh_button = push_button(
             mtm,
-            "Fetch models",
+            FETCH_MODELS_BUTTON_TITLE,
             target,
             SettingsAction::RefreshTransformationModels,
         );

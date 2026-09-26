@@ -1,4 +1,6 @@
 use crate::audio::AvailableAudioInputDevices;
+use crate::settings_window::FETCH_MODELS_BUTTON_TITLE;
+use crate::transformation_models::ManualFetchReason;
 
 pub const SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL: &str = "System default";
 
@@ -186,14 +188,78 @@ pub fn settings_load_status(
         .join("\n")
 }
 
+/// Status for a transformation provider whose models are not cached and wait
+/// for the user to click the Fetch models button.
+pub fn manual_model_fetch_message(provider: &str, reason: ManualFetchReason) -> String {
+    match reason {
+        ManualFetchReason::NotCached => format!(
+            "No cached models for {}. Click {} to load them.",
+            provider, FETCH_MODELS_BUTTON_TITLE
+        ),
+        ManualFetchReason::UnsavedApiKey => format!(
+            "No cached models for {0}. The API key field may hold another provider's key, so \
+             they were not fetched. Enter the {0} API key or clear the field, then click {1}.",
+            provider, FETCH_MODELS_BUTTON_TITLE
+        ),
+    }
+}
+
+/// Status for a model cache file that could not be read or parsed. Fetch
+/// models rewrites the file, so the status leads with that; the error, which
+/// can span several lines (a TOML parse error does), follows it and stays
+/// readable in the status tooltip.
+pub fn unreadable_model_cache_message(error: &str) -> String {
+    format!(
+        "The model cache could not be read. Click {} to rebuild it.\n{}",
+        FETCH_MODELS_BUTTON_TITLE,
+        error.trim_end()
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         default_audio_device_title, find_mic_audio_device_option_title,
-        is_system_default_audio_device_value, mic_audio_device_popup_state, settings_load_status,
+        is_system_default_audio_device_value, manual_model_fetch_message,
+        mic_audio_device_popup_state, settings_load_status, unreadable_model_cache_message,
         MicAudioDeviceOption, SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
     };
     use crate::audio::{AudioInputDeviceChoice, AvailableAudioInputDevices};
+    use crate::settings_window::FETCH_MODELS_BUTTON_TITLE;
+    use crate::transformation_models::ManualFetchReason;
+
+    #[test]
+    fn manual_model_fetch_messages_name_the_fetch_models_button() {
+        assert_eq!(
+            manual_model_fetch_message("openai", ManualFetchReason::NotCached),
+            format!("No cached models for openai. Click {FETCH_MODELS_BUTTON_TITLE} to load them.")
+        );
+        assert_eq!(
+            manual_model_fetch_message("anthropic", ManualFetchReason::UnsavedApiKey),
+            format!(
+                "No cached models for anthropic. The API key field may hold another provider's \
+                 key, so they were not fetched. Enter the anthropic API key or clear the field, \
+                 then click {FETCH_MODELS_BUTTON_TITLE}."
+            )
+        );
+        let parse_error = toml::from_str::<toml::Value>("version = [")
+            .unwrap_err()
+            .to_string();
+        let message = unreadable_model_cache_message(&parse_error);
+        assert_eq!(
+            message.lines().next(),
+            Some(
+                format!(
+                    "The model cache could not be read. Click {FETCH_MODELS_BUTTON_TITLE} to \
+                     rebuild it."
+                )
+                .as_str()
+            )
+        );
+        assert!(parse_error.lines().count() > 1);
+        assert!(message.ends_with(parse_error.trim_end()));
+        assert_eq!(FETCH_MODELS_BUTTON_TITLE, "Fetch models");
+    }
 
     const ENUMERATION_ERROR: &str = "failed to enumerate audio input devices: no host";
 
