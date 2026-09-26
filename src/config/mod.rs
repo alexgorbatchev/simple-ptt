@@ -1126,10 +1126,7 @@ mod tests {
         assert_eq!(config.mic.gain, 4.0);
         assert_eq!(config.mic.hold_ms, 300);
         assert!(config.mic.always_on);
-        assert_eq!(
-            config.deepgram.api_key.as_deref(),
-            Some("YOUR_DEEPGRAM_API_KEY")
-        );
+        assert_eq!(config.deepgram.api_key, None);
         assert_eq!(config.deepgram.project_id, None);
         assert_eq!(config.deepgram.language, "en-US");
         assert!(config.deepgram.keyterms.is_empty());
@@ -1155,6 +1152,48 @@ mod tests {
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
         assert_example_config_values(&config);
+    }
+
+    /// Resolves the example config's Deepgram key with `DEEPGRAM_API_KEY` set
+    /// to `env_value` (or unset), restoring the previous value before
+    /// returning so a failed assertion cannot leak it into other tests.
+    fn resolve_example_deepgram_api_key_with_env(
+        env_value: Option<&str>,
+    ) -> Result<String, String> {
+        let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
+
+        let _guard = env_lock().lock().unwrap();
+        let previous_deepgram_api_key = std::env::var("DEEPGRAM_API_KEY").ok();
+        match env_value {
+            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
+            None => std::env::remove_var("DEEPGRAM_API_KEY"),
+        }
+
+        let resolved = config.resolve_deepgram_api_key();
+
+        match previous_deepgram_api_key {
+            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
+            None => std::env::remove_var("DEEPGRAM_API_KEY"),
+        }
+        resolved
+    }
+
+    #[test]
+    fn example_config_uses_deepgram_api_key_from_environment() {
+        assert_eq!(
+            resolve_example_deepgram_api_key_with_env(Some("env-deepgram-key")),
+            Ok("env-deepgram-key".to_owned())
+        );
+    }
+
+    #[test]
+    fn example_config_without_environment_key_reports_missing_deepgram_api_key() {
+        let error = resolve_example_deepgram_api_key_with_env(None).unwrap_err();
+
+        assert!(
+            error.starts_with("Deepgram API key is missing."),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
