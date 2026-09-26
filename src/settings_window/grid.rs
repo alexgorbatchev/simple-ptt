@@ -5,7 +5,7 @@
 //! (for example "Capture…" or "Check"). A control spans every accessory column
 //! its row does not use, so trailing accessories line up across rows. Rows
 //! align on the first baseline, so a label sits on the text baseline of its
-//! control.
+//! control, unless they are added with `RowAlignment::Center`.
 
 use objc2::rc::Retained;
 use objc2::MainThreadMarker;
@@ -35,7 +35,8 @@ pub enum RowAlignment {
     /// Label and control share their first text baseline.
     FirstBaseline,
     /// Every view in the row is vertically centered, for rows whose control
-    /// has no text baseline (a slider or a meter).
+    /// has no text baseline (a slider or a meter) or reports one that does not
+    /// match the text it draws (an `NSComboBox`).
     Center,
 }
 

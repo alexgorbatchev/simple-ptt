@@ -17,7 +17,7 @@ use crate::settings_window::controls::{
 use crate::settings_window::form::{
     optional_popup_value, optional_text, TransformationForm, TRANSFORMATION_PROVIDER_DISABLED_LABEL,
 };
-use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow};
+use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow, RowAlignment};
 use crate::settings_window::popups::{
     populate_combo_box_with_values, populate_transformation_provider_popup,
 };
@@ -86,11 +86,16 @@ impl TransformationPane {
         grid.add_row("Provider:", &provider_popup, ControlWidth::Intrinsic, &[]);
         grid.add_row("API key:", &api_key_field, ControlWidth::Fill, &[]);
         let api_key_env_hint = grid.add_hint_row(None);
-        grid.add_row(
+        // NSComboBox reports a first baseline 4pt above the text it draws (as
+        // measured on macOS 26), so a first-baseline row sets it 4pt below its
+        // label and buttons. Centering puts every view of the row on one line,
+        // and the label's text on the combo box's drawn text.
+        grid.add_aligned_row(
             "Model:",
             &model_combo_box,
             ControlWidth::Fill,
             &[&model_refresh_button, &model_check_button],
+            RowAlignment::Center,
         );
 
         let stack = for_auto_layout(NSStackView::new(mtm));
