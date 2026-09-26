@@ -1,3 +1,8 @@
+//! The dictation and correction prompt editors at the bottom of the
+//! Transformation pane. Both prompts go only to the transformation LLM: the
+//! dictation prompt is the system prompt of a transformation, and the
+//! correction prompt replaces it for correction runs.
+
 use std::cell::Cell;
 
 use objc2::rc::Retained;
@@ -9,7 +14,7 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{NSRange, NSString};
 
-use super::{activate, pane_view, PaneContentHeight};
+use super::activate;
 use crate::config::PromptResets;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
@@ -17,24 +22,29 @@ use crate::settings_window::controls::{
 };
 use crate::settings_window::form::{Prompt, PromptsForm};
 
-const EDITOR_MIN_HEIGHT: f64 = 120.0;
+/// Lines of text each editor shows at the window's minimum size, unless a
+/// hint row above the editors takes that height.
+const EDITOR_MINIMUM_VISIBLE_LINES: usize = 5;
 const LABEL_TO_EDITOR_SPACING: f64 = 6.0;
-const SECTION_SPACING: f64 = 16.0;
 const RESET_BUTTON_TITLE: &str = "Reset to Default";
 
-/// The dictation and correction prompt editors, stacked vertically. Both
-/// editors fill the pane width and share its height equally. Each editor's
-/// header row has a button that puts the built-in default prompt back.
+/// A header row and an editor for each prompt, added to the bottom of a
+/// vertical stack. Both editors fill the stack width and share its remaining
+/// height equally. Each header row has a button that puts the built-in
+/// default prompt back.
 #[derive(Debug)]
-pub struct PromptsPane {
+pub struct PromptEditors {
     system_prompt_view: Retained<NSTextView>,
     correction_system_prompt_view: Retained<NSTextView>,
     /// Prompts reset since the last `load`; see `PromptsForm::resets`.
     resets: Cell<PromptResets>,
 }
 
-impl PromptsPane {
-    pub fn new(mtm: MainThreadMarker, target: &AnyObject) -> (Self, Retained<NSView>) {
+impl PromptEditors {
+    /// Adds the prompt headers and editors to the bottom of `stack`, a
+    /// vertical stack whose spacing separates them from the views above and
+    /// from each other.
+    pub fn new(mtm: MainThreadMarker, target: &AnyObject, stack: &NSStackView) -> Self {
         let system_prompt_header = header_row(
             mtm,
             "Dictation prompt",
@@ -45,7 +55,8 @@ impl PromptsPane {
                 "Replace the dictation prompt with the built-in default",
             ),
         );
-        let (system_prompt_scroll_view, system_prompt_view) = prompt_editor(mtm);
+        let (system_prompt_scroll_view, system_prompt_view) =
+            prompt_editor(mtm, EDITOR_MINIMUM_VISIBLE_LINES);
         let correction_prompt_header = header_row(
             mtm,
             "Correction prompt",
@@ -56,11 +67,12 @@ impl PromptsPane {
                 "Replace the correction prompt with the built-in default",
             ),
         );
-        let (correction_prompt_scroll_view, correction_system_prompt_view) = prompt_editor(mtm);
+        let (correction_prompt_scroll_view, correction_system_prompt_view) =
+            prompt_editor(mtm, EDITOR_MINIMUM_VISIBLE_LINES);
 
-        let stack = for_auto_layout(NSStackView::new(mtm));
-        stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-        stack.setAlignment(NSLayoutAttribute::Leading);
+        let mut constraints = vec![correction_prompt_scroll_view
+            .heightAnchor()
+            .constraintEqualToAnchor(&system_prompt_scroll_view.heightAnchor())];
         for view in [
             &system_prompt_header as &NSView,
             &system_prompt_scroll_view,
@@ -68,39 +80,20 @@ impl PromptsPane {
             &correction_prompt_scroll_view,
         ] {
             stack.addArrangedSubview(view);
+            constraints.push(
+                view.widthAnchor()
+                    .constraintEqualToAnchor(&stack.widthAnchor()),
+            );
         }
         stack.setCustomSpacing_afterView(LABEL_TO_EDITOR_SPACING, &system_prompt_header);
-        stack.setCustomSpacing_afterView(SECTION_SPACING, &system_prompt_scroll_view);
         stack.setCustomSpacing_afterView(LABEL_TO_EDITOR_SPACING, &correction_prompt_header);
+        activate(&constraints);
 
-        activate(&[
-            system_prompt_header
-                .widthAnchor()
-                .constraintEqualToAnchor(&stack.widthAnchor()),
-            correction_prompt_header
-                .widthAnchor()
-                .constraintEqualToAnchor(&stack.widthAnchor()),
-            system_prompt_scroll_view
-                .widthAnchor()
-                .constraintEqualToAnchor(&stack.widthAnchor()),
-            correction_prompt_scroll_view
-                .widthAnchor()
-                .constraintEqualToAnchor(&stack.widthAnchor()),
-            system_prompt_scroll_view
-                .heightAnchor()
-                .constraintGreaterThanOrEqualToConstant(EDITOR_MIN_HEIGHT),
-            correction_prompt_scroll_view
-                .heightAnchor()
-                .constraintEqualToAnchor(&system_prompt_scroll_view.heightAnchor()),
-        ]);
-
-        let pane = Self {
+        Self {
             system_prompt_view,
             correction_system_prompt_view,
             resets: Cell::new(PromptResets::default()),
-        };
-        let view = pane_view(mtm, &stack, PaneContentHeight::Fill);
-        (pane, view)
+        }
     }
 
     pub fn load(&self, form: &PromptsForm) {

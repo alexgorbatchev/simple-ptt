@@ -1,10 +1,11 @@
-//! One module per settings pane. Each pane builds its view, loads its part of
+//! One module per settings pane, plus `prompt_editors`, which the Transformation
+//! pane shows below its form. Each pane builds its view, loads its part of
 //! `SettingsForm` into its controls, and reads the controls back into it.
 
 pub mod deepgram;
 pub mod general;
 pub mod microphone;
-pub mod prompts;
+pub mod prompt_editors;
 pub mod transformation;
 
 use objc2::rc::Retained;

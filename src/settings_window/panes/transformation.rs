@@ -1,12 +1,16 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSButton, NSComboBox, NSPopUpButton, NSTextField, NSView};
+use objc2_app_kit::{
+    NSButton, NSComboBox, NSLayoutAttribute, NSPopUpButton, NSStackView, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView,
+};
 
-use super::{pane_view, PaneContentHeight};
+use super::prompt_editors::PromptEditors;
+use super::{activate, pane_view, PaneContentHeight};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    checkbox, combo_box, hotkey_display_field, is_checked, minimum_width,
+    checkbox, combo_box, for_auto_layout, hotkey_display_field, is_checked, minimum_width,
     pop_up_button_with_action, push_button, selected_title, set_checked, set_text_value,
     text_field, text_value, FIELD_MIN_WIDTH,
 };
@@ -21,6 +25,11 @@ use crate::settings_window::popups::{
 const AUTO_TRANSFORM_HINT: &str =
     "When enabled, releasing the dictation shortcut runs transformation automatically.";
 
+/// Space between the form and the prompt editors, and between the two editors.
+const SECTION_SPACING: f64 = 16.0;
+
+/// The transformation shortcut, provider and model form, above the prompt
+/// editors, which fill the rest of the pane.
 #[derive(Debug)]
 pub struct TransformationPane {
     pub hotkey_field: Retained<NSTextField>,
@@ -32,6 +41,7 @@ pub struct TransformationPane {
     model_combo_box: Retained<NSComboBox>,
     model_refresh_button: Retained<NSButton>,
     pub model_check_button: Retained<NSButton>,
+    pub prompts: PromptEditors,
 }
 
 impl TransformationPane {
@@ -82,6 +92,17 @@ impl TransformationPane {
             &[&model_refresh_button, &model_check_button],
         );
 
+        let stack = for_auto_layout(NSStackView::new(mtm));
+        stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        stack.setAlignment(NSLayoutAttribute::Leading);
+        stack.setSpacing(SECTION_SPACING);
+        stack.addArrangedSubview(grid.view());
+        activate(&[grid
+            .view()
+            .widthAnchor()
+            .constraintEqualToAnchor(&stack.widthAnchor())]);
+        let prompts = PromptEditors::new(mtm, target, &stack);
+
         let pane = Self {
             hotkey_field,
             hotkey_capture_button,
@@ -92,8 +113,9 @@ impl TransformationPane {
             model_combo_box,
             model_refresh_button,
             model_check_button,
+            prompts,
         };
-        let view = pane_view(mtm, grid.view(), PaneContentHeight::Fitting);
+        let view = pane_view(mtm, &stack, PaneContentHeight::Fill);
         (pane, view)
     }
 

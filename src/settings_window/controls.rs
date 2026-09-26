@@ -8,13 +8,13 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSBorderType, NSButton, NSColor, NSComboBox, NSControlStateValueOff, NSControlStateValueOn,
-    NSFont, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSFont, NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow,
     NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSPopUpButton, NSScrollView,
     NSSlider, NSTextField, NSTextView, NSView,
 };
 use objc2_foundation::{
     ns_string, NSAttributedString, NSDictionary, NSNumber, NSNumberFormatter,
-    NSNumberFormatterStyle, NSString,
+    NSNumberFormatterStyle, NSSize, NSString,
 };
 
 use super::actions::SettingsAction;
@@ -291,8 +291,13 @@ pub fn slider(
 /// returns the text system configuration Apple documents for a text view in a
 /// scroll view: the text view resizes with the clip view and its text
 /// container tracks the text view width, so the text wraps to whatever width
-/// the pane layout gives the scroll view.
-pub fn prompt_editor(mtm: MainThreadMarker) -> (Retained<NSScrollView>, Retained<NSTextView>) {
+/// the pane layout gives the scroll view. The scroll view shows at least
+/// `minimum_visible_lines` lines of its font unless the window would have to
+/// grow for them.
+pub fn prompt_editor(
+    mtm: MainThreadMarker,
+    minimum_visible_lines: usize,
+) -> (Retained<NSScrollView>, Retained<NSTextView>) {
     let scroll_view = for_auto_layout(NSTextView::scrollableTextView(mtm));
     scroll_view.setBorderType(NSBorderType::BezelBorder);
     scroll_view.setHasVerticalScroller(true);
@@ -303,7 +308,36 @@ pub fn prompt_editor(mtm: MainThreadMarker) -> (Retained<NSScrollView>, Retained
         .documentView()
         .and_then(|document_view| document_view.downcast::<NSTextView>().ok())
         .expect("scrollableTextView has an NSTextView document view");
-    text_view.setFont(Some(&NSFont::systemFontOfSize(NSFont::systemFontSize())));
+    let font = NSFont::systemFontOfSize(NSFont::systemFontSize());
+    text_view.setFont(Some(&font));
+
+    let text_height = NSLayoutManager::new().defaultLineHeightForFont(&font)
+        * minimum_visible_lines as f64
+        + 2.0 * text_view.textContainerInset().height;
+    let vertical_scroller = scroll_view
+        .verticalScroller()
+        .expect("a scroll view with a vertical scroller has one");
+    // SAFETY: the scroller classes are the scroll view's own: none for the
+    // horizontal scroller it does not have, and its vertical scroller's class.
+    let minimum_size = unsafe {
+        NSScrollView::frameSizeForContentSize_horizontalScrollerClass_verticalScrollerClass_borderType_controlSize_scrollerStyle(
+            NSSize::new(0.0, text_height),
+            None,
+            Some(vertical_scroller.class()),
+            scroll_view.borderType(),
+            vertical_scroller.controlSize(),
+            scroll_view.scrollerStyle(),
+            mtm,
+        )
+    };
+    // Below the priority at which the window keeps its size: when a hint row
+    // appears above the editors at the minimum window size, the editors give
+    // up its height instead of the window growing.
+    let minimum_height = scroll_view
+        .heightAnchor()
+        .constraintGreaterThanOrEqualToConstant(minimum_size.height);
+    minimum_height.setPriority(NSLayoutPriorityDragThatCannotResizeWindow);
+    minimum_height.setActive(true);
     (scroll_view, text_view)
 }
 
