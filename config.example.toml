@@ -6,7 +6,8 @@
 #   2. $XDG_CONFIG_HOME/simple-ptt/config.toml
 #   3. ~/.config/simple-ptt/config.toml
 #
-# Only [deepgram].api_key is required for basic transcription.
+# Only a Deepgram API key, from [deepgram].api_key or DEEPGRAM_API_KEY, is
+# required for basic transcription.
 # Leave optional keys commented out to accept the built-in defaults.
 
 [ui]
@@ -56,8 +57,10 @@ hold_ms = 300
 always_on = true
 
 [deepgram]
-# Required unless DEEPGRAM_API_KEY is set in the environment.
-api_key = "YOUR_DEEPGRAM_API_KEY"
+# Required unless DEEPGRAM_API_KEY is set in the environment. A non-empty value
+# here takes precedence; DEEPGRAM_API_KEY is used only when this key is omitted
+# or empty.
+# api_key = "YOUR_DEEPGRAM_API_KEY"
 
 # Optional. Deepgram project ID for month-to-date billing in the overlay footer.
 # Falls back to DEEPGRAM_PROJECT_ID when omitted.

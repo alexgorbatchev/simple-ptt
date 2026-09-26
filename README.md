@@ -90,6 +90,8 @@ If you prefer to edit the file by hand, this is enough to get transcription work
 api_key = "YOUR_DEEPGRAM_API_KEY"
 ```
 
+Replace `YOUR_DEEPGRAM_API_KEY` with your Deepgram API key. A non-empty `deepgram.api_key` takes precedence over the `DEEPGRAM_API_KEY` environment variable, which simple-ptt reads only when the key is omitted or empty. Apps opened from Finder or the Dock don't reliably inherit shell environment variables, so keep the key in the config file for normal launches.
+
 ## Development
 
 For the checked-in development config in this repository:
