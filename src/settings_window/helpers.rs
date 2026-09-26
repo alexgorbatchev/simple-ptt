@@ -59,7 +59,43 @@ pub fn is_system_default_audio_device_value(value: &str) -> bool {
             .unwrap_or(false)
 }
 
+/// Items and selection of the audio device popup, with the status message to
+/// show when the audio input devices could not be listed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MicAudioDevicePopupState {
+    pub options: Vec<MicAudioDeviceOption>,
+    pub selected_title: String,
+    pub load_problem: Option<String>,
+}
+
+/// Popup state for the listed audio input devices and the configured device.
+/// When the devices cannot be listed (#10), the popup offers only the system
+/// default and the configured device. The configured device stays selected,
+/// so saving keeps `mic.audio_device`, and the error becomes `load_problem`.
 pub fn mic_audio_device_popup_state(
+    available_audio_input_devices: Result<AvailableAudioInputDevices, String>,
+    configured_audio_device: Option<&str>,
+) -> MicAudioDevicePopupState {
+    let (available_audio_input_devices, load_problem) = match available_audio_input_devices {
+        Ok(available_audio_input_devices) => (available_audio_input_devices, None),
+        Err(error) => (
+            AvailableAudioInputDevices {
+                default_device_name: None,
+                choices: Vec::new(),
+            },
+            Some(format!("Microphone: {}", error)),
+        ),
+    };
+    let (options, selected_title) =
+        audio_device_options(available_audio_input_devices, configured_audio_device);
+    MicAudioDevicePopupState {
+        options,
+        selected_title,
+        load_problem,
+    }
+}
+
+fn audio_device_options(
     available_audio_input_devices: AvailableAudioInputDevices,
     configured_audio_device: Option<&str>,
 ) -> (Vec<MicAudioDeviceOption>, String) {
@@ -131,67 +167,43 @@ pub fn environment_hint_message(variable_name: &str) -> String {
     format!("Using ${} from environment.", variable_name)
 }
 
+/// Status text after the settings window loads a config, one message per
+/// line: the caller's `status_message`, each problem the panes found while
+/// loading, then `transformation_status` from syncing the transformation
+/// model list. The status area shows the last message set, so every message
+/// from opening the window goes through here at once.
+pub fn settings_load_status(
+    status_message: Option<&str>,
+    load_problems: &[String],
+    transformation_status: Option<&str>,
+) -> String {
+    status_message
+        .into_iter()
+        .chain(load_problems.iter().map(String::as_str))
+        .chain(transformation_status)
+        .filter(|message| !message.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         default_audio_device_title, find_mic_audio_device_option_title,
-        is_system_default_audio_device_value, mic_audio_device_popup_state, MicAudioDeviceOption,
-        SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
+        is_system_default_audio_device_value, mic_audio_device_popup_state, settings_load_status,
+        MicAudioDeviceOption, SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
     };
     use crate::audio::{AudioInputDeviceChoice, AvailableAudioInputDevices};
 
-    #[test]
-    fn default_audio_device_title_includes_detected_default_name() {
-        assert_eq!(
-            default_audio_device_title(Some("MacBook Pro Microphone")),
-            "System default (MacBook Pro Microphone)"
-        );
-    }
+    const ENUMERATION_ERROR: &str = "failed to enumerate audio input devices: no host";
 
     #[test]
-    fn mic_audio_device_popup_state_selects_default_when_unconfigured() {
-        let (options, selected_title) = mic_audio_device_popup_state(
-            AvailableAudioInputDevices {
-                default_device_name: Some("MacBook Pro Microphone".to_owned()),
-                choices: vec![AudioInputDeviceChoice {
-                    label: "Shure MV7".to_owned(),
-                    value: "Shure MV7".to_owned(),
-                }],
-            },
-            None,
-        );
+    fn failed_device_listing_keeps_the_configured_device_selected_and_reports_the_error() {
+        let state =
+            mic_audio_device_popup_state(Err(ENUMERATION_ERROR.to_owned()), Some("Shure MV7"));
 
         assert_eq!(
-            options,
-            vec![
-                MicAudioDeviceOption {
-                    title: "System default (MacBook Pro Microphone)".to_owned(),
-                    value: None,
-                },
-                MicAudioDeviceOption {
-                    title: "Shure MV7".to_owned(),
-                    value: Some("Shure MV7".to_owned()),
-                },
-            ]
-        );
-        assert_eq!(selected_title, "System default (MacBook Pro Microphone)");
-    }
-
-    #[test]
-    fn mic_audio_device_popup_state_matches_configured_name_case_insensitively() {
-        let (options, selected_title) = mic_audio_device_popup_state(
-            AvailableAudioInputDevices {
-                default_device_name: None,
-                choices: vec![AudioInputDeviceChoice {
-                    label: "Shure MV7".to_owned(),
-                    value: "Shure MV7".to_owned(),
-                }],
-            },
-            Some("shure mv7"),
-        );
-
-        assert_eq!(
-            options,
+            state.options,
             vec![
                 MicAudioDeviceOption {
                     title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
@@ -203,24 +215,189 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(selected_title, "Shure MV7");
+        assert_eq!(state.selected_title, "Shure MV7");
+        assert_eq!(
+            state.load_problem.as_deref(),
+            Some("Microphone: failed to enumerate audio input devices: no host")
+        );
     }
 
     #[test]
-    fn mic_audio_device_popup_state_inserts_missing_configured_value() {
-        let (options, selected_title) = mic_audio_device_popup_state(
-            AvailableAudioInputDevices {
+    fn failed_device_listing_keeps_the_system_default_selected_when_unconfigured() {
+        for configured_audio_device in [None, Some("System default (MacBook Pro Microphone)")] {
+            let state = mic_audio_device_popup_state(
+                Err(ENUMERATION_ERROR.to_owned()),
+                configured_audio_device,
+            );
+
+            assert_eq!(
+                state.options,
+                vec![MicAudioDeviceOption {
+                    title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
+                    value: None,
+                }]
+            );
+            assert_eq!(state.selected_title, SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL);
+            assert_eq!(
+                state.load_problem.as_deref(),
+                Some("Microphone: failed to enumerate audio input devices: no host")
+            );
+        }
+    }
+
+    #[test]
+    fn settings_load_status_is_empty_without_a_message_or_problems() {
+        assert_eq!(settings_load_status(None, &[], None), "");
+    }
+
+    #[test]
+    fn settings_load_status_keeps_the_callers_message() {
+        assert_eq!(
+            settings_load_status(Some("Audio failed to start."), &[], None),
+            "Audio failed to start."
+        );
+    }
+
+    #[test]
+    fn settings_load_status_shows_every_load_problem() {
+        let load_problems = [
+            "Microphone: failed to enumerate audio input devices: no host".to_owned(),
+            "Microphone: gain is out of range".to_owned(),
+        ];
+
+        assert_eq!(
+            settings_load_status(None, &load_problems, None),
+            "Microphone: failed to enumerate audio input devices: no host\n\
+             Microphone: gain is out of range"
+        );
+    }
+
+    #[test]
+    fn settings_load_status_shows_the_callers_message_before_load_problems() {
+        let load_problems =
+            ["Microphone: failed to enumerate audio input devices: no host".to_owned()];
+
+        assert_eq!(
+            settings_load_status(Some("Audio failed to start."), &load_problems, None),
+            "Audio failed to start.\n\
+             Microphone: failed to enumerate audio input devices: no host"
+        );
+    }
+
+    #[test]
+    fn settings_load_status_shows_the_transformation_status_after_load_problems() {
+        let load_problems =
+            ["Microphone: failed to enumerate audio input devices: no host".to_owned()];
+
+        assert_eq!(
+            settings_load_status(
+                Some("Audio failed to start."),
+                &load_problems,
+                Some("Loaded 3 cached models for openai."),
+            ),
+            "Audio failed to start.\n\
+             Microphone: failed to enumerate audio input devices: no host\n\
+             Loaded 3 cached models for openai."
+        );
+    }
+
+    #[test]
+    fn settings_load_status_skips_an_empty_transformation_status() {
+        let load_problems =
+            ["Microphone: failed to enumerate audio input devices: no host".to_owned()];
+
+        assert_eq!(
+            settings_load_status(None, &load_problems, Some("")),
+            "Microphone: failed to enumerate audio input devices: no host"
+        );
+    }
+
+    #[test]
+    fn default_audio_device_title_includes_detected_default_name() {
+        assert_eq!(
+            default_audio_device_title(Some("MacBook Pro Microphone")),
+            "System default (MacBook Pro Microphone)"
+        );
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_selects_default_when_unconfigured() {
+        let state = mic_audio_device_popup_state(
+            Ok(AvailableAudioInputDevices {
+                default_device_name: Some("MacBook Pro Microphone".to_owned()),
+                choices: vec![AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                }],
+            }),
+            None,
+        );
+
+        assert_eq!(
+            state.options,
+            vec![
+                MicAudioDeviceOption {
+                    title: "System default (MacBook Pro Microphone)".to_owned(),
+                    value: None,
+                },
+                MicAudioDeviceOption {
+                    title: "Shure MV7".to_owned(),
+                    value: Some("Shure MV7".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(state.load_problem, None);
+        assert_eq!(
+            state.selected_title,
+            "System default (MacBook Pro Microphone)"
+        );
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_matches_configured_name_case_insensitively() {
+        let state = mic_audio_device_popup_state(
+            Ok(AvailableAudioInputDevices {
                 default_device_name: None,
                 choices: vec![AudioInputDeviceChoice {
                     label: "Shure MV7".to_owned(),
                     value: "Shure MV7".to_owned(),
                 }],
-            },
+            }),
+            Some("shure mv7"),
+        );
+
+        assert_eq!(
+            state.options,
+            vec![
+                MicAudioDeviceOption {
+                    title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
+                    value: None,
+                },
+                MicAudioDeviceOption {
+                    title: "Shure MV7".to_owned(),
+                    value: Some("Shure MV7".to_owned()),
+                },
+            ]
+        );
+        assert_eq!(state.load_problem, None);
+        assert_eq!(state.selected_title, "Shure MV7");
+    }
+
+    #[test]
+    fn mic_audio_device_popup_state_inserts_missing_configured_value() {
+        let state = mic_audio_device_popup_state(
+            Ok(AvailableAudioInputDevices {
+                default_device_name: None,
+                choices: vec![AudioInputDeviceChoice {
+                    label: "Shure MV7".to_owned(),
+                    value: "Shure MV7".to_owned(),
+                }],
+            }),
             Some("Missing Mic"),
         );
 
         assert_eq!(
-            options,
+            state.options,
             vec![
                 MicAudioDeviceOption {
                     title: SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
@@ -236,7 +413,8 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(selected_title, "Missing Mic");
+        assert_eq!(state.load_problem, None);
+        assert_eq!(state.selected_title, "Missing Mic");
     }
 
     #[test]

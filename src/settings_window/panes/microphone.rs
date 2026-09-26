@@ -9,7 +9,7 @@ use objc2_app_kit::{
 use objc2_foundation::NSString;
 
 use super::{activate, pane_view, PaneContentHeight};
-use crate::audio::{available_audio_input_devices, AvailableAudioInputDevices};
+use crate::audio::available_audio_input_devices;
 use crate::config::{UiMeterStyle, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
@@ -17,7 +17,7 @@ use crate::settings_window::controls::{
     pop_up_button_with_action, set_checked, set_text_value, set_unsigned_value, slider,
     unsigned_value, NumberFieldKind, NUMBER_FIELD_WIDTH,
 };
-use crate::settings_window::form::{mic_gain_label, MicrophoneForm};
+use crate::settings_window::form::{mic_gain_label, mic_gain_load_problem, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
 use crate::settings_window::helpers::{mic_audio_device_popup_state, MicAudioDeviceOption};
 use crate::state::MicMeterSnapshot;
@@ -127,17 +127,21 @@ impl MicrophonePane {
         (pane, view)
     }
 
-    /// Loads the form, listing the current audio input devices. When the
-    /// devices cannot be listed, the remaining fields are left unchanged and
-    /// the error is returned (#10).
-    pub fn load(&self, form: &MicrophoneForm) -> Result<(), String> {
-        self.populate_audio_device_popup(form.audio_device.as_deref())?;
+    /// Loads every field of the form, listing the current audio input
+    /// devices, and returns the problems to show in the status area: a failed
+    /// device listing (#10) and a gain the slider cannot show.
+    pub fn load(&self, form: &MicrophoneForm) -> Vec<String> {
+        let audio_device_problem = self.populate_audio_device_popup(form.audio_device.as_deref());
         set_unsigned_value(&self.sample_rate_field, form.sample_rate);
         self.gain_slider.setDoubleValue(f64::from(form.gain));
-        set_text_value(&self.gain_label, &mic_gain_label(form.gain));
+        // The label shows the slider value, which is what saving writes.
+        self.update_gain_label(self.gain_slider_value());
         set_unsigned_value(&self.hold_ms_field, form.hold_ms);
         set_checked(&self.always_on_checkbox, form.always_on);
-        Ok(())
+        audio_device_problem
+            .into_iter()
+            .chain(mic_gain_load_problem(form.gain))
+            .collect()
     }
 
     pub fn read(&self) -> MicrophoneForm {
@@ -185,31 +189,22 @@ impl MicrophonePane {
         }
     }
 
-    fn populate_audio_device_popup(
-        &self,
-        configured_audio_device: Option<&str>,
-    ) -> Result<(), String> {
-        let available_audio_input_devices = available_audio_input_devices();
-        let (audio_device_options, selected_audio_device_title) = mic_audio_device_popup_state(
-            available_audio_input_devices
-                .clone()
-                .unwrap_or(AvailableAudioInputDevices {
-                    default_device_name: None,
-                    choices: Vec::new(),
-                }),
-            configured_audio_device,
-        );
+    /// Lists the audio input devices in the popup and selects the configured
+    /// one. Returns the device listing error, if any, as a status message.
+    fn populate_audio_device_popup(&self, configured_audio_device: Option<&str>) -> Option<String> {
+        let state =
+            mic_audio_device_popup_state(available_audio_input_devices(), configured_audio_device);
 
         self.audio_device_popup.removeAllItems();
-        for option in &audio_device_options {
+        for option in &state.options {
             self.audio_device_popup
                 .addItemWithTitle(&NSString::from_str(&option.title));
         }
         self.audio_device_popup
-            .selectItemWithTitle(&NSString::from_str(&selected_audio_device_title));
-        self.audio_device_options.replace(audio_device_options);
+            .selectItemWithTitle(&NSString::from_str(&state.selected_title));
+        self.audio_device_options.replace(state.options);
 
-        available_audio_input_devices.map(|_| ())
+        state.load_problem
     }
 }
 

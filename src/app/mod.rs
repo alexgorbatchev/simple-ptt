@@ -41,6 +41,7 @@ use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
 use crate::settings_window::form::Prompt;
+use crate::settings_window::helpers::settings_load_status;
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR,
@@ -265,12 +266,7 @@ define_class!(
                 self.ivars()
                     .permissions_dialog_returns_in_front_of_settings
                     .set(startup_windows.permissions_dialog_returns_in_front_of_settings());
-                self.present_settings_window();
-                if let Some(audio_error) = self.ivars().initial_audio_error.as_deref() {
-                    if let Some(settings_window) = self.ivars().settings_window.get() {
-                        settings_window.set_status(audio_error);
-                    }
-                }
+                self.present_settings_window(self.ivars().initial_audio_error.as_deref());
             }
 
             if startup_windows.permissions_dialog {
@@ -369,7 +365,7 @@ define_class!(
             self.ivars()
                 .permissions_dialog_returns_in_front_of_settings
                 .set(false);
-            self.present_settings_window();
+            self.present_settings_window(None);
         }
 
         #[unsafe(method(openPermissions:))]
@@ -827,7 +823,10 @@ impl AppDelegate {
         result
     }
 
-    fn present_settings_window(&self) {
+    /// Loads the config file into Settings and presents the window. The
+    /// status area shows `status_message`, any load problem, and the
+    /// transformation model list status.
+    fn present_settings_window(&self, status_message: Option<&str>) {
         let Some(settings_window) = self.ivars().settings_window.get() else {
             return;
         };
@@ -836,11 +835,13 @@ impl AppDelegate {
         settings_window.cancel_hotkey_capture();
 
         let current_file_config = self.ivars().config_store.current_file();
-        let _ = settings_window.load_from_config(
-            &current_file_config,
-            None,
-        );
-        self.sync_transformation_provider_ui();
+        let load_problems = settings_window.load_from_config(&current_file_config);
+        let transformation_status = self.sync_transformation_provider_controls();
+        settings_window.set_status(&settings_load_status(
+            status_message,
+            &load_problems,
+            transformation_status.as_deref(),
+        ));
 
         if self
             .ivars()
@@ -1004,34 +1005,41 @@ impl AppDelegate {
         let Some(settings_window) = self.ivars().settings_window.get() else {
             return;
         };
+        if let Some(message) = self.sync_transformation_provider_controls() {
+            settings_window.set_status(&message);
+        }
+    }
+
+    /// Syncs the transformation controls with the selected provider and
+    /// returns the status message for the result, or `None` to leave the
+    /// status unchanged.
+    #[must_use = "the transformation status must be shown in the status area"]
+    fn sync_transformation_provider_controls(&self) -> Option<String> {
+        let settings_window = self.ivars().settings_window.get()?;
 
         settings_window.sync_transformation_api_key_env_hint();
         let provider_selected = settings_window.transformation_provider_value().is_some();
         settings_window.set_transformation_model_controls_enabled(provider_selected);
         if !provider_selected {
             settings_window.populate_transformation_model_values(&[]);
-            settings_window.set_status("");
-            return;
+            return Some(String::new());
         }
 
-        if let Ok(request) = self.current_transformation_provider_request() {
-            match self
-                .ivars()
-                .transformation_models_controller
-                .load_cached_models_now(request)
-            {
-                TransformationModelUpdate::CachedModelsLoaded {
-                    models, message, ..
-                } => {
-                    settings_window.populate_transformation_model_values(&models);
-                    settings_window.set_status(&message);
-                }
-                TransformationModelUpdate::ActionFailed { message, .. } => {
-                    settings_window.set_status(&message);
-                }
-                TransformationModelUpdate::ModelsRefreshed { .. }
-                | TransformationModelUpdate::ConnectionChecked { .. } => {}
+        let request = self.current_transformation_provider_request().ok()?;
+        match self
+            .ivars()
+            .transformation_models_controller
+            .load_cached_models_now(request)
+        {
+            TransformationModelUpdate::CachedModelsLoaded {
+                models, message, ..
+            } => {
+                settings_window.populate_transformation_model_values(&models);
+                Some(message)
             }
+            TransformationModelUpdate::ActionFailed { message, .. } => Some(message),
+            TransformationModelUpdate::ModelsRefreshed { .. }
+            | TransformationModelUpdate::ConnectionChecked { .. } => None,
         }
     }
 
@@ -1188,7 +1196,8 @@ impl AppDelegate {
         };
 
         let previous_file_config = self.ivars().config_store.current_file();
-        let _ = settings_window.load_from_config(&previous_file_config, None);
+        let load_problems = settings_window.load_from_config(&previous_file_config);
+        settings_window.set_status(&settings_load_status(None, &load_problems, None));
         settings_window.hide();
         self.settings_window_closed();
     }
