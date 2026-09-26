@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
+use sha2::{Digest, Sha256};
+
 pub const STATE_IDLE: u8 = 0;
 pub const STATE_RECORDING: u8 = 1;
 pub const STATE_PROCESSING: u8 = 2;
@@ -9,20 +11,46 @@ pub const STATE_TRANSFORMING: u8 = 4;
 pub const STATE_ERROR: u8 = 5;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-#[repr(u8)]
 pub enum DeepgramConnectionStatus {
     #[default]
-    Unknown = 0,
-    Disconnected = 1,
-    Connected = 2,
+    Unknown,
+    Disconnected,
+    Connected,
 }
 
-impl DeepgramConnectionStatus {
-    fn from_raw(value: u8) -> Self {
-        match value {
-            1 => Self::Disconnected,
-            2 => Self::Connected,
-            _ => Self::Unknown,
+/// Identifies a Deepgram API key without keeping the key: the first 8 bytes of
+/// the SHA-256 of the trimmed key.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeepgramApiKeyFingerprint([u8; 8]);
+
+impl DeepgramApiKeyFingerprint {
+    pub fn of(api_key: &str) -> Self {
+        let digest = Sha256::digest(api_key.trim().as_bytes());
+        let mut prefix = [0; 8];
+        prefix.copy_from_slice(&digest[..8]);
+        Self(prefix)
+    }
+}
+
+/// The last Deepgram connection result and the API key it was measured with.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DeepgramConnection {
+    status: DeepgramConnectionStatus,
+    api_key: Option<DeepgramApiKeyFingerprint>,
+}
+
+impl DeepgramConnection {
+    /// The status as it applies to `current_api_key`, the key the app would
+    /// use now. A result measured with any other key (a key that has since
+    /// been replaced, or one only checked in Settings and never saved) says
+    /// nothing about it, so it reads as Unknown.
+    pub fn status_for(
+        &self,
+        current_api_key: Option<DeepgramApiKeyFingerprint>,
+    ) -> DeepgramConnectionStatus {
+        match current_api_key {
+            Some(current_api_key) if self.api_key == Some(current_api_key) => self.status,
+            _ => DeepgramConnectionStatus::Unknown,
         }
     }
 }
@@ -39,7 +67,7 @@ pub struct MicMeterSnapshot {
 pub struct AppState {
     abort_requested: AtomicBool,
     clip_event_counter: AtomicU32,
-    deepgram_connection_status: AtomicU8,
+    deepgram_connection: Mutex<DeepgramConnection>,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
@@ -61,7 +89,7 @@ impl AppState {
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
-            deepgram_connection_status: AtomicU8::new(DeepgramConnectionStatus::Unknown as u8),
+            deepgram_connection: Mutex::new(DeepgramConnection::default()),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
@@ -97,13 +125,24 @@ impl AppState {
         }
     }
 
-    pub fn set_deepgram_connection_status(&self, status: DeepgramConnectionStatus) {
-        self.deepgram_connection_status
-            .store(status as u8, Ordering::Relaxed);
+    pub fn set_deepgram_connection_status(
+        &self,
+        status: DeepgramConnectionStatus,
+        api_key: DeepgramApiKeyFingerprint,
+    ) {
+        if let Ok(mut connection) = self.deepgram_connection.lock() {
+            *connection = DeepgramConnection {
+                status,
+                api_key: Some(api_key),
+            };
+        }
     }
 
-    pub fn deepgram_connection_status(&self) -> DeepgramConnectionStatus {
-        DeepgramConnectionStatus::from_raw(self.deepgram_connection_status.load(Ordering::Relaxed))
+    pub fn deepgram_connection(&self) -> DeepgramConnection {
+        self.deepgram_connection
+            .lock()
+            .map(|connection| *connection)
+            .unwrap_or_default()
     }
 
     pub fn set_state(&self, state: u8) {
@@ -297,7 +336,9 @@ fn normalized_meter_value(value: f32) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, DeepgramConnectionStatus, STATE_IDLE, STATE_RECORDING};
+    use super::{
+        AppState, DeepgramApiKeyFingerprint, DeepgramConnectionStatus, STATE_IDLE, STATE_RECORDING,
+    };
 
     #[test]
     fn non_recording_states_clear_the_mic_meter() {
@@ -379,25 +420,95 @@ mod tests {
         assert_eq!(&*state.overlay_error_text(), "mic unplugged");
     }
 
+    fn key(api_key: &str) -> Option<DeepgramApiKeyFingerprint> {
+        Some(DeepgramApiKeyFingerprint::of(api_key))
+    }
+
     #[test]
-    fn deepgram_connection_status_round_trips() {
+    fn deepgram_connection_status_round_trips_for_the_measured_key() {
         let state = AppState::new();
 
         assert_eq!(
-            state.deepgram_connection_status(),
+            state.deepgram_connection().status_for(key("key-a")),
             DeepgramConnectionStatus::Unknown
         );
 
-        state.set_deepgram_connection_status(DeepgramConnectionStatus::Connected);
-        assert_eq!(
-            state.deepgram_connection_status(),
-            DeepgramConnectionStatus::Connected
+        for status in [
+            DeepgramConnectionStatus::Connected,
+            DeepgramConnectionStatus::Disconnected,
+        ] {
+            state.set_deepgram_connection_status(status, DeepgramApiKeyFingerprint::of("key-a"));
+            assert_eq!(state.deepgram_connection().status_for(key("key-a")), status);
+        }
+    }
+
+    /// A Settings check of key A, then saving key A: the check's result is the
+    /// status of the saved key. Saving settings never writes the status; the
+    /// overlay applies it to the saved key through `status_for`, so this is
+    /// where the outcome is decided.
+    #[test]
+    fn check_result_survives_saving_the_checked_key() {
+        let state = AppState::new();
+        state.set_deepgram_connection_status(
+            DeepgramConnectionStatus::Connected,
+            DeepgramApiKeyFingerprint::of("key-a"),
         );
 
-        state.set_deepgram_connection_status(DeepgramConnectionStatus::Disconnected);
         assert_eq!(
-            state.deepgram_connection_status(),
-            DeepgramConnectionStatus::Disconnected
+            state.deepgram_connection().status_for(key(" key-a ")),
+            DeepgramConnectionStatus::Connected
+        );
+    }
+
+    /// A status measured with key A (by a recording, a check, or a billing
+    /// refresh that finishes after the save) says nothing once key B is saved.
+    #[test]
+    fn status_measured_with_a_replaced_key_reads_as_unknown() {
+        let state = AppState::new();
+        for status in [
+            DeepgramConnectionStatus::Connected,
+            DeepgramConnectionStatus::Disconnected,
+        ] {
+            state.set_deepgram_connection_status(status, DeepgramApiKeyFingerprint::of("key-a"));
+
+            assert_eq!(
+                state.deepgram_connection().status_for(key("key-b")),
+                DeepgramConnectionStatus::Unknown
+            );
+        }
+    }
+
+    /// A Settings check of unsaved key B, then Cancel: key A stays in use, and
+    /// the footer must not show key B's result as key A's.
+    #[test]
+    fn check_of_an_unsaved_key_does_not_speak_for_the_saved_key() {
+        let state = AppState::new();
+        state.set_deepgram_connection_status(
+            DeepgramConnectionStatus::Disconnected,
+            DeepgramApiKeyFingerprint::of("key-a"),
+        );
+        state.set_deepgram_connection_status(
+            DeepgramConnectionStatus::Connected,
+            DeepgramApiKeyFingerprint::of("unsaved-key-b"),
+        );
+
+        assert_eq!(
+            state.deepgram_connection().status_for(key("key-a")),
+            DeepgramConnectionStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn deepgram_connection_status_is_unknown_without_a_current_key() {
+        let state = AppState::new();
+        state.set_deepgram_connection_status(
+            DeepgramConnectionStatus::Connected,
+            DeepgramApiKeyFingerprint::of("key-a"),
+        );
+
+        assert_eq!(
+            state.deepgram_connection().status_for(None),
+            DeepgramConnectionStatus::Unknown
         );
     }
 }

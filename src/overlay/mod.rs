@@ -23,8 +23,9 @@ use objc2_foundation::{
 
 use crate::config::UiMeterStyle;
 use crate::state::{
-    AppState, DeepgramConnectionStatus, MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
-    STATE_RECORDING, STATE_TRANSFORMING,
+    AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
+    MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
+    STATE_TRANSFORMING,
 };
 use crate::ui_meter::{self, UiMeterView};
 
@@ -41,6 +42,7 @@ const FOOTER_STATUS_DOT_DIAMETER: f64 = 6.0;
 const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
 const FOOTER_STATUS_DOT_X_OFFSET: f64 = -6.0;
 const FOOTER_TEXT_X_OFFSET: f64 = -4.0;
+const FOOTER_TEXT_SRGB: (f64, f64, f64) = (0.5, 0.5, 0.5);
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
 const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
 const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
@@ -61,6 +63,10 @@ pub struct OverlayStyle {
     pub footer_font_size: f64,
     pub meter_style: UiMeterStyle,
     pub shortcut_hint: Option<String>,
+    /// The Deepgram API key that resolves now (config or `DEEPGRAM_API_KEY`).
+    /// The footer shows the connection dot only when there is one, and shows a
+    /// connection status only if it was measured with this key.
+    pub deepgram_api_key: Option<DeepgramApiKeyFingerprint>,
 }
 
 define_class!(
@@ -93,6 +99,7 @@ pub struct OverlayWindow {
     footer_text_field: Retained<NSTextField>,
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
+    deepgram_api_key: Cell<Option<DeepgramApiKeyFingerprint>>,
     is_visible: Cell<bool>,
     is_error_color: Cell<bool>,
     text_opacity: Cell<f64>,
@@ -167,9 +174,7 @@ impl OverlayWindow {
         footer_text_field.setBezeled(false);
         footer_text_field.setEditable(false);
         footer_text_field.setSelectable(false);
-        footer_text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.5, 0.5, 0.5, 1.0,
-        )));
+        footer_text_field.setTextColor(Some(&footer_text_color()));
         footer_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         footer_text_field.setFrame(footer_text_frame(style.shortcut_hint.is_some()));
         footer_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
@@ -207,9 +212,7 @@ impl OverlayWindow {
         footer_hint_text_field.setBezeled(false);
         footer_hint_text_field.setEditable(false);
         footer_hint_text_field.setSelectable(false);
-        footer_hint_text_field.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.5, 0.5, 0.5, 1.0,
-        )));
+        footer_hint_text_field.setTextColor(Some(&footer_text_color()));
         footer_hint_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         footer_hint_text_field.setFrame(footer_hint_frame());
         footer_hint_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
@@ -250,6 +253,7 @@ impl OverlayWindow {
             footer_text_field,
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
+            deepgram_api_key: Cell::new(style.deepgram_api_key),
             is_visible: Cell::new(false),
             is_error_color: Cell::new(false),
             text_opacity: Cell::new(1.0),
@@ -263,7 +267,7 @@ impl OverlayWindow {
         &self,
         mtm: MainThreadMarker,
         state: u8,
-        deepgram_connection_status: DeepgramConnectionStatus,
+        deepgram_connection: DeepgramConnection,
         overlay_dismissed: bool,
         overlay_text: &str,
         overlay_error_text: &str,
@@ -296,9 +300,16 @@ impl OverlayWindow {
         } else {
             overlay_text
         };
-        let footer_text_is_visible = !overlay_footer_text.trim().is_empty();
+        let current_api_key = self.deepgram_api_key.get();
+        let deepgram_connection_status = deepgram_connection.status_for(current_api_key);
+        let footer_status_text = footer_status_text(
+            overlay_footer_text,
+            current_api_key.is_some(),
+            deepgram_connection_status,
+        );
+        let footer_status_is_visible = footer_status_text.is_some();
         let footer_hint_is_visible = self.footer_hint.borrow().is_some();
-        let footer_is_visible = footer_text_is_visible || footer_hint_is_visible;
+        let footer_is_visible = footer_status_is_visible || footer_hint_is_visible;
         let correction_is_visible = overlay_correction_active;
         let meter_is_visible =
             state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
@@ -369,13 +380,13 @@ impl OverlayWindow {
             mtm,
             correction_is_visible,
             footer_is_visible,
-            footer_text_is_visible,
+            footer_status_is_visible,
             footer_hint_is_visible,
             meter_is_visible,
         );
         self.set_working_text_opacity(overlay_text_opacity);
         self.set_footer_status_indicator(deepgram_connection_status);
-        self.set_footer_text(overlay_footer_text);
+        self.set_footer_text(footer_status_text.unwrap_or(""));
 
         if meter_is_visible {
             self.ui_meter_view.update(mic_meter, meter_cluster_width());
@@ -442,6 +453,7 @@ impl OverlayWindow {
             .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         self.ui_meter_view.set_style(style.meter_style);
         self.footer_hint.replace(style.shortcut_hint.clone());
+        self.deepgram_api_key.set(style.deepgram_api_key);
 
         if let Some(shortcut_hint) = style.shortcut_hint.as_deref() {
             self.footer_hint_text_field
@@ -473,7 +485,7 @@ impl OverlayWindow {
         mtm: MainThreadMarker,
         correction_is_visible: bool,
         footer_is_visible: bool,
-        footer_text_is_visible: bool,
+        footer_status_is_visible: bool,
         footer_hint_is_visible: bool,
         meter_is_visible: bool,
     ) {
@@ -530,8 +542,8 @@ impl OverlayWindow {
         self.panel.setFrame_display(main_frame, true);
         self.separator_view.setHidden(!footer_is_visible);
         self.footer_status_indicator_view
-            .setHidden(!footer_text_is_visible);
-        self.footer_text_field.setHidden(!footer_text_is_visible);
+            .setHidden(!footer_status_is_visible);
+        self.footer_text_field.setHidden(!footer_status_is_visible);
         self.footer_hint_text_field
             .setHidden(!footer_hint_is_visible);
         self.working_scroll_view.setFrame(main_text_view_frame(
@@ -1129,14 +1141,54 @@ fn usable_text_width() -> f64 {
     OVERLAY_WIDTH - (TEXT_HORIZONTAL_PADDING * 2.0)
 }
 
-fn footer_connection_status_color(status: DeepgramConnectionStatus) -> Retained<NSColor> {
+/// Decides the footer status line: the Deepgram connection dot and the text
+/// beside it. `None` hides both. The dot shows whenever a Deepgram API key
+/// resolves; the text is the billing text `BillingController` publishes when a
+/// project ID is configured, and the connection label when it is empty.
+fn footer_status_text(
+    billing_text: &str,
+    deepgram_api_key_configured: bool,
+    status: DeepgramConnectionStatus,
+) -> Option<&str> {
+    if !deepgram_api_key_configured {
+        return None;
+    }
+
+    if billing_text.trim().is_empty() {
+        Some(footer_connection_label(status))
+    } else {
+        Some(billing_text)
+    }
+}
+
+/// Text beside the connection dot when there is no billing text to show (no
+/// Deepgram project ID configured). It follows the billing text's
+/// "Deepgram ...: <state>" form and states what the dot's color shows.
+pub fn footer_connection_label(status: DeepgramConnectionStatus) -> &'static str {
     match status {
-        DeepgramConnectionStatus::Connected => {
-            NSColor::colorWithSRGBRed_green_blue_alpha(0.26, 0.86, 0.54, 1.0)
-        }
-        DeepgramConnectionStatus::Unknown | DeepgramConnectionStatus::Disconnected => {
-            NSColor::colorWithSRGBRed_green_blue_alpha(0.95, 0.28, 0.24, 1.0)
-        }
+        DeepgramConnectionStatus::Connected => "Deepgram: connected",
+        DeepgramConnectionStatus::Disconnected => "Deepgram: disconnected",
+        DeepgramConnectionStatus::Unknown => "Deepgram: ...",
+    }
+}
+
+fn footer_connection_status_color(status: DeepgramConnectionStatus) -> Retained<NSColor> {
+    let (red, green, blue) = footer_connection_status_srgb(status);
+    NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0)
+}
+
+fn footer_text_color() -> Retained<NSColor> {
+    let (red, green, blue) = FOOTER_TEXT_SRGB;
+    NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0)
+}
+
+/// Unknown (no connection attempt has finished yet) uses the footer text's
+/// gray, so the dot does not claim a failure before one happened.
+fn footer_connection_status_srgb(status: DeepgramConnectionStatus) -> (f64, f64, f64) {
+    match status {
+        DeepgramConnectionStatus::Connected => (0.26, 0.86, 0.54),
+        DeepgramConnectionStatus::Disconnected => (0.95, 0.28, 0.24),
+        DeepgramConnectionStatus::Unknown => FOOTER_TEXT_SRGB,
     }
 }
 
@@ -1191,4 +1243,84 @@ fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
     let max_y = rect.origin.y + rect.size.height;
 
     point.x >= rect.origin.x && point.x <= max_x && point.y >= rect.origin.y && point.y <= max_y
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{footer_connection_label, footer_connection_status_srgb, footer_status_text};
+    use crate::state::DeepgramConnectionStatus;
+
+    const ALL_STATUSES: [DeepgramConnectionStatus; 3] = [
+        DeepgramConnectionStatus::Unknown,
+        DeepgramConnectionStatus::Disconnected,
+        DeepgramConnectionStatus::Connected,
+    ];
+
+    #[test]
+    fn footer_shows_connection_label_when_key_resolves_without_project_id() {
+        for status in ALL_STATUSES {
+            assert_eq!(
+                footer_status_text("", true, status),
+                Some(footer_connection_label(status))
+            );
+            assert_eq!(
+                footer_status_text("  ", true, status),
+                Some(footer_connection_label(status))
+            );
+        }
+    }
+
+    #[test]
+    fn footer_connection_label_states_the_connection_status() {
+        assert_eq!(
+            footer_connection_label(DeepgramConnectionStatus::Connected),
+            "Deepgram: connected"
+        );
+        assert_eq!(
+            footer_connection_label(DeepgramConnectionStatus::Disconnected),
+            "Deepgram: disconnected"
+        );
+        assert_eq!(
+            footer_connection_label(DeepgramConnectionStatus::Unknown),
+            "Deepgram: ..."
+        );
+    }
+
+    #[test]
+    fn footer_passes_billing_text_through_unchanged_when_project_id_is_configured() {
+        for billing_text in [
+            "Deepgram (Apr 2026): ...",
+            "Deepgram (Apr 2026): $12.34",
+            "Deepgram (Apr 2026): unavailable",
+            "Admin- or owner-level project API key required for billing reporting.",
+        ] {
+            for status in ALL_STATUSES {
+                assert_eq!(
+                    footer_status_text(billing_text, true, status),
+                    Some(billing_text)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn footer_hides_dot_and_text_without_an_api_key() {
+        for billing_text in ["", "Deepgram (Apr 2026): $12.34"] {
+            for status in ALL_STATUSES {
+                assert_eq!(footer_status_text(billing_text, false, status), None);
+            }
+        }
+    }
+
+    #[test]
+    fn unknown_connection_status_is_drawn_apart_from_disconnected() {
+        assert_ne!(
+            footer_connection_status_srgb(DeepgramConnectionStatus::Unknown),
+            footer_connection_status_srgb(DeepgramConnectionStatus::Disconnected)
+        );
+        assert_ne!(
+            footer_connection_status_srgb(DeepgramConnectionStatus::Unknown),
+            footer_connection_status_srgb(DeepgramConnectionStatus::Connected)
+        );
+    }
 }

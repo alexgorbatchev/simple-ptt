@@ -29,7 +29,7 @@ correction_key = "LeftMeta"
 # Main transcript font size in the overlay.
 font_size = 12.0
 
-# Optional. Footer font size for shortcut hints and billing text.
+# Optional. Footer font size for shortcut hints and the Deepgram status (connection or billing) text.
 # footer_font_size = 10.0
 
 # Audio meter style shown while recording.
