@@ -2,10 +2,11 @@
 //! settings area, above a button bar with the status text and the Cancel and
 //! Save buttons, which stay visible whichever pane is selected.
 //!
-//! Layout is Auto Layout only: each pane is an `NSGridView` form (or a stack of
-//! prompt editors), and the window's minimum content size is the fitting size
-//! of the largest pane plus the button bar. Values move between the controls
-//! and `Config` through the AppKit-free `form::SettingsForm`.
+//! Layout is Auto Layout only: each pane is an `NSGridView` form (the
+//! Transformation pane stacks the prompt editors below its form), and the
+//! window's minimum content size is the fitting size of the largest pane plus
+//! the button bar. Values move between the controls and `Config` through the
+//! AppKit-free `form::SettingsForm`.
 
 pub mod actions;
 mod controls;
@@ -27,7 +28,8 @@ use objc2_app_kit::{
     NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultHigh,
     NSLayoutPriorityDefaultLow, NSStackView, NSStackViewDistribution, NSTabViewController,
     NSTabViewControllerTabStyle, NSTabViewItem, NSTextField, NSUserInterfaceLayoutOrientation,
-    NSView, NSViewController, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSView, NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowDelegate,
+    NSWindowStyleMask, NSWindowToolbarStyle,
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSRect, NSSize, NSString};
 
@@ -42,7 +44,6 @@ use panes::activate;
 use panes::deepgram::{DeepgramEnvironmentHints, DeepgramPane};
 use panes::general::GeneralPane;
 use panes::microphone::MicrophonePane;
-use panes::prompts::PromptsPane;
 use panes::transformation::TransformationPane;
 
 /// Title of the button that saves every pane to the config file. Startup
@@ -61,7 +62,6 @@ pub struct SettingsWindow {
     microphone: MicrophonePane,
     deepgram: DeepgramPane,
     transformation: TransformationPane,
-    prompts: PromptsPane,
     status_text_field: Retained<NSTextField>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
@@ -95,13 +95,11 @@ impl SettingsWindow {
         let (microphone, microphone_view) = MicrophonePane::new(mtm, target);
         let (deepgram, deepgram_view) = DeepgramPane::new(mtm, target);
         let (transformation, transformation_view) = TransformationPane::new(mtm, target);
-        let (prompts, prompts_view) = PromptsPane::new(mtm, target);
         let pane_views = [
             ("General", "gearshape", general_view),
             ("Microphone", "mic", microphone_view),
             ("Deepgram", "waveform", deepgram_view),
             ("Transformation", "wand.and.stars", transformation_view),
-            ("Prompts", "text.bubble", prompts_view),
         ];
 
         let tab_view_controller = NSTabViewController::new(mtm);
@@ -124,13 +122,11 @@ impl SettingsWindow {
         root_view.addSubview(&button_bar);
 
         // Every pane must fit whichever pane is selected, so the tab view is at
-        // least as large as the largest pane's fitting size.
+        // least as large as the largest pane's fitting size before layout. That
+        // size sets the window width; the window's minimum size below adds the
+        // height of hints that wrap at that width.
         let largest_pane_size = pane_views.iter().fold(NSSize::ZERO, |size, (_, _, view)| {
-            let fitting_size = view.fittingSize();
-            NSSize::new(
-                size.width.max(fitting_size.width),
-                size.height.max(fitting_size.height),
-            )
+            larger_size(size, view.fittingSize())
         });
         activate(&[
             tab_view
@@ -176,7 +172,23 @@ impl SettingsWindow {
         root_view_controller.addChildViewController(&tab_view_controller);
         window.setContentViewController(Some(&root_view_controller));
 
-        let minimum_content_size = root_view.fittingSize();
+        let unwrapped_minimum_content_size = root_view.fittingSize();
+        window.setContentSize(unwrapped_minimum_content_size);
+        // A wrapping hint reports its wrapped height only after a layout pass
+        // has given it a width, so the fitting sizes above can be short by its
+        // extra lines. Lay out every pane at that width and keep the largest
+        // fitting size, so switching panes never resizes the window. The pane
+        // switches of this measurement are not animated.
+        let transition_options = tab_view_controller.transitionOptions();
+        tab_view_controller.setTransitionOptions(NSViewControllerTransitionOptions::None);
+        let minimum_content_size =
+            (0..pane_views.len()).fold(unwrapped_minimum_content_size, |size, index| {
+                tab_view_controller.setSelectedTabViewItemIndex(index as isize);
+                root_view.layoutSubtreeIfNeeded();
+                larger_size(size, root_view.fittingSize())
+            });
+        tab_view_controller.setSelectedTabViewItemIndex(0);
+        tab_view_controller.setTransitionOptions(transition_options);
         window.setContentMinSize(minimum_content_size);
         window.setContentSize(minimum_content_size);
         window.center();
@@ -188,7 +200,6 @@ impl SettingsWindow {
             microphone,
             deepgram,
             transformation,
-            prompts,
             status_text_field,
             hotkey_capture_restore_value: RefCell::new(None),
         };
@@ -257,7 +268,7 @@ impl SettingsWindow {
                 .transformation_api_key_env_var_in_use()
                 .map(environment_hint_message),
         );
-        self.prompts.load(&form.prompts);
+        self.transformation.prompts.load(&form.prompts);
         load_problems
     }
 
@@ -276,7 +287,7 @@ impl SettingsWindow {
 
     /// Puts the built-in default text in `prompt`'s editor.
     pub fn reset_prompt_to_default(&self, prompt: Prompt) {
-        self.prompts.reset_to_default(prompt);
+        self.transformation.prompts.reset_to_default(prompt);
     }
 
     fn read_form(&self) -> SettingsForm {
@@ -285,7 +296,7 @@ impl SettingsWindow {
             microphone: self.microphone.read(),
             deepgram: self.deepgram.read(),
             transformation: self.transformation.read(),
-            prompts: self.prompts.read(),
+            prompts: self.transformation.prompts.read(),
         }
     }
 
@@ -429,6 +440,11 @@ impl SettingsWindow {
             );
         }
     }
+}
+
+/// The width of the wider and the height of the taller of two sizes.
+fn larger_size(a: NSSize, b: NSSize) -> NSSize {
+    NSSize::new(a.width.max(b.width), a.height.max(b.height))
 }
 
 fn style_check_result(button: &NSButton, success: bool) {

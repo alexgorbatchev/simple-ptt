@@ -1,8 +1,9 @@
 //! Plain model of the values shown in the settings window, one struct per
-//! pane. The pane views only copy values between their controls and these
-//! structs; every conversion to and from `Config` (trimming, required and
-//! optional values, popup sentinel titles, integer ranges) lives here so it can
-//! be tested without AppKit.
+//! settings area: one per pane, and `PromptsForm` for the prompt editors that
+//! the Transformation pane shows below its form. The pane views only copy
+//! values between their controls and these structs; every conversion to and
+//! from `Config` (trimming, required and optional values, popup sentinel
+//! titles, integer ranges) lives here so it can be tested without AppKit.
 //!
 //! Numbers are `None` when their field is empty. The fields' `NSNumberFormatter`
 //! rejects anything that is not a number at entry, so only emptiness and the
@@ -90,7 +91,7 @@ pub struct PromptsForm {
     pub resets: PromptResets,
 }
 
-/// One of the prompt editors of the Prompts pane.
+/// One of the prompt editors of the Transformation pane.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Prompt {
     Dictation,
