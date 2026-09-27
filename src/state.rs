@@ -10,6 +10,32 @@ pub const STATE_BUFFER_READY: u8 = 3;
 pub const STATE_TRANSFORMING: u8 = 4;
 pub const STATE_ERROR: u8 = 5;
 
+/// Text shown in an overlay text view, with the byte offset where its
+/// provisional tail (a Deepgram interim transcript that may still change)
+/// begins. `provisional_start` is `None` when all of `text` is final.
+#[derive(Clone, Debug)]
+pub struct OverlayText {
+    pub text: Arc<str>,
+    pub provisional_start: Option<usize>,
+}
+
+impl OverlayText {
+    fn new(text: String, provisional_start: Option<usize>) -> Self {
+        let provisional_start = provisional_start
+            .filter(|&start| start < text.len() && text.is_char_boundary(start));
+        Self {
+            text: Arc::from(text),
+            provisional_start,
+        }
+    }
+}
+
+impl Default for OverlayText {
+    fn default() -> Self {
+        Self::new(String::new(), None)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum DeepgramConnectionStatus {
     #[default]
@@ -72,11 +98,11 @@ pub struct AppState {
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
     overlay_correction_active: AtomicBool,
-    overlay_correction_text: Mutex<Arc<str>>,
+    overlay_correction_text: Mutex<OverlayText>,
     overlay_window_visible: AtomicBool,
     settings_window_visible: AtomicBool,
     overlay_footer_text: Mutex<Arc<str>>,
-    overlay_text: Mutex<Arc<str>>,
+    overlay_text: Mutex<OverlayText>,
     overlay_error_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
     preview_mic_gain: AtomicU32,
@@ -94,11 +120,11 @@ impl AppState {
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
             overlay_correction_active: AtomicBool::new(false),
-            overlay_correction_text: Mutex::new(Arc::from("")),
+            overlay_correction_text: Mutex::new(OverlayText::default()),
             overlay_window_visible: AtomicBool::new(false),
             settings_window_visible: AtomicBool::new(false),
             overlay_footer_text: Mutex::new(Arc::from("")),
-            overlay_text: Mutex::new(Arc::from("")),
+            overlay_text: Mutex::new(OverlayText::default()),
             overlay_error_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
@@ -216,8 +242,19 @@ impl AppState {
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {
+        self.set_live_overlay_text(overlay_text, None);
+    }
+
+    /// Replaces the overlay text; `provisional_start` marks where the interim
+    /// transcript begins, and is dropped unless it is a character boundary
+    /// inside the text.
+    pub fn set_live_overlay_text(
+        &self,
+        overlay_text: impl Into<String>,
+        provisional_start: Option<usize>,
+    ) {
         if let Ok(mut current_overlay_text) = self.overlay_text.lock() {
-            *current_overlay_text = Arc::from(overlay_text.into());
+            *current_overlay_text = OverlayText::new(overlay_text.into(), provisional_start);
         }
     }
 
@@ -242,8 +279,18 @@ impl AppState {
     }
 
     pub fn set_overlay_correction_text(&self, overlay_correction_text: impl Into<String>) {
+        self.set_live_overlay_correction_text(overlay_correction_text, None);
+    }
+
+    /// The correction text counterpart of `set_live_overlay_text`.
+    pub fn set_live_overlay_correction_text(
+        &self,
+        overlay_correction_text: impl Into<String>,
+        provisional_start: Option<usize>,
+    ) {
         if let Ok(mut current_overlay_correction_text) = self.overlay_correction_text.lock() {
-            *current_overlay_correction_text = Arc::from(overlay_correction_text.into());
+            *current_overlay_correction_text =
+                OverlayText::new(overlay_correction_text.into(), provisional_start);
         }
     }
 
@@ -263,10 +310,16 @@ impl AppState {
     }
 
     pub fn overlay_text(&self) -> Arc<str> {
+        self.overlay_text_snapshot().text
+    }
+
+    /// The overlay text together with its provisional start, read under one
+    /// lock so the offset always belongs to the text.
+    pub fn overlay_text_snapshot(&self) -> OverlayText {
         self.overlay_text
             .lock()
             .map(|overlay_text| overlay_text.clone())
-            .unwrap_or_else(|_| Arc::from(""))
+            .unwrap_or_default()
     }
 
     pub fn overlay_error_text(&self) -> Arc<str> {
@@ -277,10 +330,15 @@ impl AppState {
     }
 
     pub fn overlay_correction_text(&self) -> Arc<str> {
+        self.overlay_correction_text_snapshot().text
+    }
+
+    /// The correction text counterpart of `overlay_text_snapshot`.
+    pub fn overlay_correction_text_snapshot(&self) -> OverlayText {
         self.overlay_correction_text
             .lock()
             .map(|overlay_correction_text| overlay_correction_text.clone())
-            .unwrap_or_else(|_| Arc::from(""))
+            .unwrap_or_default()
     }
 
     pub fn set_overlay_footer_text(&self, overlay_footer_text: impl Into<String>) {
@@ -418,6 +476,59 @@ mod tests {
         assert!(!state.is_overlay_dismissed());
         assert_eq!(state.get_state(), super::STATE_ERROR);
         assert_eq!(&*state.overlay_error_text(), "mic unplugged");
+    }
+
+    #[test]
+    fn live_overlay_text_keeps_its_provisional_start_with_the_text() {
+        let state = AppState::new();
+
+        state.set_live_overlay_text("final words still talking ", Some(12));
+
+        let snapshot = state.overlay_text_snapshot();
+        assert_eq!(&*snapshot.text, "final words still talking ");
+        assert_eq!(snapshot.provisional_start, Some(12));
+        assert!(std::sync::Arc::ptr_eq(&snapshot.text, &state.overlay_text()));
+    }
+
+    #[test]
+    fn replacing_overlay_text_clears_its_provisional_start() {
+        let state = AppState::new();
+        state.set_live_overlay_text("still talking ", Some(0));
+
+        state.set_overlay_text("edited by hand");
+
+        assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+    }
+
+    #[test]
+    fn provisional_start_outside_the_text_or_inside_a_character_is_dropped() {
+        let state = AppState::new();
+
+        state.set_live_overlay_text("héllo", Some(2));
+        assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+
+        state.set_live_overlay_text("hello", Some(5));
+        assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+
+        state.set_live_overlay_text("hello", Some(9));
+        assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+    }
+
+    #[test]
+    fn live_correction_text_keeps_its_provisional_start_until_replaced() {
+        let state = AppState::new();
+
+        state.set_live_overlay_correction_text("make it shorter ", Some(8));
+        let snapshot = state.overlay_correction_text_snapshot();
+        assert_eq!(&*snapshot.text, "make it shorter ");
+        assert_eq!(snapshot.provisional_start, Some(8));
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot.text,
+            &state.overlay_correction_text()
+        ));
+
+        state.clear_overlay_correction_text();
+        assert_eq!(state.overlay_correction_text_snapshot().provisional_start, None);
     }
 
     fn key(api_key: &str) -> Option<DeepgramApiKeyFingerprint> {

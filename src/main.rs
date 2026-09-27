@@ -41,6 +41,14 @@ fn main() {
             });
             return;
         }
+        [flag] if flag == "--debug" => {
+            overlay::dev::tuner::run();
+            return;
+        }
+        [flag, output_dir] if flag == "--overlay-snapshot" => {
+            overlay::dev::snapshot::run(output_dir);
+            return;
+        }
         [flag, output_dir] if flag == "--write-app-iconset" => {
             icon::write_application_iconset(Path::new(output_dir)).unwrap_or_else(|error| {
                 eprintln!("{}", error);

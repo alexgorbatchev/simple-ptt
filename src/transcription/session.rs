@@ -209,13 +209,18 @@ pub async fn run_transcription_stream(
                         interim_transcript.clear();
                         transcript_parts.push(transcript);
                         if !state.is_abort_requested() {
-                            let new_text = build_overlay_text(
+                            let live_text = build_overlay_text(
                                 recording_prefix.as_str(),
                                 &transcript_parts,
                                 None,
                             );
-                            last_pushed_text = new_text.clone();
-                            set_session_overlay_text(&state, session_kind, new_text);
+                            last_pushed_text = live_text.text.clone();
+                            set_session_overlay_text(
+                                &state,
+                                session_kind,
+                                live_text.text,
+                                live_text.provisional_start,
+                            );
                         }
                     }
                     continue;
@@ -224,13 +229,18 @@ pub async fn run_transcription_stream(
                 log::debug!("Deepgram interim: {}", transcript);
                 interim_transcript = transcript;
                 if !state.is_abort_requested() {
-                    let new_text = build_overlay_text(
+                    let live_text = build_overlay_text(
                         recording_prefix.as_str(),
                         &transcript_parts,
                         Some(interim_transcript.as_str()),
                     );
-                    last_pushed_text = new_text.clone();
-                    set_session_overlay_text(&state, session_kind, new_text);
+                    last_pushed_text = live_text.text.clone();
+                    set_session_overlay_text(
+                        &state,
+                        session_kind,
+                        live_text.text,
+                        live_text.provisional_start,
+                    );
                 }
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
@@ -263,7 +273,7 @@ pub async fn run_transcription_stream(
     };
 
     if !state.is_abort_requested() {
-        set_session_overlay_text(&state, session_kind, final_transcript.clone());
+        set_session_overlay_text(&state, session_kind, final_transcript.clone(), None);
     }
     Ok(final_transcript)
 }
@@ -275,10 +285,17 @@ pub fn session_overlay_text(state: &AppState, session_kind: SessionKind) -> Stri
     }
 }
 
-pub fn set_session_overlay_text(state: &AppState, session_kind: SessionKind, text: impl Into<String>) {
+pub fn set_session_overlay_text(
+    state: &AppState,
+    session_kind: SessionKind,
+    text: impl Into<String>,
+    provisional_start: Option<usize>,
+) {
     match session_kind {
-        SessionKind::Dictation => state.set_overlay_text(text),
-        SessionKind::Correction => state.set_overlay_correction_text(text),
+        SessionKind::Dictation => state.set_live_overlay_text(text, provisional_start),
+        SessionKind::Correction => {
+            state.set_live_overlay_correction_text(text, provisional_start)
+        }
     }
 }
 

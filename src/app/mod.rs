@@ -47,8 +47,8 @@ use crate::settings_window::helpers::{
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
-    MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING,
-    STATE_RECORDING, STATE_TRANSFORMING,
+    MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
+    STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation_models::{
     api_key_belongs_to_provider, ModelListPlan, ModelListTrigger, TransformationModelAction,
@@ -1404,7 +1404,7 @@ impl AppDelegate {
             log::info!(
                 "ui update: state={}, transcript_len={}",
                 label,
-                snapshot.overlay_text.len()
+                snapshot.overlay_text.text.len()
             );
         }
 
@@ -1429,9 +1429,9 @@ impl AppDelegate {
         state: u8,
         deepgram_connection: DeepgramConnection,
         overlay_dismissed: bool,
-        overlay_text: &str,
+        overlay_text: &OverlayText,
         overlay_error_text: &str,
-        overlay_correction_text: &str,
+        overlay_correction_text: &OverlayText,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
@@ -1791,9 +1791,9 @@ fn update_overlay_window(
     state: u8,
     deepgram_connection: DeepgramConnection,
     overlay_dismissed: bool,
-    overlay_text: &str,
+    overlay_text: &OverlayText,
     overlay_error_text: &str,
-    overlay_correction_text: &str,
+    overlay_correction_text: &OverlayText,
     overlay_correction_active: bool,
     overlay_text_opacity: f64,
     overlay_footer_text: &str,
@@ -1830,8 +1830,8 @@ struct UiSnapshot {
     overlay_dismissed: bool,
     overlay_footer_text: Arc<str>,
     overlay_correction_active: bool,
-    overlay_correction_text: Arc<str>,
-    overlay_text: Arc<str>,
+    overlay_correction_text: OverlayText,
+    overlay_text: OverlayText,
     overlay_error_text: Arc<str>,
     overlay_text_opacity: f64,
 }
@@ -1845,8 +1845,8 @@ impl UiSnapshot {
             overlay_dismissed: false,
             overlay_footer_text: Arc::from(""),
             overlay_correction_active: false,
-            overlay_correction_text: Arc::from(""),
-            overlay_text: Arc::from(""),
+            overlay_correction_text: OverlayText::default(),
+            overlay_text: OverlayText::default(),
             overlay_error_text: Arc::from(""),
             overlay_text_opacity: 1.0,
         }
@@ -1860,8 +1860,8 @@ impl UiSnapshot {
             overlay_dismissed: state.is_overlay_dismissed(),
             overlay_footer_text: state.overlay_footer_text(),
             overlay_correction_active: state.is_overlay_correction_active(),
-            overlay_correction_text: state.overlay_correction_text(),
-            overlay_text: state.overlay_text(),
+            overlay_correction_text: state.overlay_correction_text_snapshot(),
+            overlay_text: state.overlay_text_snapshot(),
             overlay_error_text: state.overlay_error_text(),
             overlay_text_opacity: state.overlay_text_opacity(),
         }
@@ -1876,10 +1876,10 @@ impl UiSnapshot {
             || !Arc::ptr_eq(&self.overlay_footer_text, &other.overlay_footer_text)
             || self.overlay_correction_active != other.overlay_correction_active
             || !Arc::ptr_eq(
-                &self.overlay_correction_text,
-                &other.overlay_correction_text,
+                &self.overlay_correction_text.text,
+                &other.overlay_correction_text.text,
             )
-            || !Arc::ptr_eq(&self.overlay_text, &other.overlay_text)
+            || !Arc::ptr_eq(&self.overlay_text.text, &other.overlay_text.text)
             || !Arc::ptr_eq(&self.overlay_error_text, &other.overlay_error_text)
             || (self.overlay_text_opacity - other.overlay_text_opacity).abs() > f64::EPSILON
     }
@@ -1958,8 +1958,6 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use objc2::{sel, ClassType};
 
     use super::{
@@ -1974,8 +1972,8 @@ mod tests {
     use crate::settings_window::actions::SettingsAction;
     use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{
-        DeepgramApiKeyFingerprint, DeepgramConnectionStatus, MicMeterSnapshot, STATE_ERROR,
-        STATE_PROCESSING, STATE_RECORDING,
+        DeepgramApiKeyFingerprint, DeepgramConnectionStatus, MicMeterSnapshot, OverlayText,
+        STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
     };
 
     #[test]
@@ -2218,7 +2216,7 @@ mod tests {
         let mut poll_state = StatusPollState::new();
         let mut snapshot = idle_snapshot();
         poll_state.advance(&snapshot, false);
-        snapshot.overlay_text = Arc::from("");
+        snapshot.overlay_text = OverlayText::default();
 
         assert_eq!(
             poll_state.advance(&snapshot, false),

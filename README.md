@@ -15,6 +15,8 @@ A fast, minimal push-to-talk app for macOS with live Deepgram transcription and 
 > xattr -dr com.apple.quarantine /Applications/simple-ptt.app
 > ```
 
+`simple-ptt` requires macOS 26 or later on Apple Silicon.
+
 Expect the usual macOS prompts for: **Microphone** and **Accessibility** for the global hotkey and synthetic paste workflow.
 
 ## Deepgram Costs
@@ -31,7 +33,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 ### Default workflow
 
 - Press the record hotkey (`F5` by default) to start listening.
-- Speak and watch the live transcript overlay update in real time.
+- Speak and watch the live transcript overlay update in real time. Words Deepgram may still revise appear dimmed and turn to full contrast once final.
 - Stop recording to paste the buffered text into the focused app.
 - If transformation is configured and enabled, the app can clean up the transcript before pasting.
 
@@ -39,6 +41,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 
 - **Tap vs hold:** short press behaves like toggle; holding past `mic.hold_ms` turns the same hotkey into hold-to-talk.
 - **Editable overlay:** You can click into the overlay at any time to manually type, fix, or delete words before pasting.
+- **Overlay look:** the overlay is frosted Liquid Glass on a soft blur of the screen around it, and it pops in when it opens and out when it closes. While the transformation model rewrites the text, a light sweeps across it; errors show in red. A correction request appears on its own glass that slides out of the transcript and back into it. With Reduce Motion on, the overlay fades in and out, and the sweep and the slide are skipped.
 - **Correction key (`LeftMeta`, shown as `Cmd`, by default):** hold the configured correction key during dictation or while a buffered annotation is visible, speak a correction request, then release the key to apply that correction to the current annotation.
 - **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it. If you press `F6` while dictating, you can keep talking — your audio is buffered and will seamlessly append to the transformed text once the LLM finishes.
 - **Resume dictation:** If you have transformed text (or manually stopped recording), pressing `F5` again will seamlessly resume dictating onto the end of your existing text.

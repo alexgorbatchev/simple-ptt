@@ -1,4 +1,8 @@
+pub mod dev;
 pub mod diff;
+pub mod glass;
+pub mod private_effects;
+mod text_effects;
 
 pub use diff::{build_inline_correction_preview, utf16_offset, working_text_update_is_semantically_unchanged};
 
@@ -10,11 +14,10 @@ use objc2::runtime::{AnyObject, NSObject};
 use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
-    NSActionCell, NSAutoresizingMaskOptions, NSBackingStoreType, NSCell, NSColor, NSEvent,
-    NSFloatingWindowLevel, NSLineBreakMode, NSPanel, NSScreen, NSScrollView, NSTextAlignment,
-    NSTextField, NSTextFieldCell, NSTextView, NSTextViewDelegate, NSUnderlineColorAttributeName,
-    NSUnderlineStyle, NSUnderlineStyleAttributeName, NSView, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
+    NSActionCell, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode,
+    NSScreen, NSScrollView, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
+    NSTextViewDelegate, NSUnderlineColorAttributeName, NSUnderlineStyle,
+    NSUnderlineStyleAttributeName, NSView,
 };
 use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect, NSSize,
@@ -24,10 +27,18 @@ use objc2_foundation::{
 use crate::config::UiMeterStyle;
 use crate::state::{
     AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
-    MicMeterSnapshot, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
-    STATE_TRANSFORMING,
+    MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
+    STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::ui_meter::{self, UiMeterView};
+use glass::{
+    correction_resting_frame, plan_correction_motion, CorrectionEffect, CorrectionPhase,
+    GlassTuning, OverlayGlass,
+};
+use text_effects::{
+    attributed_text, crossfade_next_change, provisional_utf16_range, reduce_motion,
+    restyle_provisional, text_attributes, Shimmer,
+};
 
 const CORRECTION_OVERLAY_MIN_HEIGHT: f64 = 92.0;
 const CORRECTION_OVERLAY_MAX_HEIGHT_RATIO: f64 = 0.26;
@@ -49,8 +60,6 @@ const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
 const METER_TEXT_GAP: f64 = 4.0;
 const METER_SECTION_BOTTOM_PADDING: f64 = 5.0;
 const METER_SECTION_HEIGHT: f64 = 30.8;
-const OVERLAY_CORNER_RADIUS: f64 = 9.0;
-const PANEL_STACK_GAP: f64 = 10.0;
 const SEPARATOR_HEIGHT: f64 = 1.0;
 const TEXT_HORIZONTAL_PADDING: f64 = 18.0;
 const TEXT_VERTICAL_PADDING: f64 = 16.0;
@@ -69,29 +78,13 @@ pub struct OverlayStyle {
     pub deepgram_api_key: Option<DeepgramApiKeyFingerprint>,
 }
 
-define_class!(
-    #[unsafe(super(NSPanel))]
-    #[thread_kind = MainThreadOnly]
-    #[name = "OverlayPanel"]
-    struct OverlayPanel;
-
-    impl OverlayPanel {
-        #[unsafe(method(canBecomeKeyWindow))]
-        fn can_become_key_window(&self) -> bool {
-            true
-        }
-    }
-);
-
 #[derive(Debug)]
 pub struct OverlayWindow {
-    panel: Retained<NSPanel>,
-    correction_panel: Retained<NSPanel>,
-    correction_root_view: Retained<NSView>,
+    glass: OverlayGlass,
     state: Arc<AppState>,
     correction_scroll_view: Retained<NSScrollView>,
     correction_text_view: Retained<NSTextView>,
-    separator_view: Retained<NSView>,
+    separator_view: Retained<NSBox>,
     ui_meter_view: UiMeterView,
     working_scroll_view: Retained<NSScrollView>,
     working_text_view: Retained<NSTextView>,
@@ -104,29 +97,38 @@ pub struct OverlayWindow {
     is_error_color: Cell<bool>,
     text_opacity: Cell<f64>,
     meter_alpha: Cell<f64>,
+    text_font: RefCell<Retained<NSFont>>,
+    /// Provisional start the working text was last drawn with.
+    working_provisional_start: Cell<Option<usize>>,
+    /// Provisional start and failure color the correction text was last
+    /// drawn with.
+    correction_provisional_start: Cell<Option<usize>>,
+    correction_failed: Cell<bool>,
+    /// Height of the correction glass while shown, kept so the window has
+    /// room for it while it pops out.
+    last_correction_height: Cell<f64>,
+    shimmer: Shimmer,
+    /// Distance from the top of the screen the overlay is kept at, instead
+    /// of centred; see `pin_to_top`.
+    pinned_top: Cell<Option<f64>>,
 }
 
 impl OverlayWindow {
     pub fn new(mtm: MainThreadMarker, style: &OverlayStyle, state: Arc<AppState>) -> Self {
-        let main_panel_rect = NSRect::new(
-            NSPoint::new(0.0, 0.0),
-            NSSize::new(OVERLAY_WIDTH, MAIN_OVERLAY_MIN_HEIGHT),
-        );
-        let (panel, root_view) = make_overlay_panel(mtm, main_panel_rect, false);
-        let (correction_panel, correction_root_view) = make_overlay_panel(
-            mtm,
-            NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(OVERLAY_WIDTH, CORRECTION_OVERLAY_MIN_HEIGHT),
-            ),
-            true,
-        );
+        let glass = OverlayGlass::new(mtm, OVERLAY_WIDTH, MAIN_OVERLAY_MIN_HEIGHT, GlassTuning::default());
+        let root_view = glass.main_content_view.clone();
+        let correction_root_view = glass.correction_content_view.clone();
 
         let working_scroll_view = NSScrollView::initWithFrame(
             NSScrollView::alloc(mtm),
             main_text_view_frame(true, false, style.meter_style, MAIN_OVERLAY_MIN_HEIGHT),
         );
         configure_scroll_view(&working_scroll_view);
+        // Its frame is set on every update; kept at the bottom as the main
+        // glass grows at its top for the `Expand` correction effect.
+        working_scroll_view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMaxYMargin,
+        );
         let working_text_view = make_text_view(
             mtm,
             style,
@@ -139,20 +141,18 @@ impl OverlayWindow {
             correction_text_view_frame(CORRECTION_OVERLAY_MIN_HEIGHT),
         );
         configure_scroll_view(&correction_scroll_view);
+        // Its frame is set on every update; kept at the top of the correction
+        // glass rather than stretched when the glass is resized.
+        // `layout_panels` sets this again whenever it changes hosts.
+        correction_scroll_view.setAutoresizingMask(
+            NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
+        );
         let correction_text_view = make_text_view(mtm, style, CORRECTION_OVERLAY_MIN_HEIGHT, false);
-        correction_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-            0.82, 0.86, 0.94, 1.0,
-        )));
 
         let separator_view =
-            NSView::initWithFrame(NSView::alloc(mtm), separator_frame(MAIN_OVERLAY_MIN_HEIGHT));
+            NSBox::initWithFrame(NSBox::alloc(mtm), separator_frame(MAIN_OVERLAY_MIN_HEIGHT));
+        separator_view.setBoxType(NSBoxType::Separator);
         separator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        separator_view.setWantsLayer(true);
-        if let Some(layer) = separator_view.layer() {
-            let separator_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.12);
-            let separator_cg_color = separator_color.CGColor();
-            layer.setBackgroundColor(Some(&separator_cg_color));
-        }
 
         let ui_meter_view = UiMeterView::new(mtm, style.meter_style);
         ui_meter_view.set_frame(meter_container_frame(true, style.meter_style));
@@ -226,8 +226,8 @@ impl OverlayWindow {
         }
         footer_hint_text_field.setHidden(style.shortcut_hint.is_none());
 
-        working_scroll_view.setDocumentView(Some(&working_text_view));
-        correction_scroll_view.setDocumentView(Some(&correction_text_view));
+        set_text_document(&working_scroll_view, &working_text_view);
+        set_text_document(&correction_scroll_view, &correction_text_view);
         root_view.addSubview(&working_scroll_view);
         root_view.addSubview(ui_meter_view.view());
         root_view.addSubview(&separator_view);
@@ -235,13 +235,10 @@ impl OverlayWindow {
         root_view.addSubview(&footer_text_field);
         root_view.addSubview(&footer_hint_text_field);
         correction_root_view.addSubview(&correction_scroll_view);
-        panel.orderOut(None);
-        correction_panel.orderOut(None);
+        glass.panel.orderOut(None);
 
         let overlay_window = Self {
-            panel,
-            correction_panel,
-            correction_root_view,
+            glass,
             state,
             correction_scroll_view,
             correction_text_view,
@@ -258,6 +255,13 @@ impl OverlayWindow {
             is_error_color: Cell::new(false),
             text_opacity: Cell::new(1.0),
             meter_alpha: Cell::new(0.0),
+            text_font: RefCell::new(resolve_overlay_font(style, style.font_size)),
+            working_provisional_start: Cell::new(None),
+            correction_provisional_start: Cell::new(None),
+            correction_failed: Cell::new(false),
+            last_correction_height: Cell::new(CORRECTION_OVERLAY_MIN_HEIGHT),
+            shimmer: Shimmer::new(),
+            pinned_top: Cell::new(None),
         };
         overlay_window.ui_meter_view.clear(meter_cluster_width());
         overlay_window
@@ -269,9 +273,9 @@ impl OverlayWindow {
         state: u8,
         deepgram_connection: DeepgramConnection,
         overlay_dismissed: bool,
-        overlay_text: &str,
+        overlay_text: &OverlayText,
         overlay_error_text: &str,
-        overlay_correction_text: &str,
+        overlay_correction_text: &OverlayText,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
         overlay_footer_text: &str,
@@ -289,17 +293,18 @@ impl OverlayWindow {
 
         let is_error = state == STATE_ERROR;
 
-        let display_text = if is_error {
+        let (display_text, display_provisional_start) = if is_error {
             if overlay_error_text.trim().is_empty() {
-                "An unexpected error occurred"
+                ("An unexpected error occurred", None)
             } else {
-                overlay_error_text
+                (overlay_error_text, None)
             }
-        } else if overlay_text.trim().is_empty() {
-            default_overlay_text(state)
+        } else if overlay_text.text.trim().is_empty() {
+            (default_overlay_text(state), None)
         } else {
-            overlay_text
+            (&*overlay_text.text, overlay_text.provisional_start)
         };
+        let overlay_correction_text_value = &*overlay_correction_text.text;
         let current_api_key = self.deepgram_api_key.get();
         let deepgram_connection_status = deepgram_connection.status_for(current_api_key);
         let footer_status_text = footer_status_text(
@@ -316,45 +321,31 @@ impl OverlayWindow {
 
         let inline_correction_preview = (state == STATE_TRANSFORMING
             && !overlay_correction_active
-            && !overlay_correction_text.trim().is_empty())
-        .then_some(overlay_correction_text);
+            && !overlay_correction_text_value.trim().is_empty())
+        .then_some(overlay_correction_text_value);
 
         if is_error != self.is_error_color.get() {
             self.is_error_color.set(is_error);
-            if is_error {
-                self.working_text_view
-                    .setTextColor(Some(&NSColor::systemRedColor()));
-            } else {
-                self.working_text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-                    0.98, 0.98, 0.99, 1.0,
-                )));
-            }
+            self.working_text_view
+                .setTextColor(Some(&self.working_text_color()));
         }
 
-        self.set_working_text(display_text, inline_correction_preview);
-        self.set_correction_text(if correction_is_visible {
-            overlay_correction_text
-        } else {
-            ""
-        });
+        self.set_working_text(
+            display_text,
+            display_provisional_start,
+            inline_correction_preview,
+        );
 
-        let is_error_correction =
-            correction_is_visible && overlay_correction_text.starts_with("Transformation failed:");
-        if let Some(layer) = self.correction_root_view.layer() {
-            if is_error_correction {
-                let border_color = NSColor::systemRedColor();
-                let border_cg_color = border_color.CGColor();
-                layer.setBorderWidth(1.5);
-                layer.setBorderColor(Some(&border_cg_color));
-                self.correction_text_view
-                    .setTextColor(Some(&NSColor::systemRedColor()));
-            } else {
-                layer.setBorderWidth(0.0);
-                layer.setBorderColor(None);
-                self.correction_text_view.setTextColor(Some(
-                    &NSColor::colorWithSRGBRed_green_blue_alpha(0.82, 0.86, 0.94, 1.0),
-                ));
-            }
+        let is_error_correction = correction_is_visible
+            && overlay_correction_text_value.starts_with("Transformation failed:");
+        if correction_is_visible {
+            self.set_correction_text(
+                overlay_correction_text_value,
+                overlay_correction_text.provisional_start,
+                is_error_correction,
+            );
+        } else {
+            self.set_correction_text("", None, false);
         }
 
         let target_alpha = if meter_is_visible && mic_meter.mic_active {
@@ -384,6 +375,11 @@ impl OverlayWindow {
             footer_hint_is_visible,
             meter_is_visible,
         );
+        if state == STATE_TRANSFORMING {
+            self.shimmer.start(&self.working_scroll_view);
+        } else {
+            self.shimmer.stop(&self.working_scroll_view);
+        }
         self.set_working_text_opacity(overlay_text_opacity);
         self.set_footer_status_indicator(deepgram_connection_status);
         self.set_footer_text(footer_status_text.unwrap_or(""));
@@ -395,15 +391,12 @@ impl OverlayWindow {
         }
 
         if !self.is_visible.get() {
-            if correction_is_visible {
-                self.correction_panel.orderFrontRegardless();
-            }
-            self.panel.orderFrontRegardless();
-            self.panel.makeKeyWindow();
-            self.panel.makeFirstResponder(Some(&self.working_text_view));
+            self.glass.pop_in(reduce_motion());
+            self.glass.panel.makeKeyWindow();
+            self.glass
+                .panel
+                .makeFirstResponder(Some(&self.working_text_view));
             self.is_visible.set(true);
-        } else if correction_is_visible {
-            self.correction_panel.orderFrontRegardless();
         }
 
         let text_length = self.working_text_view.string().length();
@@ -423,15 +416,41 @@ impl OverlayWindow {
 
     pub fn hide(&self) {
         if self.is_visible.replace(false) {
-            self.panel.orderOut(None);
-            self.correction_panel.orderOut(None);
+            self.glass.pop_out(reduce_motion());
         }
+        self.shimmer.stop(&self.working_scroll_view);
         self.state.set_overlay_window_visible(false);
         self.ui_meter_view.clear(meter_cluster_width());
-        self.set_working_text("", None);
-        self.set_correction_text("");
+        self.set_working_text("", None, None);
+        self.set_correction_text("", None, false);
         self.set_working_text_opacity(1.0);
         self.set_footer_text("");
+    }
+
+    pub fn glass_tuning(&self) -> GlassTuning {
+        self.glass.tuning()
+    }
+
+    pub fn halo_is_progressive(&self) -> bool {
+        self.glass.halo_is_progressive()
+    }
+
+    /// The glass's inner parameters as drawn now; the overlay tuner starts
+    /// its sliders from them.
+    pub fn glass_internals_now(&self) -> Option<crate::overlay::private_effects::GlassInternals> {
+        self.glass.glass_internals_now()
+    }
+
+    /// Keeps the overlay `distance` below the top of the screen instead of
+    /// centred on it, or centres it again with `None`. The overlay tuner
+    /// uses it to leave room for its controls below.
+    pub fn pin_to_top(&self, distance: Option<f64>) {
+        self.pinned_top.set(distance);
+    }
+
+    /// Applies `tuning` now; window geometry follows at the next `update`.
+    pub fn set_glass_tuning(&self, tuning: GlassTuning) {
+        self.glass.set_tuning(tuning);
     }
 
     pub fn text(&self) -> String {
@@ -443,10 +462,10 @@ impl OverlayWindow {
     }
 
     pub fn apply_style(&self, style: &OverlayStyle) {
-        self.working_text_view
-            .setFont(Some(&resolve_overlay_font(style, style.font_size)));
-        self.correction_text_view
-            .setFont(Some(&resolve_overlay_font(style, style.font_size)));
+        let text_font = resolve_overlay_font(style, style.font_size);
+        self.working_text_view.setFont(Some(&text_font));
+        self.correction_text_view.setFont(Some(&text_font));
+        self.text_font.replace(text_font);
         self.footer_text_field
             .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         self.footer_hint_text_field
@@ -491,18 +510,34 @@ impl OverlayWindow {
     ) {
         let visible_frame = self.selected_visible_frame(mtm);
         let meter_style = self.ui_meter_view.style();
+        let reduce_motion = reduce_motion();
         let main_content_height = measured_text_height(&self.working_text_view);
         let correction_content_height = correction_is_visible
             .then(|| measured_text_height(&self.correction_text_view))
             .unwrap_or(CORRECTION_OVERLAY_MIN_HEIGHT);
-        let current_main_origin_y = self.is_visible.get().then(|| self.panel.frame().origin.y);
+        let pinned_top = self.pinned_top.get();
+        let current_main_origin_y = (self.is_visible.get() && pinned_top.is_none())
+            .then(|| self.glass.main_origin_y());
         let correction_height = correction_is_visible
             .then(|| correction_panel_height(correction_content_height, visible_frame.size.height));
+        if let Some(height) = correction_height {
+            self.last_correction_height.set(height);
+        }
+        // The window keeps room for the correction glass while it pops out.
+        let (next_correction_phase, _) = plan_correction_motion(
+            self.glass.correction_phase(),
+            correction_is_visible,
+            reduce_motion,
+        );
+        let correction_room_height = correction_height.or_else(|| {
+            (next_correction_phase != CorrectionPhase::Hidden)
+                .then(|| self.last_correction_height.get())
+        });
 
         let visible_max_y = visible_frame.origin.y + visible_frame.size.height;
         let top_edge_limit = visible_max_y - 100.0;
-        let current_correction_stack_height = correction_height
-            .map(|height| height + PANEL_STACK_GAP)
+        let current_correction_stack_height = correction_room_height
+            .map(|height| height + glass::STACK_GAP)
             .unwrap_or(0.0);
 
         let max_main_height = if let Some(origin_y) = current_main_origin_y {
@@ -532,14 +567,28 @@ impl OverlayWindow {
             .map(|height| height + 1.0 < correction_desired_height)
             .unwrap_or(false);
 
+        // Pinned, the room above the main glass is kept for the correction
+        // glass whether or not it shows, so showing it does not move the main
+        // glass.
+        let pinned_origin_y = pinned_top.map(|top| {
+            let correction_room = correction_room_height
+                .unwrap_or(0.0)
+                .max(self.last_correction_height.get())
+                + glass::STACK_GAP;
+            visible_max_y - top - self.glass.tuning().margin() - main_height - correction_room
+        });
         let (main_frame, correction_frame) = stacked_panel_frames(
             visible_frame,
             main_height,
-            correction_height,
-            current_main_origin_y,
+            correction_room_height,
+            pinned_origin_y.or(current_main_origin_y),
         );
 
-        self.panel.setFrame_display(main_frame, true);
+        self.glass
+            .set_frames(
+                glass::window_frame(main_frame, correction_frame, self.glass.tuning().margin()),
+                main_height,
+            );
         self.separator_view.setHidden(!footer_is_visible);
         self.footer_status_indicator_view
             .setHidden(!footer_status_is_visible);
@@ -552,6 +601,7 @@ impl OverlayWindow {
             meter_style,
             main_height,
         ));
+        self.shimmer.track_bounds(&self.working_scroll_view);
         self.resize_text_view(
             &self.working_scroll_view,
             &self.working_text_view,
@@ -572,29 +622,56 @@ impl OverlayWindow {
         self.ui_meter_view.set_hidden(meter_alpha == 0.0);
         self.ui_meter_view.view().setAlphaValue(meter_alpha);
 
-        match correction_frame {
-            Some(frame) => {
-                self.correction_panel.setFrame_display(frame, true);
-                self.correction_scroll_view
-                    .setFrame(correction_text_view_frame(frame.size.height));
-                self.resize_text_view(
-                    &self.correction_scroll_view,
-                    &self.correction_text_view,
-                    frame.size.height,
-                    correction_is_clamped,
-                );
-                self.correction_panel.orderFrontRegardless();
-            }
-            None => {
-                self.correction_panel.orderOut(None);
-            }
+        // The correction text lives on its own glass, or, for `Expand`, in the
+        // area at the top of the grown main glass.
+        let expands = self.glass.tuning().correction_effect == CorrectionEffect::Expand;
+        let host: &NSView = if expands {
+            &self.glass.correction_expansion_view
+        } else {
+            &self.glass.correction_content_view
+        };
+        // SAFETY: reading the superview of a live view on the main thread.
+        let hosted = unsafe { self.correction_scroll_view.superview() }
+            .is_some_and(|superview| std::ptr::eq(&*superview, host));
+        if !hosted {
+            host.addSubview(&self.correction_scroll_view);
+            // It keeps its place when its host is resized: above the divider
+            // at the bottom of the expansion area, or at the top of the
+            // correction glass.
+            let vertical = if expands {
+                NSAutoresizingMaskOptions::ViewMaxYMargin
+            } else {
+                NSAutoresizingMaskOptions::ViewMinYMargin
+            };
+            self.correction_scroll_view
+                .setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable | vertical);
         }
+        if let Some(height) = correction_height {
+            let frame = if expands {
+                NSRect::new(NSPoint::new(0.0, glass::STACK_GAP), NSSize::new(OVERLAY_WIDTH, height))
+            } else {
+                correction_text_view_frame(height)
+            };
+            self.correction_scroll_view.setFrame(frame);
+            self.resize_text_view(
+                &self.correction_scroll_view,
+                &self.correction_text_view,
+                height,
+                correction_is_clamped,
+            );
+        }
+        let margin = self.glass.tuning().margin();
+        self.glass.update_correction(
+            correction_height
+                .map(|height| correction_resting_frame(main_height, OVERLAY_WIDTH, height, margin)),
+            reduce_motion,
+        );
     }
 
     fn selected_visible_frame(&self, mtm: MainThreadMarker) -> NSRect {
         let screens = NSScreen::screens(mtm);
         if self.is_visible.get() {
-            let current_frame = self.panel.frame();
+            let current_frame = self.glass.panel.frame();
             let current_center = NSPoint::new(
                 current_frame.origin.x + (current_frame.size.width / 2.0),
                 current_frame.origin.y + (current_frame.size.height / 2.0),
@@ -615,7 +692,20 @@ impl OverlayWindow {
             })
     }
 
-    fn set_working_text(&self, text: &str, inline_correction_preview: Option<&str>) {
+    fn working_text_color(&self) -> Retained<NSColor> {
+        if self.is_error_color.get() {
+            NSColor::systemRedColor()
+        } else {
+            NSColor::labelColor()
+        }
+    }
+
+    fn set_working_text(
+        &self,
+        text: &str,
+        provisional_start: Option<usize>,
+        inline_correction_preview: Option<&str>,
+    ) {
         if let Some(preview_text) = inline_correction_preview {
             self.set_working_text_with_preview(text, preview_text);
             return;
@@ -623,16 +713,34 @@ impl OverlayWindow {
 
         let current_text = self.working_text_view.string().to_string();
         if working_text_update_is_semantically_unchanged(&current_text, text) {
+            // Interim words that became final settle in place.
+            if self.working_provisional_start.replace(provisional_start) != provisional_start {
+                crossfade_next_change(&self.working_scroll_view);
+                restyle_provisional(
+                    &self.working_text_view,
+                    &self.working_text_color(),
+                    provisional_utf16_range(text, provisional_start)
+                        .map(|(location, length)| NSRange::new(location, length)),
+                );
+            }
             return;
         }
 
-        let ns_text = NSString::from_str(text);
-        self.working_text_view.setString(&ns_text);
+        let attributes = text_attributes(&self.text_font.borrow(), &self.working_text_color());
+        crossfade_next_change(&self.working_scroll_view);
+        self.replace_text(
+            &self.working_text_view,
+            &attributed_text(text, provisional_start, &attributes),
+        );
+        self.working_provisional_start.set(provisional_start);
 
         // Move cursor to the end
         let length = text.encode_utf16().count();
         self.working_text_view
             .setSelectedRange(NSRange::new(length, 0));
+        // SAFETY: `attributes` maps attribute keys to values of their
+        // documented types (an `NSFont` and an `NSColor`).
+        unsafe { self.working_text_view.setTypingAttributes(&attributes) };
         self.working_text_view
             .scrollRangeToVisible(NSRange::new(length, 0));
     }
@@ -640,19 +748,14 @@ impl OverlayWindow {
     fn set_working_text_with_preview(&self, original_text: &str, preview_text: &str) {
         let Some(rendered_preview) = build_inline_correction_preview(original_text, preview_text)
         else {
-            self.set_working_text(original_text, None);
+            self.set_working_text(original_text, None, None);
             return;
         };
 
-        let ns_text = NSString::from_str(&rendered_preview.text);
-        let typing_attributes = self.working_text_view.typingAttributes();
-        let base_attributed_text = unsafe {
-            objc2_foundation::NSAttributedString::new_with_attributes(&ns_text, &typing_attributes)
-        };
-        let attributed_text =
-            NSMutableAttributedString::from_attributed_nsstring(&base_attributed_text);
+        let attributes = text_attributes(&self.text_font.borrow(), &self.working_text_color());
+        let attributed_text = attributed_text(&rendered_preview.text, None, &attributes);
         let underline_style = NSNumber::new_isize(NSUnderlineStyle::Single.bits() as isize);
-        let underline_color = NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 1.0, 1.0, 0.5);
+        let underline_color = NSColor::secondaryLabelColor();
 
         for range in &rendered_preview.underlined_byte_ranges {
             let location = utf16_offset(&rendered_preview.text, range.start);
@@ -677,29 +780,56 @@ impl OverlayWindow {
             }
         }
 
-        if let Some(text_storage) = unsafe { self.working_text_view.textStorage() } {
-            text_storage.beginEditing();
-            text_storage.setAttributedString(&attributed_text);
-            text_storage.endEditing();
-        } else {
-            self.working_text_view.setString(&ns_text);
-        }
+        crossfade_next_change(&self.working_scroll_view);
+        self.replace_text(&self.working_text_view, &attributed_text);
+        self.working_provisional_start.set(None);
 
         let length = rendered_preview.text.encode_utf16().count();
         self.working_text_view
             .setSelectedRange(NSRange::new(length, 0));
+        // SAFETY: `attributes` maps attribute keys to values of their
+        // documented types (an `NSFont` and an `NSColor`).
+        unsafe { self.working_text_view.setTypingAttributes(&attributes) };
         self.working_text_view
             .scrollRangeToVisible(NSRange::new(length, 0));
     }
 
-    fn set_correction_text(&self, text: &str) {
+    fn set_correction_text(&self, text: &str, provisional_start: Option<usize>, failed: bool) {
         let current_text = self.correction_text_view.string().to_string();
-        if current_text != text {
-            let ns_text = NSString::from_str(text);
-            self.correction_text_view.setString(&ns_text);
-            let length = text.encode_utf16().count();
-            self.correction_text_view
-                .scrollRangeToVisible(NSRange::new(length, 0));
+        if current_text == text
+            && self.correction_provisional_start.get() == provisional_start
+            && self.correction_failed.get() == failed
+        {
+            return;
+        }
+        self.correction_provisional_start.set(provisional_start);
+        self.correction_failed.set(failed);
+
+        let color = if failed {
+            NSColor::systemRedColor()
+        } else {
+            NSColor::labelColor()
+        };
+        let attributes = text_attributes(&self.text_font.borrow(), &color);
+        crossfade_next_change(&self.correction_scroll_view);
+        self.replace_text(
+            &self.correction_text_view,
+            &attributed_text(text, provisional_start, &attributes),
+        );
+        let length = text.encode_utf16().count();
+        self.correction_text_view
+            .scrollRangeToVisible(NSRange::new(length, 0));
+    }
+
+    fn replace_text(&self, text_view: &NSTextView, text: &NSMutableAttributedString) {
+        // SAFETY: the storage belongs to `text_view`, which is only used on
+        // the main thread; edits are bracketed by begin/end editing.
+        if let Some(text_storage) = unsafe { text_view.textStorage() } {
+            text_storage.beginEditing();
+            text_storage.setAttributedString(text);
+            text_storage.endEditing();
+        } else {
+            text_view.setString(&text.string());
         }
     }
 
@@ -716,6 +846,15 @@ impl OverlayWindow {
             NSPoint::new(0.0, 0.0),
             NSSize::new(OVERLAY_WIDTH, document_height),
         ));
+        // Text that fits has nothing to scroll; a clip view left scrolled from
+        // an earlier, shorter document would show it shifted.
+        if document_height <= visible_height {
+            let clip_view = scroll_view.contentView();
+            if clip_view.bounds().origin != NSPoint::new(0.0, 0.0) {
+                clip_view.scrollToPoint(NSPoint::new(0.0, 0.0));
+                scroll_view.reflectScrolledClipView(&clip_view);
+            }
+        }
     }
 
     fn set_working_text_opacity(&self, target_text_opacity: f64) {
@@ -751,59 +890,24 @@ impl OverlayWindow {
     }
 }
 
-fn make_overlay_panel(
-    mtm: MainThreadMarker,
-    panel_rect: NSRect,
-    ignores_mouse_events: bool,
-) -> (Retained<NSPanel>, Retained<NSView>) {
-    let panel: Retained<OverlayPanel> = unsafe {
-        msg_send![
-            OverlayPanel::alloc(mtm),
-            initWithContentRect: panel_rect,
-            styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
-            backing: NSBackingStoreType::Buffered,
-            defer: false,
-            screen: NSScreen::mainScreen(mtm).as_deref()
-        ]
-    };
-    let panel: Retained<NSPanel> = Retained::into_super(panel);
-
-    panel.setFloatingPanel(true);
-    panel.setBecomesKeyOnlyIfNeeded(false);
-    panel.setWorksWhenModal(true);
-    panel.setLevel(NSFloatingWindowLevel);
-    panel.setOpaque(false);
-    panel.setHasShadow(true);
-    panel.setIgnoresMouseEvents(ignores_mouse_events);
-    panel.setHidesOnDeactivate(false);
-    panel.setCollectionBehavior(
-        NSWindowCollectionBehavior::MoveToActiveSpace
-            | NSWindowCollectionBehavior::Transient
-            | NSWindowCollectionBehavior::FullScreenAuxiliary,
-    );
-    panel.setBackgroundColor(Some(&NSColor::clearColor()));
-
-    let root_view = NSView::initWithFrame(NSView::alloc(mtm), panel_rect);
-    root_view.setAutoresizingMask(
-        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
-    );
-    root_view.setWantsLayer(true);
-    if let Some(layer) = root_view.layer() {
-        let background_color = NSColor::colorWithSRGBRed_green_blue_alpha(0.08, 0.08, 0.09, 0.92);
-        let background_cg_color = background_color.CGColor();
-        layer.setBackgroundColor(Some(&background_cg_color));
-        layer.setCornerRadius(OVERLAY_CORNER_RADIUS);
-        layer.setMasksToBounds(true);
+/// Makes `text_view` the document of `scroll_view`, whose text then keeps its
+/// place while the glass's corners pass it (see
+/// `private_effects::disallow_corner_content_insets`). A text view turns the
+/// corner insets back on when it moves into a scroll view (macOS 26.6), so
+/// they are turned off after.
+fn set_text_document(scroll_view: &NSScrollView, text_view: &NSTextView) {
+    scroll_view.setDocumentView(Some(text_view));
+    if !private_effects::disallow_corner_content_insets(scroll_view) {
+        log::warn!("overlay text may shift while the glass's corners pass it: the scroll view corner inset switch is unavailable");
     }
-    panel.setContentView(Some(&root_view));
-
-    (panel, root_view)
 }
 
 fn configure_scroll_view(scroll_view: &NSScrollView) {
     scroll_view.setAutoresizingMask(
         NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
     );
+    // The crossfade and shimmer animate the scroll view's layer.
+    scroll_view.setWantsLayer(true);
     scroll_view.setDrawsBackground(false);
     scroll_view.setHasVerticalScroller(false);
     scroll_view.setHasHorizontalScroller(false);
@@ -827,11 +931,13 @@ fn make_text_view(
     text_view.setEditable(editable);
     text_view.setSelectable(true);
     text_view.setRichText(false);
-    text_view.setTextColor(Some(&NSColor::colorWithSRGBRed_green_blue_alpha(
-        0.98, 0.98, 0.99, 1.0,
-    )));
+    text_view.setTextColor(Some(&NSColor::labelColor()));
     text_view.setFont(Some(&resolve_overlay_font(style, style.font_size)));
     text_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    // `resize_text_view` sets its height on every update. Left to size itself
+    // to its text as well, it briefly shrinks between updates and the text
+    // jumps.
+    text_view.setVerticallyResizable(false);
     text_view
 }
 
@@ -936,7 +1042,7 @@ fn stacked_panel_frames(
         visible_frame.origin.x + ((visible_frame.size.width - OVERLAY_WIDTH) / 2.0);
     let stacked_height = main_height
         + correction_height
-            .map(|height| height + PANEL_STACK_GAP)
+            .map(|height| height + glass::STACK_GAP)
             .unwrap_or(0.0);
 
     let mut main_origin_y = current_main_origin_y.unwrap_or_else(|| {
@@ -946,7 +1052,7 @@ fn stacked_panel_frames(
     main_origin_y = main_origin_y.min(visible_max_y - main_height);
 
     let mut correction_origin_y =
-        correction_height.map(|_| main_origin_y + main_height + PANEL_STACK_GAP);
+        correction_height.map(|_| main_origin_y + main_height + glass::STACK_GAP);
     if let (Some(correction_height), Some(current_correction_origin_y)) =
         (correction_height, correction_origin_y.as_mut())
     {

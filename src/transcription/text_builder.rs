@@ -28,11 +28,21 @@ pub fn append_text_segment(output: &mut String, segment: &str) {
     output.push_str(trimmed_segment);
 }
 
+/// Overlay text during a live transcription session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveOverlayText {
+    pub text: String,
+    /// Byte offset in `text` where the interim transcript begins. Deepgram may
+    /// still revise everything from here to the end; `None` when all of `text`
+    /// is final.
+    pub provisional_start: Option<usize>,
+}
+
 pub fn build_overlay_text(
     recording_prefix: &str,
     transcript_parts: &[String],
     interim_transcript: Option<&str>,
-) -> String {
+) -> LiveOverlayText {
     let mut overlay_text = String::new();
     append_text_segment(&mut overlay_text, recording_prefix);
 
@@ -40,19 +50,25 @@ pub fn build_overlay_text(
         append_text_segment(&mut overlay_text, transcript.as_str());
     }
 
+    let final_text_len = overlay_text.len();
     if let Some(interim_transcript) = interim_transcript {
         append_text_segment(&mut overlay_text, interim_transcript);
     }
+    let provisional_start = (overlay_text.len() > final_text_len)
+        .then(|| overlay_text.len() - interim_transcript.map_or(0, |text| text.trim().len()));
 
     if !overlay_text.is_empty() && !overlay_text.ends_with(|c: char| c.is_whitespace()) {
         overlay_text.push(' ');
     }
 
-    overlay_text
+    LiveOverlayText {
+        text: overlay_text,
+        provisional_start,
+    }
 }
 
 pub fn join_transcript_parts(recording_prefix: &str, transcript_parts: &[String]) -> String {
-    build_overlay_text(recording_prefix, transcript_parts, None)
+    build_overlay_text(recording_prefix, transcript_parts, None).text
 }
 
 #[cfg(test)]
@@ -75,9 +91,38 @@ mod tests {
         let parts = vec!["final segment".to_owned()];
 
         assert_eq!(
-            build_overlay_text(prefix, &parts, Some("interim")),
+            build_overlay_text(prefix, &parts, Some("interim")).text,
             "Prefix text final segment interim "
         );
+    }
+
+    #[test]
+    fn build_overlay_text_marks_where_the_interim_transcript_begins() {
+        let parts = vec!["final segment".to_owned()];
+        let live_text = build_overlay_text("Prefix text", &parts, Some("  still talking "));
+
+        assert_eq!(live_text.text, "Prefix text final segment still talking ");
+        let provisional_start = live_text
+            .provisional_start
+            .expect("interim text should be marked provisional");
+        assert_eq!(&live_text.text[..provisional_start], "Prefix text final segment ");
+        assert_eq!(&live_text.text[provisional_start..], "still talking ");
+    }
+
+    #[test]
+    fn build_overlay_text_marks_interim_text_that_is_the_only_text() {
+        let live_text = build_overlay_text("", &[], Some("héllo"));
+
+        assert_eq!(live_text.text, "héllo ");
+        assert_eq!(live_text.provisional_start, Some(0));
+    }
+
+    #[test]
+    fn build_overlay_text_has_no_provisional_text_without_an_interim_transcript() {
+        let parts = vec!["final segment".to_owned()];
+
+        assert_eq!(build_overlay_text("Prefix", &parts, None).provisional_start, None);
+        assert_eq!(build_overlay_text("Prefix", &parts, Some("   ")).provisional_start, None);
     }
 
     #[test]
