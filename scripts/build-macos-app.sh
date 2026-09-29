@@ -91,6 +91,8 @@ cat > "${app_contents_path}/Info.plist" <<EOF
   <string>${package_version}</string>
   <key>CFBundleShortVersionString</key>
   <string>${package_version}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>26.0</string>
   <key>LSUIElement</key>
   <true/>
   <key>NSMicrophoneUsageDescription</key>

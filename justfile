@@ -16,6 +16,10 @@ run-simulated-error error_msg="deepgram connection failed":
 run-xdg:
     cargo run
 
+# Overlay tuner: the overlay with live controls for every glass setting (dev tool).
+debug-overlay:
+    cargo run -- --debug
+
 bundle-release:
     cargo build --locked --release
     ./scripts/build-macos-app.sh "target/release/simple-ptt" "dist/simple-ptt.app"

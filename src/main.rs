@@ -1,7 +1,6 @@
 mod app;
 mod audio;
 mod auto_launch;
-mod billing;
 mod config;
 mod deepgram_api;
 mod deepgram_connection;
@@ -41,6 +40,14 @@ fn main() {
             });
             return;
         }
+        [flag] if flag == "--debug" => {
+            overlay::dev::tuner::run();
+            return;
+        }
+        [flag, output_dir] if flag == "--overlay-snapshot" => {
+            overlay::dev::snapshot::run(output_dir);
+            return;
+        }
         [flag, output_dir] if flag == "--write-app-iconset" => {
             icon::write_application_iconset(Path::new(output_dir)).unwrap_or_else(|error| {
                 eprintln!("{}", error);
@@ -74,7 +81,7 @@ fn run_graphical_application() -> Result<(), String> {
     crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
 
     log::info!(
-        "config loaded (ui.start_on_login={}, ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, deepgram.project_id_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.auto={}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={}, transformation.correction_system_prompt_configured={})",
+        "config loaded (ui.start_on_login={}, ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.auto={}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={}, transformation.correction_system_prompt_configured={})",
         runtime_config.ui.start_on_login,
         runtime_config.ui.hotkey,
         runtime_config.mic.audio_device,
@@ -90,7 +97,6 @@ fn run_graphical_application() -> Result<(), String> {
         runtime_config.deepgram.model,
         runtime_config.deepgram.language,
         runtime_config.deepgram.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
-        runtime_config.deepgram.project_id.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
         runtime_config.resolve_transformation_config().is_ok(),
         Some(runtime_config.transformation.hotkey.as_str()),
         runtime_config.transformation.auto,
@@ -111,8 +117,6 @@ fn run_graphical_application() -> Result<(), String> {
     let deepgram_connection_controller = deepgram_connection::DeepgramConnectionController::new();
     let shared_state = state::AppState::new();
 
-    let billing_controller =
-        billing::BillingController::new(shared_state.clone(), config_store.clone());
     let transcription_controller =
         transcription::spawn_transcription_thread(shared_state.clone(), config_store.clone());
     let (audio_controller, initial_audio_error) = if startup_hotkey_permissions
@@ -138,7 +142,6 @@ fn run_graphical_application() -> Result<(), String> {
     if startup_hotkey_permissions.hotkey_permissions_granted() {
         hotkey::spawn_hotkey_thread(
             shared_state.clone(),
-            billing_controller.clone(),
             transcription_controller.clone(),
             config_store.clone(),
             hotkey_capture_controller.clone(),
@@ -160,7 +163,6 @@ fn run_graphical_application() -> Result<(), String> {
         hotkey_capture_controller,
         transformation_models_controller,
         deepgram_connection_controller,
-        billing_controller,
         audio_controller,
         shared_state,
     );

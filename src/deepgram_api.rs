@@ -3,36 +3,18 @@ use std::time::Duration;
 
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use serde::de::IgnoredAny;
 use serde::Deserialize;
-use time::{Date, Month};
 
 const API_URL_PREFIX: &str = "https://api.deepgram.com/v1";
 const APPLICATION_USER_AGENT: &str = concat!("simple-ptt/", env!("CARGO_PKG_VERSION"));
 const HTTP_TIMEOUT_SECS: u64 = 20;
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
-pub struct DeepgramProjectSummary {
-    #[serde(default)]
-    pub project_id: String,
-    #[serde(default)]
-    pub name: String,
-}
 
 #[derive(Debug)]
 pub enum DeepgramApiError {
     PermissionDenied(String),
     Unauthorized(String),
     Other(String),
-}
-
-#[derive(Deserialize)]
-struct BillingBreakdownResponse {
-    results: Vec<BillingBreakdownResult>,
-}
-
-#[derive(Deserialize)]
-struct BillingBreakdownResult {
-    dollars: f64,
 }
 
 #[derive(Deserialize)]
@@ -45,8 +27,9 @@ struct DeepgramErrorResponse {
 
 #[derive(Deserialize)]
 struct ListProjectsResponse {
+    /// Only counted, so each project is parsed and discarded.
     #[serde(default)]
-    projects: Vec<DeepgramProjectSummary>,
+    projects: Vec<IgnoredAny>,
 }
 
 impl Display for DeepgramApiError {
@@ -59,47 +42,8 @@ impl Display for DeepgramApiError {
     }
 }
 
-pub fn fetch_month_to_date_spend(
-    api_key: &str,
-    project_id: &str,
-    month_start: Date,
-    today: Date,
-) -> Result<f64, DeepgramApiError> {
-    let client = deepgram_http_client()?;
-    let response = client
-        .get(format!(
-            "{}/projects/{}/billing/breakdown",
-            API_URL_PREFIX, project_id
-        ))
-        .header(AUTHORIZATION, authorization_header_value(api_key)?)
-        .query(&[
-            ("start", format_date(month_start)),
-            ("end", format_date(today)),
-        ])
-        .send()
-        .map_err(|error| {
-            DeepgramApiError::Other(format!("billing breakdown request failed: {}", error))
-        })?;
-
-    if !response.status().is_success() {
-        return Err(parse_deepgram_error_response(response, "billing breakdown"));
-    }
-
-    let billing_breakdown: BillingBreakdownResponse = response.json().map_err(|error| {
-        DeepgramApiError::Other(format!(
-            "billing breakdown response parsing failed: {}",
-            error
-        ))
-    })?;
-
-    Ok(billing_breakdown
-        .results
-        .iter()
-        .map(|result| result.dollars)
-        .sum())
-}
-
-pub fn list_projects(api_key: &str) -> Result<Vec<DeepgramProjectSummary>, DeepgramApiError> {
+/// How many projects `api_key` can see.
+pub fn count_projects(api_key: &str) -> Result<usize, DeepgramApiError> {
     let client = deepgram_http_client()?;
     let response = client
         .get(format!("{}/projects", API_URL_PREFIX))
@@ -117,7 +61,7 @@ pub fn list_projects(api_key: &str) -> Result<Vec<DeepgramProjectSummary>, Deepg
         DeepgramApiError::Other(format!("project list response parsing failed: {}", error))
     })?;
 
-    Ok(projects_response.projects)
+    Ok(projects_response.projects.len())
 }
 
 fn deepgram_http_client() -> Result<Client, DeepgramApiError> {
@@ -199,21 +143,3 @@ fn parse_deepgram_error_response(
     )
 }
 
-fn format_date(date: Date) -> String {
-    let month_number: u8 = match date.month() {
-        Month::January => 1,
-        Month::February => 2,
-        Month::March => 3,
-        Month::April => 4,
-        Month::May => 5,
-        Month::June => 6,
-        Month::July => 7,
-        Month::August => 8,
-        Month::September => 9,
-        Month::October => 10,
-        Month::November => 11,
-        Month::December => 12,
-    };
-
-    format!("{:04}-{:02}-{:02}", date.year(), month_number, date.day())
-}

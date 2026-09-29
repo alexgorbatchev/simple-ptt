@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use self::platform::run_hotkey_event_loop;
-use crate::billing::BillingController;
 use crate::hotkey_binding::{
     is_modifier_key, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
 };
@@ -43,7 +42,6 @@ struct CurrentHotkeyConfig {
 
 pub fn spawn_hotkey_thread(
     state: Arc<AppState>,
-    billing_controller: BillingController,
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     hotkey_capture_controller: HotkeyCaptureController,
@@ -75,7 +73,6 @@ pub fn spawn_hotkey_thread(
                                 current_modifiers,
                                 &config_store,
                                 &state,
-                                &billing_controller,
                                 &controller,
                                 &press_time,
                                 &record_hotkey_action,
@@ -129,7 +126,6 @@ fn handle_key_press(
     current_modifiers: HotkeyModifiers,
     config_store: &LiveConfigStore,
     state: &AppState,
-    billing_controller: &BillingController,
     controller: &TranscriptionController,
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
@@ -229,7 +225,6 @@ fn handle_key_press(
                 return false;
             }
             STATE_RECORDING | STATE_BUFFER_READY => {
-                billing_controller.refresh_month_to_date_spend();
                 state.restore_overlay();
                 state.set_overlay_correction_active(true);
                 state.clear_overlay_correction_text();
@@ -273,7 +268,6 @@ fn handle_key_press(
 
         let action = match current_state {
             STATE_IDLE | STATE_ERROR | STATE_BUFFER_READY => {
-                billing_controller.refresh_month_to_date_spend();
                 state.restore_overlay();
                 state.clear_overlay_error_text();
                 if current_state != STATE_BUFFER_READY {

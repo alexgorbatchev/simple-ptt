@@ -29,12 +29,12 @@ correction_key = "LeftMeta"
 # Main transcript font size in the overlay.
 font_size = 12.0
 
-# Optional. Footer font size for shortcut hints and the Deepgram status (connection or billing) text.
+# Optional. Footer font size for the keyboard shortcut hint.
 # footer_font_size = 10.0
 
 # Audio meter style shown while recording.
-# Valid values: "animated-color", "animated-height", "none"
-meter_style = "animated-color"
+# Valid values: "pills", "animated-color", "animated-height", "none"
+meter_style = "pills"
 
 [mic]
 # Optional. Exact input device name or numeric index from `just list-devices`.
@@ -61,10 +61,6 @@ always_on = true
 # here takes precedence; DEEPGRAM_API_KEY is used only when this key is omitted
 # or empty.
 # api_key = "YOUR_DEEPGRAM_API_KEY"
-
-# Optional. Deepgram project ID for month-to-date billing in the overlay footer.
-# Falls back to DEEPGRAM_PROJECT_ID when omitted.
-# project_id = "00000000-0000-0000-0000-000000000000"
 
 # Deepgram streaming language code.
 language = "en-US"

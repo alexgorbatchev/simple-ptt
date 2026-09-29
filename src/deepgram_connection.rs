@@ -1,28 +1,23 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
-use crate::deepgram_api::{list_projects, DeepgramProjectSummary};
-use crate::state::{DeepgramApiKeyFingerprint, DeepgramConnectionStatus};
+use crate::deepgram_api::count_projects;
+use crate::state::DeepgramApiKeyFingerprint;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeepgramCheckRequest {
     pub resolved_api_key: String,
-    pub resolved_project_id: Option<String>,
 }
 
 impl DeepgramCheckRequest {
-    pub fn new(resolved_api_key: String, resolved_project_id: Option<String>) -> Self {
+    pub fn new(resolved_api_key: String) -> Self {
         Self {
             resolved_api_key: resolved_api_key.trim().to_owned(),
-            resolved_project_id: resolved_project_id
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty()),
         }
     }
 
     pub fn same_source_as(&self, other: &Self) -> bool {
         self.api_key_fingerprint() == other.api_key_fingerprint()
-            && self.resolved_project_id == other.resolved_project_id
     }
 
     pub fn api_key_fingerprint(&self) -> DeepgramApiKeyFingerprint {
@@ -33,12 +28,10 @@ impl DeepgramCheckRequest {
 #[derive(Clone, Debug)]
 pub enum DeepgramCheckUpdate {
     ConnectionChecked {
-        connection_status: DeepgramConnectionStatus,
         request: DeepgramCheckRequest,
         message: String,
     },
     ActionFailed {
-        connection_status: DeepgramConnectionStatus,
         request: DeepgramCheckRequest,
         message: String,
     },
@@ -85,14 +78,12 @@ impl DeepgramConnectionController {
     }
 
     fn check_connection(&self, request: DeepgramCheckRequest) -> DeepgramCheckUpdate {
-        match list_projects(&request.resolved_api_key) {
-            Ok(projects) => DeepgramCheckUpdate::ConnectionChecked {
-                connection_status: DeepgramConnectionStatus::Connected,
-                message: deepgram_connection_message(&request, &projects),
+        match count_projects(&request.resolved_api_key) {
+            Ok(project_count) => DeepgramCheckUpdate::ConnectionChecked {
+                message: deepgram_connection_message(project_count),
                 request,
             },
             Err(error) => DeepgramCheckUpdate::ActionFailed {
-                connection_status: DeepgramConnectionStatus::Disconnected,
                 request,
                 message: error.to_string(),
             },
@@ -106,102 +97,35 @@ impl DeepgramConnectionController {
     }
 }
 
-fn deepgram_connection_message(
-    request: &DeepgramCheckRequest,
-    projects: &[DeepgramProjectSummary],
-) -> String {
-    let project_count_message = match projects.len() {
+/// What a successful check reports: that the key connects, and how many
+/// projects it can see.
+fn deepgram_connection_message(project_count: usize) -> String {
+    let projects = match project_count {
         0 => "no projects".to_owned(),
         1 => "1 project".to_owned(),
         count => format!("{} projects", count),
     };
-
-    let Some(project_id) = request.resolved_project_id.as_deref() else {
-        return format!("Connected to Deepgram. Found {}.", project_count_message);
-    };
-
-    let Some(project) = projects
-        .iter()
-        .find(|project| project.project_id == project_id)
-    else {
-        return format!(
-            "Connected to Deepgram. Found {}, but configured project ID '{}' was not returned for this API key.",
-            project_count_message, project_id
-        );
-    };
-
-    let trimmed_project_name = project.name.trim();
-    if trimmed_project_name.is_empty() {
-        return format!(
-            "Connected to Deepgram. Found {}. Project ID '{}' is available.",
-            project_count_message, project_id
-        );
-    }
-
-    format!(
-        "Connected to Deepgram. Found {}. Project ID '{}' matches '{}'.",
-        project_count_message, project_id, trimmed_project_name
-    )
+    format!("Connected to Deepgram. Found {}.", projects)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{deepgram_connection_message, DeepgramCheckRequest};
-    use crate::deepgram_api::DeepgramProjectSummary;
 
     #[test]
-    fn deepgram_check_request_matches_same_api_key_and_project_id() {
-        let first = DeepgramCheckRequest::new("secret-key".to_owned(), Some("proj_123".to_owned()));
-        let second =
-            DeepgramCheckRequest::new(" secret-key ".to_owned(), Some("proj_123".to_owned()));
-        let different_project =
-            DeepgramCheckRequest::new("secret-key".to_owned(), Some("proj_456".to_owned()));
+    fn deepgram_check_request_is_the_same_source_for_the_same_trimmed_key() {
+        let first = DeepgramCheckRequest::new("secret-key".to_owned());
+        let second = DeepgramCheckRequest::new(" secret-key ".to_owned());
+        let other_key = DeepgramCheckRequest::new("other-key".to_owned());
 
         assert!(first.same_source_as(&second));
-        assert!(!first.same_source_as(&different_project));
+        assert!(!first.same_source_as(&other_key));
     }
 
     #[test]
-    fn connection_message_confirms_matching_project_id() {
-        let request =
-            DeepgramCheckRequest::new("secret-key".to_owned(), Some("proj_123".to_owned()));
-        let projects = vec![DeepgramProjectSummary {
-            project_id: "proj_123".to_owned(),
-            name: "Primary Workspace".to_owned(),
-        }];
-
-        assert_eq!(
-            deepgram_connection_message(&request, &projects),
-            "Connected to Deepgram. Found 1 project. Project ID 'proj_123' matches 'Primary Workspace'."
-        );
-    }
-
-    #[test]
-    fn connection_message_reports_missing_configured_project_id() {
-        let request =
-            DeepgramCheckRequest::new("secret-key".to_owned(), Some("proj_missing".to_owned()));
-        let projects = vec![DeepgramProjectSummary {
-            project_id: "proj_123".to_owned(),
-            name: "Primary Workspace".to_owned(),
-        }];
-
-        assert_eq!(
-            deepgram_connection_message(&request, &projects),
-            "Connected to Deepgram. Found 1 project, but configured project ID 'proj_missing' was not returned for this API key."
-        );
-    }
-
-    #[test]
-    fn connection_message_works_without_project_id() {
-        let request = DeepgramCheckRequest::new("secret-key".to_owned(), None);
-        let projects = vec![DeepgramProjectSummary {
-            project_id: "proj_123".to_owned(),
-            name: "Primary Workspace".to_owned(),
-        }];
-
-        assert_eq!(
-            deepgram_connection_message(&request, &projects),
-            "Connected to Deepgram. Found 1 project."
-        );
+    fn connection_message_counts_the_projects_the_key_can_see() {
+        assert_eq!(deepgram_connection_message(0), "Connected to Deepgram. Found no projects.");
+        assert_eq!(deepgram_connection_message(1), "Connected to Deepgram. Found 1 project.");
+        assert_eq!(deepgram_connection_message(3), "Connected to Deepgram. Found 3 projects.");
     }
 }

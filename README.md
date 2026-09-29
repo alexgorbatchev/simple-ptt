@@ -15,6 +15,8 @@ A fast, minimal push-to-talk app for macOS with live Deepgram transcription and 
 > xattr -dr com.apple.quarantine /Applications/simple-ptt.app
 > ```
 
+`simple-ptt` requires macOS 26 or later on Apple Silicon.
+
 Expect the usual macOS prompts for: **Microphone** and **Accessibility** for the global hotkey and synthetic paste workflow.
 
 ## Deepgram Costs
@@ -31,7 +33,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 ### Default workflow
 
 - Press the record hotkey (`F5` by default) to start listening.
-- Speak and watch the live transcript overlay update in real time.
+- Speak and watch the live transcript overlay update in real time. Words Deepgram may still revise appear dimmed and turn to full contrast once final.
 - Stop recording to paste the buffered text into the focused app.
 - If transformation is configured and enabled, the app can clean up the transcript before pasting.
 
@@ -39,6 +41,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 
 - **Tap vs hold:** short press behaves like toggle; holding past `mic.hold_ms` turns the same hotkey into hold-to-talk.
 - **Editable overlay:** You can click into the overlay at any time to manually type, fix, or delete words before pasting.
+- **Overlay look:** the overlay is dark-tinted clear Liquid Glass on a soft blur of the screen around it, and it pops in when it opens and out when it closes. The text switches between light and dark to stay readable against the glass. Below the transcript, a row of bars traces your voice level, newest on the right (**Meter style** in Settings > General, `ui.meter_style` in the config). While the transformation model rewrites the text, a light sweeps across it; errors show in red. A correction request appears above the transcript as the glass grows upward to hold it, and the glass shrinks back once the correction is applied. With Reduce Motion on, the overlay fades in and out, the correction appears and disappears in place, and the sweep is skipped.
 - **Correction key (`LeftMeta`, shown as `Cmd`, by default):** hold the configured correction key during dictation or while a buffered annotation is visible, speak a correction request, then release the key to apply that correction to the current annotation.
 - **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it. If you press `F6` while dictating, you can keep talking — your audio is buffered and will seamlessly append to the transformed text once the LLM finishes.
 - **Resume dictation:** If you have transformed text (or manually stopped recording), pressing `F5` again will seamlessly resume dictating onto the end of your existing text.
@@ -72,11 +75,11 @@ You can specify custom `keyterms` in the configuration to boost the transcriptio
 
 If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default.
 
-**Settings** groups the options into toolbar panes: **General** (record and correction shortcuts, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain in dB with a live meter, silence pad, keep microphone connection open), **Deepgram** (API key, project ID, language, keyterms, model, endpointing, utterance end), and **Transformation** (transform shortcut, auto-transform, provider, API key, model, and editors for the dictation and correction prompts, which are sent only to the transformation model). Choosing a transformation provider fills the model list from the model cache (`transformation-models.toml` in `$XDG_CACHE_HOME/simple-ptt`, by default `~/.cache/simple-ptt`), or fetches the provider's models when none are cached for that provider and API key. Providers other than Ollama and Hugging Face need their API key, in the field or its environment variable, before their models can be fetched. The API key field is shared by every provider, so a key typed there is sent automatically only when it is the key saved for the selected provider; otherwise enter that provider's key and click **Fetch models**. **Fetch models** reloads the list, and **Check** tests the connection. **Save** writes every pane to the config file. The transformation model and the two prompts are written only when they differ from the built-in defaults, so a config that leaves them out picks up improved defaults in later releases; a key the file already has is kept even when it matches the default. **Reset to Default** above each prompt editor in the Transformation pane puts the built-in prompt back; saving it without further edits removes that prompt from the config file even if the file had it. If the audio input devices can't be listed, or `mic.gain` is outside the slider's 0 to 10 dB range, Settings still loads every pane and explains the problem in its status area; the configured device stays selected, and **Save** writes the gain the slider shows. Settings opens once macOS brings simple-ptt to the front; if you choose **Settings…** and nothing appears, click the simple-ptt icon in the Dock.
+**Settings** groups the options into toolbar panes: **General** (record and correction shortcuts, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain in dB with a live meter, silence pad, keep microphone connection open), **Deepgram** (API key, language, keyterms, model, endpointing, utterance end), and **Transformation** (transform shortcut, auto-transform, provider, API key, model, and editors for the dictation and correction prompts, which are sent only to the transformation model). Choosing a transformation provider fills the model list from the model cache (`transformation-models.toml` in `$XDG_CACHE_HOME/simple-ptt`, by default `~/.cache/simple-ptt`), or fetches the provider's models when none are cached for that provider and API key. Providers other than Ollama and Hugging Face need their API key, in the field or its environment variable, before their models can be fetched. The API key field is shared by every provider, so a key typed there is sent automatically only when it is the key saved for the selected provider; otherwise enter that provider's key and click **Fetch models**. **Fetch models** reloads the list, and **Check** tests the connection. **Save** writes every pane to the config file. The transformation model and the two prompts are written only when they differ from the built-in defaults, so a config that leaves them out picks up improved defaults in later releases; a key the file already has is kept even when it matches the default. **Reset to Default** above each prompt editor in the Transformation pane puts the built-in prompt back; saving it without further edits removes that prompt from the config file even if the file had it. If the audio input devices can't be listed, or `mic.gain` is outside the slider's 0 to 10 dB range, Settings still loads every pane and explains the problem in its status area; the configured device stays selected, and **Save** writes the gain the slider shows. Settings opens once macOS brings simple-ptt to the front; if you choose **Settings…** and nothing appears, click the simple-ptt icon in the Dock.
 
 The correction interrupt is configured separately from the record and transform hotkeys via `ui.correction_key`. This must be a single specific key such as `LeftMeta`, `RightMeta`, `LeftAlt`, or `F7`, and it must not overlap with the record or transform triggers.
 
-Transformation now has two separate prompts:
+Transformation uses two separate prompts:
 
 - `transformation.system_prompt` for normal cleanup or rewrite of dictated text.
 - `transformation.correction_system_prompt` for correction mode, where the model receives both the current annotation and the spoken correction request.

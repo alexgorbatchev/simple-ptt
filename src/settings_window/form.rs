@@ -20,6 +20,7 @@ pub const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
 
 /// Meter styles in popup order, with the popup title of each.
 pub const METER_STYLE_TITLES: &[(UiMeterStyle, &str)] = &[
+    (UiMeterStyle::Pills, "pills"),
     (UiMeterStyle::AnimatedColor, "animated-color"),
     (UiMeterStyle::AnimatedHeight, "animated-height"),
     (UiMeterStyle::None, "none"),
@@ -62,7 +63,6 @@ pub struct MicrophoneForm {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeepgramForm {
     pub api_key: String,
-    pub project_id: String,
     pub language: String,
     /// Comma-separated keyterms.
     pub keyterms: String,
@@ -149,7 +149,6 @@ impl SettingsForm {
             },
             deepgram: DeepgramForm {
                 api_key: config.deepgram.api_key.clone().unwrap_or_default(),
-                project_id: config.deepgram.project_id.clone().unwrap_or_default(),
                 language: config.deepgram.language.clone(),
                 keyterms: config.deepgram.keyterms.join(", "),
                 model_title: Some(config.deepgram.model.clone()),
@@ -209,7 +208,6 @@ impl SettingsForm {
             },
             deepgram: DeepgramConfig {
                 api_key: optional_text(&deepgram.api_key),
-                project_id: optional_text(&deepgram.project_id),
                 language: required_text(&deepgram.language, "Deepgram language")?,
                 keyterms: parse_keyterms(&deepgram.keyterms),
                 model: required_popup_title(deepgram.model_title.as_deref(), "Deepgram model")?,
@@ -312,7 +310,7 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
         .map(|(style, _)| *style)
         .ok_or_else(|| {
             format!(
-                "Meter style must be one of: animated-color, animated-height, none (got '{}')",
+                "Meter style must be one of: pills, animated-color, animated-height, none (got '{}')",
                 raw_value
             )
         })
@@ -352,7 +350,6 @@ mod tests {
             deepgram: DeepgramConfig {
                 keyterms: vec!["macOS".to_owned(), "GitHub".to_owned()],
                 api_key: Some("dg-key".to_owned()),
-                project_id: Some("project-1".to_owned()),
                 language: "de-DE".to_owned(),
                 model: "nova-2-meeting".to_owned(),
                 endpointing_ms: 450,
@@ -415,7 +412,6 @@ mod tests {
             form.deepgram,
             DeepgramForm {
                 api_key: "dg-key".to_owned(),
-                project_id: "project-1".to_owned(),
                 language: "de-DE".to_owned(),
                 keyterms: "macOS, GitHub".to_owned(),
                 model_title: Some("nova-2-meeting".to_owned()),
@@ -457,7 +453,6 @@ mod tests {
         );
         assert_eq!(form.general.footer_font_size, None);
         assert_eq!(form.deepgram.api_key, "");
-        assert_eq!(form.deepgram.project_id, "");
         assert_eq!(form.transformation.api_key, "");
     }
 
@@ -488,7 +483,6 @@ mod tests {
         form.general.hotkey = "  F9 ".to_owned();
         form.general.font_name_title = Some(" Menlo ".to_owned());
         form.deepgram.api_key = "   ".to_owned();
-        form.deepgram.project_id = " project-2 ".to_owned();
         form.deepgram.language = " en-GB ".to_owned();
         form.transformation.api_key = "".to_owned();
         form.transformation.provider_title = Some(" anthropic ".to_owned());
@@ -499,7 +493,6 @@ mod tests {
         assert_eq!(config.ui.hotkey, "F9");
         assert_eq!(config.ui.font_name.as_deref(), Some("Menlo"));
         assert_eq!(config.deepgram.api_key, None);
-        assert_eq!(config.deepgram.project_id.as_deref(), Some("project-2"));
         assert_eq!(config.deepgram.language, "en-GB");
         assert_eq!(config.transformation.api_key, None);
         assert_eq!(config.transformation.provider.as_deref(), Some("anthropic"));
@@ -718,7 +711,7 @@ mod tests {
         assert_eq!(
             form.to_config(),
             Err(
-                "Meter style must be one of: animated-color, animated-height, none (got 'sparkles')"
+                "Meter style must be one of: pills, animated-color, animated-height, none (got 'sparkles')"
                     .to_owned()
             )
         );
@@ -727,6 +720,7 @@ mod tests {
     #[test]
     fn every_meter_style_round_trips_through_its_popup_title() {
         for meter_style in [
+            UiMeterStyle::Pills,
             UiMeterStyle::AnimatedColor,
             UiMeterStyle::AnimatedHeight,
             UiMeterStyle::None,

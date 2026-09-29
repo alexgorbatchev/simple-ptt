@@ -14,9 +14,11 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Build the `.app` bundle: `just bundle-release`
 - Build the DMG: `just bundle-dmg`
 - Install to `~/Applications` and launch: `just install-app && just start`
+- Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` value, the meter style, the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
+- Capture every overlay state over light and dark backdrops, then exit: `cargo run -- --overlay-snapshot .tmp/snapshots` (needs Screen Recording permission for the terminal).
 
 ## Setup
-- Runtime and release packaging are macOS-only and currently target Apple Silicon (`aarch64-apple-darwin` in `.github/workflows/release.yml`).
+- Runtime and release packaging are macOS-only and currently target Apple Silicon (`aarch64-apple-darwin` in `.github/workflows/release.yml`). The app requires macOS 26 or later (`LSMinimumSystemVersion` in `scripts/build-macos-app.sh`) because the overlay uses Liquid Glass (`NSGlassEffectView`); keep each release's `sparkle:minimumSystemVersion` in `appcast.xml` at the same version.
 - Normal app launches should use `~/.config/simple-ptt/config.toml`. `SIMPLE_PTT_CONFIG` is for Terminal-driven dev runs only.
 - Keep secrets out of the repo. Use placeholders in `config.example.toml`; do not commit real Deepgram or LLM API keys.
 
@@ -29,6 +31,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Preserve user config comments and unknown TOML sections by writing through `config::save_config` in `src/config/mod.rs`. It intentionally uses `toml_edit`; do not replace it with a lossy serializer.
 - Permission changes are stateful and may require relaunch after grant. Follow the `NeedsRelaunch` flow in `src/permissions.rs` and `src/permissions_dialog.rs` instead of shortcutting it.
 - Keep packaging changes aligned across `scripts/build-macos-app.sh`, `scripts/build-macos-dmg.sh`, and `.github/workflows/release.yml`.
+- Before changing how the overlay looks or moves (`src/overlay/`, `src/ui_meter.rs`), load the `overlay-visual-debugging` skill in `.agents/skills/`; it holds the probe workflow and measured macOS 26 glass behaviors. Values the user settles on in debug mode become the `GlassTuning` defaults in `src/overlay/glass.rs`, pinned by its tests. Debug mode lives in `src/overlay/dev/`; product code must not call the `OverlayWindow` methods only it uses (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`). Debug mode is a developer tool: keep it out of `README.md`.
 
 ## Releases & Versioning
 - **SemVer:** Automatically determine the next best SemVer release version based on the git history (e.g. `feat:` for minor, `fix:` for patch). Always confirm the proposed next version with the user before committing bumps or creating tags.
@@ -40,7 +43,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - LaunchServices-launched apps do not reliably inherit shell environment variables. For real app runs, prefer file-backed config in `~/.config/simple-ptt/config.toml`.
 - `just run` sets `SIMPLE_PTT_CONFIG=./config.toml`; `just run-xdg` does not. Use the right command when reproducing config-loading bugs.
 - macOS TCC state can become stale after rebuilding or replacing the ad-hoc-signed app bundle. Use the in-app permissions flow or `scripts/clear-macos-permissions.sh`, then relaunch.
-- Do not start the application yourself, that's a blocking process and user doesn't expect it.
+- Do not start the application yourself, that's a blocking process and user doesn't expect it. This includes `just debug-overlay`; `--overlay-snapshot` is the exception because it exits on its own.
 - Every settings pane must fit the window's minimum content size: `SettingsWindow::new` sizes it from the largest pane's `fittingSize`, measured again after a layout pass so wrapping hints count at their wrapped height. Hint rows hidden while empty (the API key environment hints) are not counted; the Transformation pane's prompt editors give up that height instead of the window growing, because their minimum height has a priority below `NSLayoutPriorityWindowSizeStayPut`. `cargo test` cannot check AppKit layout, so verify layout changes with an ad hoc, uncommitted off-screen harness under `.tmp/` that builds the window on the main thread and checks `hasAmbiguousLayout`, first-baseline alignment, and snapshots; do not launch the app.
 - **Overlay UI Keybindings:** Do not introduce explicit keyboard actions (like Enter, Esc, etc.) inside the overlay's text editor. The entire dictation, editing, and pasting sequence is driven purely by the system-wide record/transform hotkeys (e.g., F5/F6) captured by the CGEventTap in `src/hotkey_macos.rs` and dispatched in `src/hotkey.rs`. Releasing the recording hotkey acts as the trigger to finish and paste.
 
@@ -61,5 +64,6 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - `src/settings_window/`
 - `src/transcription/`
 - `src/permissions.rs`
+- `.agents/skills/overlay-visual-debugging/`
 - `scripts/build-macos-app.sh`
 - `.github/workflows/release.yml`
