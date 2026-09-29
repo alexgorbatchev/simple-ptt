@@ -19,7 +19,7 @@ use crate::app::overlay_style_from_config;
 use crate::config::Config;
 use crate::overlay::OverlayWindow;
 use crate::state::{
-    AppState, DeepgramApiKeyFingerprint, DeepgramConnectionStatus, MicMeterSnapshot, OverlayText,
+    AppState, MicMeterSnapshot, OverlayText,
     STATE_BUFFER_READY, STATE_ERROR, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
@@ -141,12 +141,8 @@ pub fn run(dir: &str) {
     std::fs::create_dir_all(dir).unwrap();
 
     let state = AppState::new();
-    let api_key = DeepgramApiKeyFingerprint::of("snapshot-key");
-    state.set_deepgram_connection_status(DeepgramConnectionStatus::Connected, api_key);
-    let mut style = overlay_style_from_config(&Config::default());
-    style.deepgram_api_key = Some(api_key);
+    let style = overlay_style_from_config(&Config::default());
     let overlay = OverlayWindow::new(mtm, &style, state.clone());
-    let connection = state.deepgram_connection();
 
     let dictated = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the";
     let interim_tail = "updated mockups before lunch";
@@ -167,8 +163,7 @@ pub fn run(dir: &str) {
                       correction_active: bool,
                       mic: MicMeterSnapshot| {
             overlay.update(
-                mtm, state_value, connection, false, main, error, correction,
-                correction_active, 1.0, "", mic,
+                mtm, state_value, false, main, error, correction, correction_active, 1.0, mic,
             );
         };
         // Like the status poll: one update, then ~75 ms of run loop, and a

@@ -26,8 +26,7 @@ use objc2_foundation::{
 
 use crate::config::UiMeterStyle;
 use crate::state::{
-    AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
-    MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
+    AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::ui_meter::{self, UiMeterView};
@@ -46,13 +45,10 @@ const MAIN_OVERLAY_MIN_HEIGHT: f64 = 180.0;
 const OVERLAY_WIDTH: f64 = 560.0;
 const DEFAULT_TEXT_FONT_SIZE: f64 = 12.0;
 const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
-const FOOTER_HEIGHT: f64 = 40.0;
+/// The footer holds one line, the keyboard hint, with even padding.
 const FOOTER_LINE_HEIGHT: f64 = 14.0;
-const FOOTER_VERTICAL_PADDING: f64 = 5.0;
-const FOOTER_STATUS_DOT_DIAMETER: f64 = 6.0;
-const FOOTER_STATUS_DOT_GAP: f64 = 3.0;
-const FOOTER_STATUS_DOT_X_OFFSET: f64 = -6.0;
-const FOOTER_TEXT_X_OFFSET: f64 = -4.0;
+const FOOTER_VERTICAL_PADDING: f64 = 7.0;
+const FOOTER_HEIGHT: f64 = FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING);
 const FOOTER_TEXT_SRGB: (f64, f64, f64) = (0.5, 0.5, 0.5);
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
 const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
@@ -72,10 +68,6 @@ pub struct OverlayStyle {
     pub footer_font_size: f64,
     pub meter_style: UiMeterStyle,
     pub shortcut_hint: Option<String>,
-    /// The Deepgram API key that resolves now (config or `DEEPGRAM_API_KEY`).
-    /// The footer shows the connection dot only when there is one, and shows a
-    /// connection status only if it was measured with this key.
-    pub deepgram_api_key: Option<DeepgramApiKeyFingerprint>,
 }
 
 #[derive(Debug)]
@@ -88,11 +80,8 @@ pub struct OverlayWindow {
     ui_meter_view: UiMeterView,
     working_scroll_view: Retained<NSScrollView>,
     working_text_view: Retained<NSTextView>,
-    footer_status_indicator_view: Retained<NSView>,
-    footer_text_field: Retained<NSTextField>,
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
-    deepgram_api_key: Cell<Option<DeepgramApiKeyFingerprint>>,
     is_visible: Cell<bool>,
     is_error_color: Cell<bool>,
     text_opacity: Cell<f64>,
@@ -161,44 +150,6 @@ impl OverlayWindow {
             .setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         ui_meter_view.set_hidden(true);
 
-        let footer_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
-        let custom_cell: Retained<VerticallyCenteredTextFieldCell> = unsafe {
-            msg_send![
-                VerticallyCenteredTextFieldCell::alloc(mtm),
-                initTextCell: &*NSString::from_str("")
-            ]
-        };
-        footer_text_field.setCell(Some(custom_cell.as_super()));
-        footer_text_field.setDrawsBackground(false);
-        footer_text_field.setBordered(false);
-        footer_text_field.setBezeled(false);
-        footer_text_field.setEditable(false);
-        footer_text_field.setSelectable(false);
-        footer_text_field.setTextColor(Some(&footer_text_color()));
-        footer_text_field.setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
-        footer_text_field.setFrame(footer_text_frame(style.shortcut_hint.is_some()));
-        footer_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
-        if let Some(cell) = footer_text_field.cell() {
-            cell.setAlignment(NSTextAlignment::Left);
-            cell.setLineBreakMode(NSLineBreakMode::ByClipping);
-            cell.setUsesSingleLineMode(true);
-        }
-
-        let footer_status_indicator_view = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            footer_status_indicator_frame(style.shortcut_hint.is_some()),
-        );
-        footer_status_indicator_view.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMaxXMargin);
-        footer_status_indicator_view.setWantsLayer(true);
-        if let Some(layer) = footer_status_indicator_view.layer() {
-            let color = footer_connection_status_color(DeepgramConnectionStatus::Unknown);
-            let color = color.CGColor();
-            layer.setBackgroundColor(Some(&color));
-            layer.setCornerRadius(FOOTER_STATUS_DOT_DIAMETER / 2.0);
-            layer.setMasksToBounds(true);
-        }
-        footer_status_indicator_view.setHidden(true);
-
         let footer_hint_text_field = NSTextField::labelWithString(&NSString::from_str(""), mtm);
         let custom_hint_cell: Retained<VerticallyCenteredTextFieldCell> = unsafe {
             msg_send![
@@ -217,7 +168,7 @@ impl OverlayWindow {
         footer_hint_text_field.setFrame(footer_hint_frame());
         footer_hint_text_field.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
         if let Some(cell) = footer_hint_text_field.cell() {
-            cell.setAlignment(NSTextAlignment::Left);
+            cell.setAlignment(NSTextAlignment::Center);
             cell.setLineBreakMode(NSLineBreakMode::ByClipping);
             cell.setUsesSingleLineMode(true);
         }
@@ -231,8 +182,6 @@ impl OverlayWindow {
         root_view.addSubview(&working_scroll_view);
         root_view.addSubview(ui_meter_view.view());
         root_view.addSubview(&separator_view);
-        root_view.addSubview(&footer_status_indicator_view);
-        root_view.addSubview(&footer_text_field);
         root_view.addSubview(&footer_hint_text_field);
         correction_root_view.addSubview(&correction_scroll_view);
         glass.panel.orderOut(None);
@@ -246,11 +195,8 @@ impl OverlayWindow {
             ui_meter_view,
             working_scroll_view,
             working_text_view,
-            footer_status_indicator_view,
-            footer_text_field,
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
-            deepgram_api_key: Cell::new(style.deepgram_api_key),
             is_visible: Cell::new(false),
             is_error_color: Cell::new(false),
             text_opacity: Cell::new(1.0),
@@ -271,14 +217,12 @@ impl OverlayWindow {
         &self,
         mtm: MainThreadMarker,
         state: u8,
-        deepgram_connection: DeepgramConnection,
         overlay_dismissed: bool,
         overlay_text: &OverlayText,
         overlay_error_text: &str,
         overlay_correction_text: &OverlayText,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
-        overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
         let should_show = !overlay_dismissed
@@ -305,16 +249,7 @@ impl OverlayWindow {
             (&*overlay_text.text, overlay_text.provisional_start)
         };
         let overlay_correction_text_value = &*overlay_correction_text.text;
-        let current_api_key = self.deepgram_api_key.get();
-        let deepgram_connection_status = deepgram_connection.status_for(current_api_key);
-        let footer_status_text = footer_status_text(
-            overlay_footer_text,
-            current_api_key.is_some(),
-            deepgram_connection_status,
-        );
-        let footer_status_is_visible = footer_status_text.is_some();
-        let footer_hint_is_visible = self.footer_hint.borrow().is_some();
-        let footer_is_visible = footer_status_is_visible || footer_hint_is_visible;
+        let footer_is_visible = self.footer_hint.borrow().is_some();
         let correction_is_visible = overlay_correction_active;
         let meter_is_visible =
             state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
@@ -371,8 +306,6 @@ impl OverlayWindow {
             mtm,
             correction_is_visible,
             footer_is_visible,
-            footer_status_is_visible,
-            footer_hint_is_visible,
             meter_is_visible,
         );
         if state == STATE_TRANSFORMING {
@@ -381,8 +314,6 @@ impl OverlayWindow {
             self.shimmer.stop(&self.working_scroll_view);
         }
         self.set_working_text_opacity(overlay_text_opacity);
-        self.set_footer_status_indicator(deepgram_connection_status);
-        self.set_footer_text(footer_status_text.unwrap_or(""));
 
         if meter_is_visible {
             self.ui_meter_view.update(mic_meter, meter_cluster_width());
@@ -424,7 +355,6 @@ impl OverlayWindow {
         self.set_working_text("", None, None);
         self.set_correction_text("", None, false);
         self.set_working_text_opacity(1.0);
-        self.set_footer_text("");
     }
 
     pub fn glass_tuning(&self) -> GlassTuning {
@@ -466,13 +396,10 @@ impl OverlayWindow {
         self.working_text_view.setFont(Some(&text_font));
         self.correction_text_view.setFont(Some(&text_font));
         self.text_font.replace(text_font);
-        self.footer_text_field
-            .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         self.footer_hint_text_field
             .setFont(Some(&resolve_overlay_font(style, style.footer_font_size)));
         self.ui_meter_view.set_style(style.meter_style);
         self.footer_hint.replace(style.shortcut_hint.clone());
-        self.deepgram_api_key.set(style.deepgram_api_key);
 
         if let Some(shortcut_hint) = style.shortcut_hint.as_deref() {
             self.footer_hint_text_field
@@ -483,10 +410,6 @@ impl OverlayWindow {
                 .setStringValue(&NSString::from_str(""));
             self.footer_hint_text_field.setHidden(true);
         }
-        self.footer_text_field
-            .setFrame(footer_text_frame(style.shortcut_hint.is_some()));
-        self.footer_status_indicator_view
-            .setFrame(footer_status_indicator_frame(style.shortcut_hint.is_some()));
 
         if !self.is_visible.get() {
             self.ui_meter_view.clear(meter_cluster_width());
@@ -494,8 +417,6 @@ impl OverlayWindow {
 
         NSView::setNeedsDisplay(&self.working_text_view, true);
         NSView::setNeedsDisplay(&self.correction_text_view, true);
-        NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
-        NSView::setNeedsDisplay(&self.footer_text_field, true);
         NSView::setNeedsDisplay(&self.footer_hint_text_field, true);
     }
 
@@ -504,8 +425,6 @@ impl OverlayWindow {
         mtm: MainThreadMarker,
         correction_is_visible: bool,
         footer_is_visible: bool,
-        footer_status_is_visible: bool,
-        footer_hint_is_visible: bool,
         meter_is_visible: bool,
     ) {
         let visible_frame = self.selected_visible_frame(mtm);
@@ -590,11 +509,7 @@ impl OverlayWindow {
                 main_height,
             );
         self.separator_view.setHidden(!footer_is_visible);
-        self.footer_status_indicator_view
-            .setHidden(!footer_status_is_visible);
-        self.footer_text_field.setHidden(!footer_status_is_visible);
-        self.footer_hint_text_field
-            .setHidden(!footer_hint_is_visible);
+        self.footer_hint_text_field.setHidden(!footer_is_visible);
         self.working_scroll_view.setFrame(main_text_view_frame(
             footer_is_visible,
             meter_is_visible,
@@ -871,22 +786,6 @@ impl OverlayWindow {
         self.working_text_view.setAlphaValue(next_text_opacity);
         self.text_opacity.set(next_text_opacity);
         NSView::setNeedsDisplay(&self.working_text_view, true);
-    }
-
-    fn set_footer_text(&self, footer_text: &str) {
-        self.footer_text_field
-            .setStringValue(&NSString::from_str(footer_text));
-        NSView::setNeedsDisplay(&self.footer_text_field, true);
-    }
-
-    fn set_footer_status_indicator(&self, status: DeepgramConnectionStatus) {
-        if let Some(layer) = self.footer_status_indicator_view.layer() {
-            let color = footer_connection_status_color(status);
-            let color = color.CGColor();
-            layer.setBackgroundColor(Some(&color));
-        }
-
-        NSView::setNeedsDisplay(&self.footer_status_indicator_view, true);
     }
 }
 
@@ -1185,117 +1084,22 @@ fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> 
     )
 }
 
-fn footer_text_frame(has_footer_hint: bool) -> NSRect {
-    let footer_text_origin_x = TEXT_HORIZONTAL_PADDING
-        + FOOTER_STATUS_DOT_DIAMETER
-        + FOOTER_STATUS_DOT_GAP
-        + FOOTER_TEXT_X_OFFSET;
-
-    NSRect::new(
-        NSPoint::new(
-            footer_text_origin_x,
-            footer_bottom_line_origin_y(has_footer_hint) + 1.0,
-        ),
-        NSSize::new(
-            (OVERLAY_WIDTH - footer_text_origin_x - TEXT_HORIZONTAL_PADDING).max(0.0),
-            FOOTER_LINE_HEIGHT,
-        ),
-    )
-}
-
-fn footer_status_indicator_frame(has_footer_hint: bool) -> NSRect {
-    NSRect::new(
-        NSPoint::new(
-            footer_status_indicator_origin_x(),
-            footer_bottom_line_origin_y(has_footer_hint)
-                + ((FOOTER_LINE_HEIGHT - FOOTER_STATUS_DOT_DIAMETER) / 2.0),
-        ),
-        NSSize::new(FOOTER_STATUS_DOT_DIAMETER, FOOTER_STATUS_DOT_DIAMETER),
-    )
-}
-
+/// The keyboard hint's line: across the text column, centred in the footer
+/// both ways, with its text centred on it.
 fn footer_hint_frame() -> NSRect {
     NSRect::new(
-        NSPoint::new(
-            footer_status_indicator_origin_x(),
-            footer_top_line_origin_y(),
-        ),
-        NSSize::new(
-            OVERLAY_WIDTH - footer_status_indicator_origin_x() - TEXT_HORIZONTAL_PADDING,
-            FOOTER_LINE_HEIGHT,
-        ),
+        NSPoint::new(TEXT_HORIZONTAL_PADDING, (FOOTER_HEIGHT - FOOTER_LINE_HEIGHT) / 2.0),
+        NSSize::new(usable_text_width(), FOOTER_LINE_HEIGHT),
     )
-}
-
-fn footer_status_indicator_origin_x() -> f64 {
-    TEXT_HORIZONTAL_PADDING + FOOTER_STATUS_DOT_X_OFFSET
-}
-
-fn footer_top_line_origin_y() -> f64 {
-    FOOTER_HEIGHT - FOOTER_VERTICAL_PADDING - FOOTER_LINE_HEIGHT
-}
-
-fn footer_bottom_line_origin_y(has_footer_hint: bool) -> f64 {
-    if has_footer_hint {
-        FOOTER_VERTICAL_PADDING
-    } else {
-        (FOOTER_HEIGHT - FOOTER_LINE_HEIGHT) / 2.0
-    }
 }
 
 fn usable_text_width() -> f64 {
     OVERLAY_WIDTH - (TEXT_HORIZONTAL_PADDING * 2.0)
 }
 
-/// Decides the footer status line: the Deepgram connection dot and the text
-/// beside it. `None` hides both. The dot shows whenever a Deepgram API key
-/// resolves; the text is the billing text `BillingController` publishes when a
-/// project ID is configured, and the connection label when it is empty.
-fn footer_status_text(
-    billing_text: &str,
-    deepgram_api_key_configured: bool,
-    status: DeepgramConnectionStatus,
-) -> Option<&str> {
-    if !deepgram_api_key_configured {
-        return None;
-    }
-
-    if billing_text.trim().is_empty() {
-        Some(footer_connection_label(status))
-    } else {
-        Some(billing_text)
-    }
-}
-
-/// Text beside the connection dot when there is no billing text to show (no
-/// Deepgram project ID configured). It follows the billing text's
-/// "Deepgram ...: <state>" form and states what the dot's color shows.
-pub fn footer_connection_label(status: DeepgramConnectionStatus) -> &'static str {
-    match status {
-        DeepgramConnectionStatus::Connected => "Deepgram: connected",
-        DeepgramConnectionStatus::Disconnected => "Deepgram: disconnected",
-        DeepgramConnectionStatus::Unknown => "Deepgram: ...",
-    }
-}
-
-fn footer_connection_status_color(status: DeepgramConnectionStatus) -> Retained<NSColor> {
-    let (red, green, blue) = footer_connection_status_srgb(status);
-    NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0)
-}
-
 fn footer_text_color() -> Retained<NSColor> {
     let (red, green, blue) = FOOTER_TEXT_SRGB;
     NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0)
-}
-
-/// Unknown (no connection attempt has finished yet) uses the footer text's
-/// gray, so the dot does not claim a failure before one happened.
-fn footer_connection_status_srgb(status: DeepgramConnectionStatus) -> (f64, f64, f64) {
-    match status {
-        DeepgramConnectionStatus::Connected => (0.26, 0.86, 0.54),
-        DeepgramConnectionStatus::Disconnected => (0.95, 0.28, 0.24),
-        DeepgramConnectionStatus::Unknown => FOOTER_TEXT_SRGB,
-    }
 }
 
 fn find_screen_visible_frame_for_point(
@@ -1353,80 +1157,18 @@ fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{footer_connection_label, footer_connection_status_srgb, footer_status_text};
-    use crate::state::DeepgramConnectionStatus;
-
-    const ALL_STATUSES: [DeepgramConnectionStatus; 3] = [
-        DeepgramConnectionStatus::Unknown,
-        DeepgramConnectionStatus::Disconnected,
-        DeepgramConnectionStatus::Connected,
-    ];
+    use super::{footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT, FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH};
 
     #[test]
-    fn footer_shows_connection_label_when_key_resolves_without_project_id() {
-        for status in ALL_STATUSES {
-            assert_eq!(
-                footer_status_text("", true, status),
-                Some(footer_connection_label(status))
-            );
-            assert_eq!(
-                footer_status_text("  ", true, status),
-                Some(footer_connection_label(status))
-            );
-        }
+    fn footer_holds_one_line_with_even_padding() {
+        assert_eq!(FOOTER_HEIGHT, FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING));
+        assert_eq!(FOOTER_HEIGHT, 28.0);
     }
 
     #[test]
-    fn footer_connection_label_states_the_connection_status() {
-        assert_eq!(
-            footer_connection_label(DeepgramConnectionStatus::Connected),
-            "Deepgram: connected"
-        );
-        assert_eq!(
-            footer_connection_label(DeepgramConnectionStatus::Disconnected),
-            "Deepgram: disconnected"
-        );
-        assert_eq!(
-            footer_connection_label(DeepgramConnectionStatus::Unknown),
-            "Deepgram: ..."
-        );
-    }
-
-    #[test]
-    fn footer_passes_billing_text_through_unchanged_when_project_id_is_configured() {
-        for billing_text in [
-            "Deepgram (Apr 2026): ...",
-            "Deepgram (Apr 2026): $12.34",
-            "Deepgram (Apr 2026): unavailable",
-            "Admin- or owner-level project API key required for billing reporting.",
-        ] {
-            for status in ALL_STATUSES {
-                assert_eq!(
-                    footer_status_text(billing_text, true, status),
-                    Some(billing_text)
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn footer_hides_dot_and_text_without_an_api_key() {
-        for billing_text in ["", "Deepgram (Apr 2026): $12.34"] {
-            for status in ALL_STATUSES {
-                assert_eq!(footer_status_text(billing_text, false, status), None);
-            }
-        }
-    }
-
-    #[test]
-    fn unknown_connection_status_is_drawn_apart_from_disconnected() {
-        assert_ne!(
-            footer_connection_status_srgb(DeepgramConnectionStatus::Unknown),
-            footer_connection_status_srgb(DeepgramConnectionStatus::Disconnected)
-        );
-        assert_ne!(
-            footer_connection_status_srgb(DeepgramConnectionStatus::Unknown),
-            footer_connection_status_srgb(DeepgramConnectionStatus::Connected)
-        );
+    fn keyboard_hint_is_centred_in_the_footer() {
+        let frame = footer_hint_frame();
+        assert_eq!(frame.origin.x + (frame.size.width / 2.0), OVERLAY_WIDTH / 2.0);
+        assert_eq!(frame.origin.y + (frame.size.height / 2.0), FOOTER_HEIGHT / 2.0);
     }
 }

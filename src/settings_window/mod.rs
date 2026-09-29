@@ -262,9 +262,6 @@ impl SettingsWindow {
                 api_key: config
                     .deepgram_api_key_env_var_in_use()
                     .map(environment_hint_message),
-                project_id: config
-                    .deepgram_project_id_env_var_in_use()
-                    .map(environment_hint_message),
             },
         );
         self.transformation.load(
@@ -340,10 +337,6 @@ impl SettingsWindow {
 
     pub fn deepgram_api_key_value(&self) -> Option<String> {
         self.deepgram.api_key_value()
-    }
-
-    pub fn deepgram_project_id_value(&self) -> Option<String> {
-        self.deepgram.project_id_value()
     }
 
     pub fn transformation_provider_value(&self) -> Option<String> {

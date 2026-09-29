@@ -5,7 +5,6 @@
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -47,7 +46,7 @@ const CURVE_PRESETS: [(&str, HaloCurve); 4] = [
 ];
 use crate::overlay::OverlayWindow;
 use crate::state::{
-    AppState, DeepgramApiKeyFingerprint, DeepgramConnectionStatus, MicMeterSnapshot, OverlayText,
+    AppState, MicMeterSnapshot, OverlayText,
     STATE_BUFFER_READY, STATE_ERROR, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
@@ -201,7 +200,6 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
-    app_state: Arc<AppState>,
     controls: RefCell<Option<Controls>>,
     /// The overlay stays hidden until then, so "Pop again" shows both motions.
     hidden_until: Cell<Option<Instant>>,
@@ -357,7 +355,6 @@ impl TunerState {
         let level = (128.0 + 110.0 * ((tick as f64) * 0.35).sin()) as u8;
         let meter = MicMeterSnapshot { clip_event_counter: 0, level, peak: level.saturating_add(30), mic_active: true };
         let quiet = MicMeterSnapshot::default();
-        let connection = self.app_state.deepgram_connection();
         let (state, main, error, scenario_correction, mic) = match scenario {
             0 => (STATE_RECORDING, &main_text, "", &live, meter),
             1 => (STATE_TRANSFORMING, &main_text, "", &preview_text, quiet),
@@ -367,7 +364,7 @@ impl TunerState {
         let correction_active = self.correction_shown.get();
         let correction = if correction_active { &correction_text } else { scenario_correction };
         let mtm = MainThreadMarker::new().expect("main thread");
-        self.overlay.update(mtm, state, connection, false, main, error, correction, correction_active, 1.0, "", mic);
+        self.overlay.update(mtm, state, false, main, error, correction, correction_active, 1.0, mic);
     }
 }
 
@@ -553,17 +550,13 @@ pub fn run() {
     app.finishLaunching();
 
     let app_state = AppState::new();
-    let api_key = DeepgramApiKeyFingerprint::of("debug-key");
-    app_state.set_deepgram_connection_status(DeepgramConnectionStatus::Connected, api_key);
-    let mut style = overlay_style_from_config(&Config::default());
-    style.deepgram_api_key = Some(api_key);
+    let style = overlay_style_from_config(&Config::default());
     let overlay = OverlayWindow::new(mtm, &style, app_state.clone());
     // Near the top of the screen, leaving room for the controls below it.
     overlay.pin_to_top(Some(24.0));
 
     let state = Rc::new(TunerState {
         overlay,
-        app_state,
         controls: RefCell::new(None),
         hidden_until: Cell::new(None),
         repop_after: Cell::new(None),

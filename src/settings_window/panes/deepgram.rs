@@ -16,11 +16,10 @@ use crate::settings_window::popups::populate_deepgram_model_popup;
 
 const KEYTERMS_HINT: &str = "Comma-separated (e.g. 'macOS, GitHub')";
 
-/// Environment variable hints shown below the credential fields.
+/// Environment variable hint shown below the API key field.
 #[derive(Debug, Default)]
 pub struct DeepgramEnvironmentHints {
     pub api_key: Option<String>,
-    pub project_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -28,8 +27,6 @@ pub struct DeepgramPane {
     api_key_field: Retained<NSTextField>,
     pub api_key_check_button: Retained<NSButton>,
     api_key_env_hint: HintRow,
-    project_id_field: Retained<NSTextField>,
-    project_id_env_hint: HintRow,
     language_field: Retained<NSTextField>,
     keyterms_field: Retained<NSTextField>,
     model_popup: Retained<NSPopUpButton>,
@@ -46,7 +43,6 @@ impl DeepgramPane {
             target,
             SettingsAction::CheckDeepgramConnection,
         );
-        let project_id_field = text_field(mtm);
         let language_field = text_field(mtm);
         let keyterms_field = text_field(mtm);
         let model_popup = pop_up_button(mtm);
@@ -68,8 +64,6 @@ impl DeepgramPane {
             &[&api_key_check_button],
         );
         let api_key_env_hint = grid.add_hint_row(None);
-        grid.add_row("Project ID:", &project_id_field, ControlWidth::Fill, &[]);
-        let project_id_env_hint = grid.add_hint_row(None);
         grid.add_row("Language:", &language_field, ControlWidth::Fill, &[]);
         grid.add_row("Keyterms:", &keyterms_field, ControlWidth::Fill, &[]);
         grid.add_hint_row(Some(KEYTERMS_HINT));
@@ -91,8 +85,6 @@ impl DeepgramPane {
             api_key_field,
             api_key_check_button,
             api_key_env_hint,
-            project_id_field,
-            project_id_env_hint,
             language_field,
             keyterms_field,
             model_popup,
@@ -106,9 +98,6 @@ impl DeepgramPane {
     pub fn load(&self, form: &DeepgramForm, hints: DeepgramEnvironmentHints) {
         set_text_value(&self.api_key_field, &form.api_key);
         self.api_key_env_hint.set_text(hints.api_key.as_deref());
-        set_text_value(&self.project_id_field, &form.project_id);
-        self.project_id_env_hint
-            .set_text(hints.project_id.as_deref());
         set_text_value(&self.language_field, &form.language);
         set_text_value(&self.keyterms_field, &form.keyterms);
         populate_deepgram_model_popup(&self.model_popup, form.model_title.as_deref());
@@ -119,7 +108,6 @@ impl DeepgramPane {
     pub fn read(&self) -> DeepgramForm {
         DeepgramForm {
             api_key: text_value(&self.api_key_field),
-            project_id: text_value(&self.project_id_field),
             language: text_value(&self.language_field),
             keyterms: text_value(&self.keyterms_field),
             model_title: selected_title(&self.model_popup),
@@ -130,9 +118,5 @@ impl DeepgramPane {
 
     pub fn api_key_value(&self) -> Option<String> {
         optional_text(&text_value(&self.api_key_field))
-    }
-
-    pub fn project_id_value(&self) -> Option<String> {
-        optional_text(&text_value(&self.project_id_field))
     }
 }

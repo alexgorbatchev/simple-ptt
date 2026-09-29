@@ -2,7 +2,6 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use toml_edit::{value, DocumentMut, Item, Table};
 
-use crate::billing::deepgram_project_id_env_var;
 use crate::transformation::TransformationRuntimeConfig;
 
 const CONFIG_OVERRIDE_ENV_VAR: &str = "SIMPLE_PTT_CONFIG";
@@ -109,8 +108,6 @@ pub struct DeepgramConfig {
     pub keyterms: Vec<String>,
     pub api_key: Option<String>,
 
-    pub project_id: Option<String>,
-
     #[serde(default = "default_deepgram_language")]
     pub language: String,
 
@@ -129,7 +126,6 @@ impl Default for DeepgramConfig {
         Self {
             api_key: None,
             keyterms: vec![],
-            project_id: None,
             language: default_deepgram_language(),
             model: default_deepgram_model(),
             endpointing_ms: default_endpointing_ms(),
@@ -369,21 +365,6 @@ impl Config {
         env_var_is_present("DEEPGRAM_API_KEY").then_some("DEEPGRAM_API_KEY")
     }
 
-    pub fn deepgram_project_id_env_var_in_use(&self) -> Option<&'static str> {
-        if self
-            .deepgram
-            .project_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return None;
-        }
-
-        env_var_is_present(deepgram_project_id_env_var()).then_some(deepgram_project_id_env_var())
-    }
-
     pub fn transformation_api_key_env_var_in_use(&self) -> Option<&'static str> {
         transformation_api_key_env_var_in_use(
             self.transformation.provider.as_deref(),
@@ -418,23 +399,6 @@ impl Config {
             "Deepgram API key is missing. Set deepgram.api_key in {} or export DEEPGRAM_API_KEY.",
             config_location_hint
         ))
-    }
-
-    pub fn resolve_deepgram_project_id(&self) -> Option<String> {
-        if let Some(project_id) = self
-            .deepgram
-            .project_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            return Some(project_id.to_owned());
-        }
-
-        std::env::var(deepgram_project_id_env_var())
-            .ok()
-            .map(|project_id| project_id.trim().to_owned())
-            .filter(|project_id| !project_id.is_empty())
     }
 
     pub fn resolve_transformation_config(&self) -> Result<TransformationRuntimeConfig, String> {
@@ -816,7 +780,6 @@ fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) {
 fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
     let table = ensure_named_table(document, "deepgram");
     set_optional_string_key(table, "api_key", &[], deepgram.api_key.as_deref());
-    set_optional_string_key(table, "project_id", &[], deepgram.project_id.as_deref());
     set_required_string_key(table, "language", &[], &deepgram.language);
     set_required_string_key(table, "model", &[], &deepgram.model);
     set_unsigned_key(table, "endpointing_ms", i64::from(deepgram.endpointing_ms));
@@ -929,9 +892,6 @@ pub fn materialize_runtime_config(config: &Config) -> Config {
         .is_empty()
     {
         runtime_config.deepgram.api_key = config.resolve_deepgram_api_key().ok();
-    }
-    if runtime_config.deepgram.project_id.is_none() {
-        runtime_config.deepgram.project_id = config.resolve_deepgram_project_id();
     }
     if runtime_config
         .transformation
@@ -1127,7 +1087,6 @@ mod tests {
         assert_eq!(config.mic.hold_ms, 300);
         assert!(config.mic.always_on);
         assert_eq!(config.deepgram.api_key, None);
-        assert_eq!(config.deepgram.project_id, None);
         assert_eq!(config.deepgram.language, "en-US");
         assert!(config.deepgram.keyterms.is_empty());
         assert_eq!(config.deepgram.model, "nova-3");
@@ -1513,31 +1472,30 @@ mod tests {
     }
 
     #[test]
-    fn reports_env_backed_deepgram_values_without_file_values() {
+    fn config_files_that_still_set_a_deepgram_project_id_load() {
+        let config: Config = toml::from_str(
+            "[deepgram]\napi_key = \"dg-key\"\nproject_id = \"00000000-0000-0000-0000-000000000000\"\n",
+        )
+        .expect("a leftover project_id is ignored");
+        assert_eq!(config.deepgram.api_key.as_deref(), Some("dg-key"));
+    }
+
+    #[test]
+    fn reports_env_backed_deepgram_api_key_without_file_value() {
         let _guard = env_lock().lock().unwrap();
         let previous_deepgram_api_key = std::env::var("DEEPGRAM_API_KEY").ok();
-        let previous_deepgram_project_id = std::env::var(super::deepgram_project_id_env_var()).ok();
 
         std::env::set_var("DEEPGRAM_API_KEY", "env-deepgram-key");
-        std::env::set_var(super::deepgram_project_id_env_var(), "env-project-id");
 
         let config = Config::default();
         assert_eq!(
             config.deepgram_api_key_env_var_in_use(),
             Some("DEEPGRAM_API_KEY")
         );
-        assert_eq!(
-            config.deepgram_project_id_env_var_in_use(),
-            Some(super::deepgram_project_id_env_var())
-        );
 
         match previous_deepgram_api_key {
             Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
             None => std::env::remove_var("DEEPGRAM_API_KEY"),
-        }
-        match previous_deepgram_project_id {
-            Some(value) => std::env::set_var(super::deepgram_project_id_env_var(), value),
-            None => std::env::remove_var(super::deepgram_project_id_env_var()),
         }
     }
 

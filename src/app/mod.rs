@@ -25,7 +25,6 @@ use settings_presentation::{SettingsPresentation, SettingsPresentationStep};
 use startup_windows::StartupWindows;
 
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
-use crate::billing::BillingController;
 use crate::config::{self, Config};
 use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
@@ -46,8 +45,7 @@ use crate::settings_window::helpers::{
 };
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
-    AppState, DeepgramApiKeyFingerprint, DeepgramConnection, DeepgramConnectionStatus,
-    MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
+    AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
     STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation_models::{
@@ -63,8 +61,6 @@ pub struct Ivars {
     app_updater: OnceCell<Option<crate::updater::AppUpdater>>,
     audio_controller: AudioController,
     initial_audio_error: Option<String>,
-    billing_controller: BillingController,
-    billing_menu_item: OnceCell<Retained<NSMenuItem>>,
     config_store: LiveConfigStore,
     deepgram_connection_controller: DeepgramConnectionController,
     hotkey_capture_controller: HotkeyCaptureController,
@@ -210,18 +206,6 @@ define_class!(
             }
             menu.addItem(&permissions_item);
 
-            let billing_item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    ns_string!(""),
-                    None,
-                    ns_string!(""),
-                )
-            };
-            billing_item.setEnabled(false);
-            billing_item.setHidden(true);
-            menu.addItem(&billing_item);
-
             let quit_item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
@@ -248,10 +232,6 @@ define_class!(
                 .status_item
                 .set(status_item)
                 .expect("status item must only be set once");
-            self.ivars()
-                .billing_menu_item
-                .set(billing_item)
-                .expect("billing item must only be set once");
             let settings_window = SettingsWindow::new(mtm, self, ProtocolObject::from_ref(self));
             self.ivars()
                 .settings_window
@@ -585,7 +565,6 @@ impl AppDelegate {
         hotkey_capture_controller: HotkeyCaptureController,
         transformation_models_controller: TransformationModelsController,
         deepgram_connection_controller: DeepgramConnectionController,
-        billing_controller: BillingController,
         audio_controller: AudioController,
         state: Arc<AppState>,
     ) -> Retained<Self> {
@@ -593,8 +572,6 @@ impl AppDelegate {
             app_updater: OnceCell::new(),
             audio_controller,
             initial_audio_error,
-            billing_controller,
-            billing_menu_item: OnceCell::new(),
             config_store,
             deepgram_connection_controller,
             hotkey_capture_controller,
@@ -997,12 +974,8 @@ impl AppDelegate {
 
         let mut effective_config = self.ivars().config_store.current_file();
         effective_config.deepgram.api_key = settings_window.deepgram_api_key_value();
-        effective_config.deepgram.project_id = settings_window.deepgram_project_id_value();
 
-        Ok(DeepgramCheckRequest::new(
-            effective_config.resolve_deepgram_api_key()?,
-            effective_config.resolve_deepgram_project_id(),
-        ))
+        Ok(DeepgramCheckRequest::new(effective_config.resolve_deepgram_api_key()?))
     }
 
     fn sync_transformation_provider_ui(&self, trigger: ModelListTrigger) {
@@ -1160,7 +1133,6 @@ impl AppDelegate {
                 DeepgramCheckUpdate::ConnectionChecked { request, .. }
                 | DeepgramCheckUpdate::ActionFailed { request, .. } => request,
             };
-            let checked_api_key = update_request.api_key_fingerprint();
             if current_request
                 .as_ref()
                 .map(|request| request.same_source_as(update_request))
@@ -1170,26 +1142,11 @@ impl AppDelegate {
             }
 
             match update {
-                DeepgramCheckUpdate::ConnectionChecked {
-                    connection_status,
-                    message,
-                    ..
-                } => {
-                    self.ivars()
-                        .state
-                        .set_deepgram_connection_status(connection_status, checked_api_key);
+                DeepgramCheckUpdate::ConnectionChecked { message, .. } => {
                     settings_window.set_status(&message);
-                    let success = connection_status == DeepgramConnectionStatus::Connected;
-                    settings_window.set_deepgram_check_result(success);
+                    settings_window.set_deepgram_check_result(true);
                 }
-                DeepgramCheckUpdate::ActionFailed {
-                    connection_status,
-                    message,
-                    ..
-                } => {
-                    self.ivars()
-                        .state
-                        .set_deepgram_connection_status(connection_status, checked_api_key);
+                DeepgramCheckUpdate::ActionFailed { message, .. } => {
                     settings_window.set_status(&message);
                     settings_window.set_deepgram_check_result(false);
                 }
@@ -1294,7 +1251,6 @@ impl AppDelegate {
         self.ivars()
             .config_store
             .replace(proposed_config.clone(), runtime_config.clone());
-        self.ivars().billing_controller.refresh_month_to_date_spend();
         if let Some(overlay_window) = self.ivars().overlay_window.get() {
             overlay_window.apply_style(&overlay_style_from_config(&runtime_config));
         }
@@ -1411,14 +1367,12 @@ impl AppDelegate {
         self.update_ui(
             mtm,
             snapshot.state,
-            snapshot.deepgram_connection,
             snapshot.overlay_dismissed,
             &snapshot.overlay_text,
             &snapshot.overlay_error_text,
             &snapshot.overlay_correction_text,
             snapshot.overlay_correction_active,
             snapshot.overlay_text_opacity,
-            &snapshot.overlay_footer_text,
             snapshot.mic_meter,
         );
     }
@@ -1427,14 +1381,12 @@ impl AppDelegate {
         &self,
         mtm: MainThreadMarker,
         state: u8,
-        deepgram_connection: DeepgramConnection,
         overlay_dismissed: bool,
         overlay_text: &OverlayText,
         overlay_error_text: &str,
         overlay_correction_text: &OverlayText,
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
-        overlay_footer_text: &str,
         mic_meter: MicMeterSnapshot,
     ) {
         self.handle_pending_hotkey_capture_preview();
@@ -1443,7 +1395,6 @@ impl AppDelegate {
         self.handle_pending_deepgram_check_updates();
         self.ivars().audio_controller.apply_pending_if_idle();
         update_status_item(self, mtm, state);
-        update_billing_menu_item(self, overlay_footer_text);
 
         if self.ivars().state.is_settings_window_visible() {
             if let Some(settings_window) = self.ivars().settings_window.get() {
@@ -1455,14 +1406,12 @@ impl AppDelegate {
             self,
             mtm,
             state,
-            deepgram_connection,
             overlay_dismissed,
             overlay_text,
             overlay_error_text,
             overlay_correction_text,
             overlay_correction_active,
             overlay_text_opacity,
-            overlay_footer_text,
             mic_meter,
         );
     }
@@ -1538,10 +1487,6 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
         footer_font_size: overlay_footer_font_size,
         meter_style: config.ui.meter_style,
         shortcut_hint,
-        deepgram_api_key: config
-            .resolve_deepgram_api_key()
-            .ok()
-            .map(|api_key| DeepgramApiKeyFingerprint::of(&api_key)),
     }
 }
 
@@ -1742,31 +1687,6 @@ fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retai
     main_menu
 }
 
-fn update_billing_menu_item(delegate: &AppDelegate, overlay_footer_text: &str) {
-    let Some(billing_menu_item) = delegate.ivars().billing_menu_item.get() else {
-        return;
-    };
-
-    match billing_menu_text(overlay_footer_text) {
-        Some(billing_text) => {
-            billing_menu_item.setTitle(&NSString::from_str(billing_text));
-            billing_menu_item.setHidden(false);
-        }
-        None => billing_menu_item.setHidden(true),
-    }
-}
-
-fn billing_menu_text(overlay_footer_text: &str) -> Option<&str> {
-    let trimmed_overlay_footer_text = overlay_footer_text.trim();
-    if trimmed_overlay_footer_text.starts_with("Deepgram (")
-        && trimmed_overlay_footer_text.contains(": $")
-    {
-        Some(trimmed_overlay_footer_text)
-    } else {
-        None
-    }
-}
-
 fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
     if let Some(status_item) = delegate.ivars().status_item.get() {
         if let Some(button) = status_item.button(mtm) {
@@ -1789,28 +1709,24 @@ fn update_overlay_window(
     delegate: &AppDelegate,
     mtm: MainThreadMarker,
     state: u8,
-    deepgram_connection: DeepgramConnection,
     overlay_dismissed: bool,
     overlay_text: &OverlayText,
     overlay_error_text: &str,
     overlay_correction_text: &OverlayText,
     overlay_correction_active: bool,
     overlay_text_opacity: f64,
-    overlay_footer_text: &str,
     mic_meter: MicMeterSnapshot,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
         overlay_window.update(
             mtm,
             state,
-            deepgram_connection,
             overlay_dismissed,
             overlay_text,
             overlay_error_text,
             overlay_correction_text,
             overlay_correction_active,
             overlay_text_opacity,
-            overlay_footer_text,
             mic_meter,
         );
     }
@@ -1825,10 +1741,8 @@ const STATUS_POLL_BACKGROUND_REFRESH_TICKS: u64 = 20;
 #[derive(Clone)]
 struct UiSnapshot {
     state: u8,
-    deepgram_connection: DeepgramConnection,
     mic_meter: MicMeterSnapshot,
     overlay_dismissed: bool,
-    overlay_footer_text: Arc<str>,
     overlay_correction_active: bool,
     overlay_correction_text: OverlayText,
     overlay_text: OverlayText,
@@ -1840,10 +1754,8 @@ impl UiSnapshot {
     fn initial() -> Self {
         Self {
             state: STATE_IDLE,
-            deepgram_connection: DeepgramConnection::default(),
             mic_meter: MicMeterSnapshot::default(),
             overlay_dismissed: false,
-            overlay_footer_text: Arc::from(""),
             overlay_correction_active: false,
             overlay_correction_text: OverlayText::default(),
             overlay_text: OverlayText::default(),
@@ -1855,10 +1767,8 @@ impl UiSnapshot {
     fn capture(state: &AppState) -> Self {
         Self {
             state: state.get_state(),
-            deepgram_connection: state.deepgram_connection(),
             mic_meter: state.mic_meter_snapshot(),
             overlay_dismissed: state.is_overlay_dismissed(),
-            overlay_footer_text: state.overlay_footer_text(),
             overlay_correction_active: state.is_overlay_correction_active(),
             overlay_correction_text: state.overlay_correction_text_snapshot(),
             overlay_text: state.overlay_text_snapshot(),
@@ -1871,9 +1781,7 @@ impl UiSnapshot {
     /// whenever the text is replaced.
     fn ui_differs_from(&self, other: &Self) -> bool {
         self.state != other.state
-            || self.deepgram_connection != other.deepgram_connection
             || self.overlay_dismissed != other.overlay_dismissed
-            || !Arc::ptr_eq(&self.overlay_footer_text, &other.overlay_footer_text)
             || self.overlay_correction_active != other.overlay_correction_active
             || !Arc::ptr_eq(
                 &self.overlay_correction_text.text,
@@ -1961,19 +1869,17 @@ mod tests {
     use objc2::{sel, ClassType};
 
     use super::{
-        audio_startup_failure_alert_text, billing_menu_text, config_file_is_missing,
+        audio_startup_failure_alert_text, config_file_is_missing,
         missing_config_alert_text, overlay_style_from_config,
         settings_presentation_turn_selector, status_poll_selector, validate_settings_config,
         AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
     use crate::config::Config;
-    use crate::overlay::footer_connection_label;
     use crate::settings_window::actions::SettingsAction;
     use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{
-        DeepgramApiKeyFingerprint, DeepgramConnectionStatus, MicMeterSnapshot, OverlayText,
-        STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
+        MicMeterSnapshot, OverlayText, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
     };
 
     #[test]
@@ -2086,40 +1992,6 @@ mod tests {
                 "Gain must be between 0 and 10 dB"
             );
         }
-    }
-
-    #[test]
-    fn billing_menu_text_accepts_deepgram_monthly_spend_label() {
-        assert_eq!(
-            billing_menu_text("Deepgram (Apr 2026): $12.34"),
-            Some("Deepgram (Apr 2026): $12.34")
-        );
-        assert_eq!(billing_menu_text("Billing (Apr 2026): $12.34"), None);
-    }
-
-    /// The connection label is never written to `AppState`, so the menu item
-    /// does not receive it; this guards the filter against a label that ever
-    /// takes the shape of billing text.
-    #[test]
-    fn billing_menu_text_ignores_the_footer_connection_label() {
-        for status in [
-            DeepgramConnectionStatus::Unknown,
-            DeepgramConnectionStatus::Disconnected,
-            DeepgramConnectionStatus::Connected,
-        ] {
-            assert_eq!(billing_menu_text(footer_connection_label(status)), None);
-        }
-    }
-
-    #[test]
-    fn overlay_style_reports_a_configured_deepgram_api_key() {
-        let mut config = Config::default();
-        config.deepgram.api_key = Some("config-key".to_owned());
-
-        assert_eq!(
-            overlay_style_from_config(&config).deepgram_api_key,
-            Some(DeepgramApiKeyFingerprint::of("config-key"))
-        );
     }
 
     #[test]
