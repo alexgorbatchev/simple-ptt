@@ -4,6 +4,7 @@
 - A scripted run
 - Reading `watch_frame` stacks
 - Finding the overlay's views
+- Measuring legibility on captures
 - lldb and SDK recipes
 
 ## Installing `view_probe`
@@ -78,6 +79,42 @@ if std::env::var("VIEW_PROBE").is_ok() {
 - The main glass is the first `NSGlassEffectView`. The halo and correction glass are `SimplePttPassiveGlassEffectView`, so they do not match that class name.
 - `NSTextView`, depth first: the transcript first, then the correction text.
 - The transcript's ancestry is: text view < clip view < scroll view < `main_content_view` < the glass's content wrapper < a private `ContentHolderView` < main glass < stack view < `NSGlassEffectContainerView` < root view.
+
+## Measuring legibility on captures
+
+For text colour or contrast bugs, measure pixels rather than reasoning about colours. The snapshot backdrop is centred on the overlay, with rows of text running under the glass, so captures include busy content behind the text.
+
+Temporarily add a matrix loop at the top of the `for dark in [false, true]` loop in `src/overlay/dev/snapshot.rs`, after `pump(0.3);`. It sets tunings, redraws like the tuner, captures each case with and without the transcript (the `-notext` pair the paired method needs), then continues. This is the tested dim matrix; vary other `GlassTuning` fields the same way:
+
+```rust
+if std::env::var("DIM_MATRIX").is_ok() {
+    use crate::overlay::glass::OverlayAppearance;
+    let final_text = text(&full, None);
+    for dim in [0.0, 0.35, 0.65] {
+        for (appearance_name, appearance) in [("aqua", OverlayAppearance::Light), ("darkaqua", OverlayAppearance::Dark)] {
+            let mut tuning = overlay.glass_tuning();
+            tuning.dim = dim;
+            tuning.appearance = appearance;
+            overlay.set_glass_tuning(tuning);
+            for (suffix, transcript) in [("", &final_text), ("-notext", &empty)] {
+                for _ in 0..8 {
+                    update(STATE_RECORDING, transcript, "", &empty, false, meter);
+                    pump(0.075);
+                }
+                capture(mtm, dir, &format!("dim-{dim:.2}-{appearance_name}-{theme}{suffix}"));
+            }
+        }
+    }
+    backdrop.orderOut(None);
+    pump(0.3);
+    continue;
+}
+```
+
+Run it with `cargo build --release && DIM_MATRIX=1 ./target/release/simple-ptt --overlay-snapshot .tmp/dim`, then `bun .agents/skills/overlay-visual-debugging/scripts/contrast.ts .tmp/dim dim-`. Pass the capture's `halo_margin` as the third argument when it is not the default.
+- The body result compares each transcript glyph pixel with the same pixel in the `-notext` capture, which is what is behind that glyph. Without a pair the script falls back to the region median, marked `~`; that method is unreliable with backdrop text behind the glass, and the footer (which the pairs keep) is always measured that way.
+- The regions in `scripts/contrast.ts` fit the recording state on a 2x display. Before trusting any numbers, draw them on one capture (the body region starts 40,35 pixels from the glass corner at `(40 + halo_margin) * 2`) and look at it.
+- Remove the matrix block before committing (`rg -n _MATRIX src/` must print nothing).
 
 ## lldb and SDK recipes
 

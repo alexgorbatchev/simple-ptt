@@ -4,22 +4,23 @@ description: ALWAYS USE when debugging, tuning, or fixing how the simple-ptt ove
 author: alexgorbatchev
 metadata:
   created_on: 2026-09-27 11:30
-  last_modified: 2026-09-27 11:30
+  last_modified: 2026-09-29 15:15
   status: current
 ---
 
 ## Tools
 
-- `simple-ptt --debug` (`src/overlay/dev/tuner.rs`): the overlay pinned near the top of the screen, plus a window with a control for every `GlassTuning` value, a correction toggle, "Pop again", and "Copy values", which copies the values for the user to paste. Controls that have no effect under the current values are disabled.
-- `simple-ptt --overlay-snapshot <dir>` (`src/overlay/dev/snapshot.rs`): captures every overlay state over light and dark backdrops as `<dir>/<theme>-<step>.png`, then exits. Use `.tmp/snapshots/` as `<dir>`. It needs Screen Recording permission for the terminal.
+- `simple-ptt --debug` (`just debug-overlay`, `src/overlay/dev/tuner.rs`): the overlay pinned near the top of the screen, plus a window with a control for every `GlassTuning` value, a meter style picker (the `meter_style` values Settings offers), a correction toggle, a "Loop narration" checkbox (narrates the transcript a word at a time, or the correction while it is shown), "Pop again", and "Copy values", which copies the values for the user to paste. Controls that have no effect under the current values are disabled.
+- `simple-ptt --overlay-snapshot <dir>` (`src/overlay/dev/snapshot.rs`): captures every overlay state over light and dark backdrops as `<dir>/<theme>-<step>.png`, then exits. Use `.tmp/snapshots/` as `<dir>`. It needs Screen Recording permission for the terminal. Captures that show only the desktop wallpaper or solid black mean the display is locked or asleep, or that permission changed; stop and tell the user rather than measuring them.
 - `assets/view_probe.rs`: a module for scripted, self-exiting runs that samples view geometry and prints who changes a frame. Read [references/probes.md](references/probes.md) before using it.
+- `scripts/contrast.ts`: WCAG contrast of the text against the glass behind it, measured on captures. It is for text colour and legibility bugs; see "Measuring legibility on captures" in [references/probes.md](references/probes.md).
 - lldb and the SDK headers, for private AppKit behavior. The recipes are in [references/probes.md](references/probes.md).
 
-All of `src/overlay/dev/` and the tuner-only `OverlayWindow` methods (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`) are removed before merging to main. Do not call them from product code.
+The tuner-only `OverlayWindow` methods (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`) exist for `src/overlay/dev/`; do not call them from product code. Values the user settles on in the tuner become the `GlassTuning` defaults in `src/overlay/glass.rs`, with the tests there pinning them.
 
 ## Rules
 
-- Every `simple-ptt` command you run must contain `--overlay-snapshot` or `VIEW_PROBE=1` (with a `run_script` end time). Any other launch (plain, or `--debug` without a probe) blocks the session and is prohibited. For interactive checks, ask the user to run `cargo build && ./target/debug/simple-ptt --debug`, and to paste the "Copy values" output or describe what they see.
+- Every `simple-ptt` command you run must contain `--overlay-snapshot` or `VIEW_PROBE=1` (with a `run_script` end time). Any other launch (plain, or `--debug` without a probe) blocks the session and is prohibited. For interactive checks, ask the user to run `just debug-overlay`, and to paste the "Copy values" output or describe what they see.
 - Measure before you change code. A claim such as "the text moves" or "the animation is cut short" needs samples: `t=` timestamps with screen rects, frames, or presentation heights, printed by a probe run. Do not diagnose from reasoning, code reading, or screenshots alone.
 - Treat every nonzero deviation as a bug: a 0.2pt drift or a single-frame blip is 1px on a Retina display. Prohibited dismissals: "invisible", "one frame only", "rounding", "AppKit quirk, can't fix".
 - Before editing any overlay code, read [references/findings.md](references/findings.md). It lists measured macOS 26.6 behaviors that contradict the obvious fix. Re-verify a finding with a probe before relying on it after a macOS update.

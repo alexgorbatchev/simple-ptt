@@ -41,7 +41,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 
 - **Tap vs hold:** short press behaves like toggle; holding past `mic.hold_ms` turns the same hotkey into hold-to-talk.
 - **Editable overlay:** You can click into the overlay at any time to manually type, fix, or delete words before pasting.
-- **Overlay look:** the overlay is frosted Liquid Glass on a soft blur of the screen around it, and it pops in when it opens and out when it closes. While the transformation model rewrites the text, a light sweeps across it; errors show in red. A correction request appears on its own glass that slides out of the transcript and back into it. With Reduce Motion on, the overlay fades in and out, and the sweep and the slide are skipped.
+- **Overlay look:** the overlay is dark-tinted clear Liquid Glass on a soft blur of the screen around it, and it pops in when it opens and out when it closes. The text switches between light and dark to stay readable against the glass. Below the transcript, a row of bars traces your voice level, newest on the right (**Meter style** in Settings > General, `ui.meter_style` in the config). While the transformation model rewrites the text, a light sweeps across it; errors show in red. A correction request appears above the transcript as the glass grows upward to hold it, and the glass shrinks back once the correction is applied. With Reduce Motion on, the overlay fades in and out, the correction appears and disappears in place, and the sweep is skipped.
 - **Correction key (`LeftMeta`, shown as `Cmd`, by default):** hold the configured correction key during dictation or while a buffered annotation is visible, speak a correction request, then release the key to apply that correction to the current annotation.
 - **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it. If you press `F6` while dictating, you can keep talking — your audio is buffered and will seamlessly append to the transformed text once the LLM finishes.
 - **Resume dictation:** If you have transformed text (or manually stopped recording), pressing `F5` again will seamlessly resume dictating onto the end of your existing text.
@@ -79,7 +79,7 @@ If no config file is found, defaults are used where possible and the app opens *
 
 The correction interrupt is configured separately from the record and transform hotkeys via `ui.correction_key`. This must be a single specific key such as `LeftMeta`, `RightMeta`, `LeftAlt`, or `F7`, and it must not overlap with the record or transform triggers.
 
-Transformation now has two separate prompts:
+Transformation uses two separate prompts:
 
 - `transformation.system_prompt` for normal cleanup or rewrite of dictated text.
 - `transformation.correction_system_prompt` for correction mode, where the model receives both the current annotation and the spoken correction request.
