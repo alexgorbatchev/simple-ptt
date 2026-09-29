@@ -20,6 +20,7 @@ pub const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
 
 /// Meter styles in popup order, with the popup title of each.
 pub const METER_STYLE_TITLES: &[(UiMeterStyle, &str)] = &[
+    (UiMeterStyle::Pills, "pills"),
     (UiMeterStyle::AnimatedColor, "animated-color"),
     (UiMeterStyle::AnimatedHeight, "animated-height"),
     (UiMeterStyle::None, "none"),
@@ -309,7 +310,7 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
         .map(|(style, _)| *style)
         .ok_or_else(|| {
             format!(
-                "Meter style must be one of: animated-color, animated-height, none (got '{}')",
+                "Meter style must be one of: pills, animated-color, animated-height, none (got '{}')",
                 raw_value
             )
         })
@@ -710,7 +711,7 @@ mod tests {
         assert_eq!(
             form.to_config(),
             Err(
-                "Meter style must be one of: animated-color, animated-height, none (got 'sparkles')"
+                "Meter style must be one of: pills, animated-color, animated-height, none (got 'sparkles')"
                     .to_owned()
             )
         );
@@ -719,6 +720,7 @@ mod tests {
     #[test]
     fn every_meter_style_round_trips_through_its_popup_title() {
         for meter_style in [
+            UiMeterStyle::Pills,
             UiMeterStyle::AnimatedColor,
             UiMeterStyle::AnimatedHeight,
             UiMeterStyle::None,

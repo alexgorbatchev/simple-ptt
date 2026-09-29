@@ -33,8 +33,8 @@ font_size = 12.0
 # footer_font_size = 10.0
 
 # Audio meter style shown while recording.
-# Valid values: "animated-color", "animated-height", "none"
-meter_style = "animated-color"
+# Valid values: "pills", "animated-color", "animated-height", "none"
+meter_style = "pills"
 
 [mic]
 # Optional. Exact input device name or numeric index from `just list-devices`.

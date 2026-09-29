@@ -28,8 +28,11 @@ pub struct Config {
 pub enum UiMeterStyle {
     None,
     AnimatedHeight,
-    #[default]
     AnimatedColor,
+    /// Rounded bars across the text column showing the level's recent
+    /// history, flowing right to left.
+    #[default]
+    Pills,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -54,7 +57,7 @@ pub struct UiConfig {
 
     pub footer_font_size: Option<f64>,
 
-    #[serde(default = "default_ui_meter_style")]
+    #[serde(default)]
     pub meter_style: UiMeterStyle,
 }
 
@@ -68,7 +71,7 @@ impl Default for UiConfig {
             font_name: None,
             font_size: default_overlay_font_size(),
             footer_font_size: None,
-            meter_style: default_ui_meter_style(),
+            meter_style: UiMeterStyle::default(),
         }
     }
 }
@@ -242,10 +245,6 @@ fn default_always_on() -> bool {
 
 fn default_overlay_font_size() -> f64 {
     12.0
-}
-
-fn default_ui_meter_style() -> UiMeterStyle {
-    UiMeterStyle::AnimatedColor
 }
 
 fn default_endpointing_ms() -> u16 {
@@ -761,6 +760,7 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
         UiMeterStyle::None => "none",
         UiMeterStyle::AnimatedHeight => "animated-height",
         UiMeterStyle::AnimatedColor => "animated-color",
+        UiMeterStyle::Pills => "pills",
     });
 }
 
@@ -1027,6 +1027,33 @@ mod tests {
     }
 
     #[test]
+    fn a_config_without_a_meter_style_uses_pills() {
+        let config: Config = toml::from_str("[ui]\nfont_size = 14.0\n").unwrap();
+
+        assert_eq!(config.ui.meter_style, UiMeterStyle::Pills);
+        assert_eq!(Config::default().ui.meter_style, UiMeterStyle::Pills);
+    }
+
+    #[test]
+    fn pills_meter_style_is_saved_and_read_as_pills() {
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-config-pills-test-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(&path, "[ui]\nmeter_style = \"animated-height\"\n").unwrap();
+
+        let mut config = Config::default();
+        config.ui.meter_style = UiMeterStyle::Pills;
+        save_config(&path, &config, PromptResets::default()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert!(contents.contains("meter_style = \"pills\""), "{contents}");
+        let read: Config = toml::from_str(&contents).unwrap();
+        assert_eq!(read.ui.meter_style, UiMeterStyle::Pills);
+    }
+
+    #[test]
     fn save_config_preserves_unknown_sections_and_comments() {
         let temp_directory =
             std::env::temp_dir().join(format!("simple-ptt-config-test-{}", std::process::id()));
@@ -1080,7 +1107,7 @@ mod tests {
         assert_eq!(config.ui.font_name, None);
         assert_eq!(config.ui.font_size, 12.0);
         assert_eq!(config.ui.footer_font_size, None);
-        assert_eq!(config.ui.meter_style, UiMeterStyle::AnimatedColor);
+        assert_eq!(config.ui.meter_style, UiMeterStyle::Pills);
         assert_eq!(config.mic.audio_device, None);
         assert_eq!(config.mic.sample_rate, 16000);
         assert_eq!(config.mic.gain, 4.0);

@@ -317,9 +317,9 @@ impl OverlayWindow {
         self.set_working_text_opacity(overlay_text_opacity);
 
         if meter_is_visible {
-            self.ui_meter_view.update(mic_meter, meter_cluster_width());
+            self.ui_meter_view.update(mic_meter, self.meter_span());
         } else {
-            self.ui_meter_view.clear(meter_cluster_width());
+            self.ui_meter_view.clear(self.meter_span());
         }
 
         if !self.is_visible.get() {
@@ -352,7 +352,7 @@ impl OverlayWindow {
         }
         self.shimmer.stop(&self.working_scroll_view);
         self.state.set_overlay_window_visible(false);
-        self.ui_meter_view.clear(meter_cluster_width());
+        self.ui_meter_view.clear(self.meter_span());
         self.set_working_text("", None, None);
         self.set_correction_text("", None, false);
         self.set_working_text_opacity(1.0);
@@ -370,6 +370,22 @@ impl OverlayWindow {
     /// its sliders from them.
     pub fn glass_internals_now(&self) -> Option<crate::overlay::private_effects::GlassInternals> {
         self.glass.glass_internals_now()
+    }
+
+    /// Distance from the overlay's side to where its text starts: the text
+    /// inset plus the text container's line fragment padding.
+    fn text_inset(&self) -> f64 {
+        TEXT_HORIZONTAL_PADDING + line_fragment_padding(&self.working_text_view)
+    }
+
+    /// Width the meter's bars share: the text column for a meter that spans
+    /// it, else the centred cluster.
+    fn meter_span(&self) -> f64 {
+        if self.ui_meter_view.spans_text_width() {
+            pill_span(self.text_inset())
+        } else {
+            meter_cluster_width()
+        }
     }
 
     /// Keeps the overlay `distance` below the top of the screen instead of
@@ -413,7 +429,7 @@ impl OverlayWindow {
         }
 
         if !self.is_visible.get() {
-            self.ui_meter_view.clear(meter_cluster_width());
+            self.ui_meter_view.clear(self.meter_span());
         }
 
         NSView::setNeedsDisplay(&self.working_text_view, true);
@@ -530,10 +546,11 @@ impl OverlayWindow {
             main_is_clamped,
         );
         self.separator_view.setFrame(separator_frame(main_height));
-        self.ui_meter_view.set_frame(meter_container_frame(
-            footer_is_visible,
-            self.ui_meter_view.style(),
-        ));
+        self.ui_meter_view.set_frame(if self.ui_meter_view.spans_text_width() {
+            pill_meter_frame(footer_is_visible, self.text_inset())
+        } else {
+            meter_container_frame(footer_is_visible, self.ui_meter_view.style())
+        });
         let meter_alpha = self.meter_alpha.get();
         self.ui_meter_view.set_hidden(meter_alpha == 0.0);
         self.ui_meter_view.view().setAlphaValue(meter_alpha);
@@ -894,7 +911,7 @@ fn measured_text_height(text_view: &NSTextView) -> f64 {
         return TEXT_VERTICAL_PADDING * 2.0;
     };
 
-    let line_fragment_padding: f64 = unsafe { msg_send![&*text_container, lineFragmentPadding] };
+    let line_fragment_padding = line_fragment_padding(text_view);
     let container_width = (usable_text_width() - (line_fragment_padding * 2.0)).max(1.0);
     unsafe {
         let _: () = msg_send![&*text_container, setContainerSize: NSSize::new(container_width, TEXT_LAYOUT_MEASUREMENT_HEIGHT)];
@@ -1051,7 +1068,7 @@ fn meter_reserved_height(meter_style: UiMeterStyle) -> f64 {
                 + METER_SECTION_BOTTOM_PADDING
                 + METER_TEXT_GAP
         }
-        UiMeterStyle::AnimatedHeight | UiMeterStyle::None => METER_SECTION_HEIGHT,
+        UiMeterStyle::AnimatedHeight | UiMeterStyle::Pills | UiMeterStyle::None => METER_SECTION_HEIGHT,
     }
 }
 
@@ -1069,12 +1086,44 @@ fn separator_frame(_panel_height: f64) -> NSRect {
     )
 }
 
-fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> NSRect {
-    let origin_y = if footer_is_visible {
+/// The text container's padding on each side of every line, between the
+/// text view's inset and the glyphs.
+fn line_fragment_padding(text_view: &NSTextView) -> f64 {
+    let Some(text_container): Option<Retained<AnyObject>> =
+        (unsafe { msg_send![text_view, textContainer] })
+    else {
+        return 0.0;
+    };
+    unsafe { msg_send![&*text_container, lineFragmentPadding] }
+}
+
+/// Width the pills share: the text column, `text_inset` in from each side.
+fn pill_span(text_inset: f64) -> f64 {
+    OVERLAY_WIDTH - (2.0 * text_inset)
+}
+
+/// The meter's frame when it spans the text column: its bars start at the
+/// text's left edge and end at its right edge.
+fn pill_meter_frame(footer_is_visible: bool, text_inset: f64) -> NSRect {
+    NSRect::new(
+        NSPoint::new(text_inset - ui_meter::METER_BORDER_PADDING, meter_origin_y(footer_is_visible)),
+        NSSize::new(
+            pill_span(text_inset) + (ui_meter::METER_BORDER_PADDING * 2.0),
+            ui_meter::meter_container_height(UiMeterStyle::Pills),
+        ),
+    )
+}
+
+fn meter_origin_y(footer_is_visible: bool) -> f64 {
+    if footer_is_visible {
         footer_total_height() + METER_SECTION_BOTTOM_PADDING
     } else {
         METER_SECTION_BOTTOM_PADDING
-    };
+    }
+}
+
+fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> NSRect {
+    let origin_y = meter_origin_y(footer_is_visible);
     let container_width = meter_container_width();
     let container_height = ui_meter::meter_container_height(meter_style);
     let origin_x = TEXT_HORIZONTAL_PADDING + ((usable_text_width() - container_width) / 2.0);
@@ -1159,12 +1208,29 @@ fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT, FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH};
+    use super::{
+        footer_hint_frame, pill_meter_frame, pill_span, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
+        FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
+    };
+    use crate::ui_meter::METER_BORDER_PADDING;
 
     #[test]
     fn footer_holds_one_line_with_even_padding() {
         assert_eq!(FOOTER_HEIGHT, FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING));
         assert_eq!(FOOTER_HEIGHT, 28.0);
+    }
+
+    #[test]
+    fn pill_meter_spans_the_text_column_edge_to_edge() {
+        // 18 pt of text inset plus the default 5 pt line fragment padding.
+        let text_inset = 23.0;
+        let frame = pill_meter_frame(true, text_inset);
+        assert_eq!(frame.origin.x + METER_BORDER_PADDING, text_inset);
+        assert_eq!(
+            frame.origin.x + frame.size.width - METER_BORDER_PADDING,
+            OVERLAY_WIDTH - text_inset
+        );
+        assert_eq!(pill_span(text_inset), OVERLAY_WIDTH - (2.0 * text_inset));
     }
 
     #[test]

@@ -21,6 +21,8 @@ use objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes
 
 use crate::app::overlay_style_from_config;
 use crate::config::Config;
+use crate::overlay::OverlayStyle;
+use crate::settings_window::form::METER_STYLE_TITLES;
 use crate::overlay::glass::{
     CorrectionEasing, CorrectionEffect, GlassStyle, GlassTuning, HaloCurve, OverlayAppearance,
 };
@@ -205,6 +207,8 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
+    /// The overlay's style, whose meter style the meter picker changes.
+    overlay_style: RefCell<OverlayStyle>,
     controls: RefCell<Option<Controls>>,
     /// The overlay stays hidden until then, so "Pop again" shows both motions.
     hidden_until: Cell<Option<Instant>>,
@@ -497,6 +501,17 @@ define_class!(
         #[unsafe(method(scenarioChanged:))]
         fn scenario_changed(&self, _sender: Option<&AnyObject>) {}
 
+        #[unsafe(method(meterChanged:))]
+        fn meter_changed(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let index: isize = unsafe { msg_send![sender, indexOfSelectedItem] };
+            let Some((meter_style, _)) = METER_STYLE_TITLES.get(index.max(0) as usize) else { return };
+            let state = &self.ivars().state;
+            let mut style = state.overlay_style.borrow_mut();
+            style.meter_style = *meter_style;
+            state.overlay.apply_style(&style);
+        }
+
         #[unsafe(method(curveRangeChanged:))]
         fn curve_range_changed(&self, sender: Option<&AnyObject>) {
             let Some(sender) = sender else { return };
@@ -670,11 +685,13 @@ pub fn run() {
     let app_state = AppState::new();
     let style = overlay_style_from_config(&Config::default());
     let overlay = OverlayWindow::new(mtm, &style, app_state.clone());
+    let overlay_style = RefCell::new(style);
     // Near the top of the screen, leaving room for the controls below it.
     overlay.pin_to_top(Some(24.0));
 
     let state = Rc::new(TunerState {
         overlay,
+        overlay_style,
         controls: RefCell::new(None),
         hidden_until: Cell::new(None),
         repop_after: Cell::new(None),
@@ -689,7 +706,16 @@ pub fn run() {
     let target: &AnyObject = &tuner;
 
     let scenario = popup(mtm, &SCENARIOS, target, sel!(scenarioChanged:));
-    let mut left_rows = vec![NSArray::from_retained_slice(&[label(mtm, "scenario"), view(&scenario), label(mtm, "")])];
+    let meter_titles: Vec<&str> = METER_STYLE_TITLES.iter().map(|(_, title)| *title).collect();
+    let meter = popup(mtm, &meter_titles, target, sel!(meterChanged:));
+    let configured_meter_style = state.overlay_style.borrow().meter_style;
+    if let Some(index) = METER_STYLE_TITLES.iter().position(|(meter_style, _)| *meter_style == configured_meter_style) {
+        meter.selectItemAtIndex(index as isize);
+    }
+    let mut left_rows = vec![
+        NSArray::from_retained_slice(&[label(mtm, "scenario"), view(&scenario), label(mtm, "")]),
+        NSArray::from_retained_slice(&[label(mtm, "meter"), view(&meter), label(mtm, "")]),
+    ];
     let mut choices = Vec::new();
     let mut names = Vec::new();
     for field in &CHOICES {
