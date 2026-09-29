@@ -5,3 +5,4 @@
 /vendor
 /.codegraph/.gitignore
 /.codegraph
+/.workspaces
