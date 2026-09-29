@@ -1,4 +1,4 @@
-//! Dev tool for this branch: `simple-ptt --overlay-snapshot <dir>` renders
+//! Dev tool: `simple-ptt --overlay-snapshot <dir>` renders
 //! every overlay state over light and dark backdrops and captures each with
 //! `screencapture`.
 
@@ -9,7 +9,7 @@ use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFloatingWindowLevel,
-    NSFont, NSScreen, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSFont, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowStyleMask,
 };
 use objc2_core_foundation::CGPoint;
 use objc2_foundation::{NSArray, NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
@@ -34,7 +34,22 @@ fn text(text: &str, provisional: Option<&str>) -> OverlayText {
     state.overlay_text_snapshot()
 }
 
-fn backdrop(mtm: MainThreadMarker, frame: NSRect, dark: bool) -> Retained<NSWindow> {
+/// Size of the backdrop: room for the overlay, its halo, its correction, and
+/// the capture's padding.
+const BACKDROP_SIZE: NSSize = NSSize::new(1100.0, 760.0);
+/// Distance between the backdrop's rows of text.
+const BACKDROP_ROW_PITCH: f64 = 64.0;
+
+/// A backdrop for the overlay: a gradient with rows of text, centred on the
+/// screen's visible frame like the overlay, so the text runs under the glass.
+fn backdrop(mtm: MainThreadMarker, visible: NSRect, dark: bool) -> Retained<NSWindow> {
+    let frame = NSRect::new(
+        NSPoint::new(
+            visible.origin.x + ((visible.size.width - BACKDROP_SIZE.width) / 2.0),
+            visible.origin.y + ((visible.size.height - BACKDROP_SIZE.height) / 2.0),
+        ),
+        BACKDROP_SIZE,
+    );
     let window = unsafe {
         NSWindow::initWithContentRect_styleMask_backing_defer(
             NSWindow::alloc(mtm),
@@ -69,8 +84,11 @@ fn backdrop(mtm: MainThreadMarker, frame: NSRect, dark: bool) -> Retained<NSWind
     gradient.setStartPoint(CGPoint::new(0.0, 0.0));
     gradient.setEndPoint(CGPoint::new(1.0, 1.0));
     view.layer().unwrap().addSublayer(&gradient);
-    // Busy content behind the glass so refraction and legibility show.
-    for row in 0..14 {
+    // Busy content behind the glass so refraction and legibility show: rows
+    // of text centred across the backdrop, and as a block down it.
+    let rows = (frame.size.height / BACKDROP_ROW_PITCH).floor() as usize;
+    let first_row_y = (frame.size.height - (rows as f64 * BACKDROP_ROW_PITCH)) / 2.0;
+    for row in 0..rows {
         let label = NSTextField::labelWithString(
             &NSString::from_str("The quick brown fox jumps over the lazy dog — backdrop text 0123456789"),
             mtm,
@@ -82,9 +100,10 @@ fn backdrop(mtm: MainThreadMarker, frame: NSRect, dark: bool) -> Retained<NSWind
             NSColor::colorWithSRGBRed_green_blue_alpha(0.1, 0.1, 0.2, 0.55)
         };
         label.setTextColor(Some(&label_color));
+        label.setAlignment(NSTextAlignment::Center);
         label.setFrame(NSRect::new(
-            NSPoint::new(-40.0 + (row % 3) as f64 * 30.0, row as f64 * 64.0),
-            NSSize::new(frame.size.width + 200.0, 36.0),
+            NSPoint::new(0.0, first_row_y + (row as f64 * BACKDROP_ROW_PITCH)),
+            NSSize::new(frame.size.width, 36.0),
         ));
         view.addSubview(&label);
     }
@@ -98,7 +117,11 @@ fn overlay_frame(mtm: MainThreadMarker) -> Option<NSRect> {
     let windows = app.windows();
     (0..windows.count())
         .map(|index| windows.objectAtIndex(index))
-        .find(|window| window.level() == NSFloatingWindowLevel && window.isVisible())
+        .find(|window| {
+            // SAFETY: every Objective-C object answers `className`.
+            let class: Retained<NSString> = unsafe { objc2::msg_send![&**window, className] };
+            class.to_string() == "OverlayPanel" && window.isVisible()
+        })
         .map(|window| window.frame())
 }
 

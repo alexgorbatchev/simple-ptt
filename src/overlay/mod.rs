@@ -1,12 +1,14 @@
 pub mod dev;
 pub mod diff;
 pub mod glass;
+mod legibility;
 pub mod private_effects;
 mod text_effects;
 
 pub use diff::{build_inline_correction_preview, utf16_offset, working_text_update_is_semantically_unchanged};
 
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::Arc;
 
 use objc2::runtime::ProtocolObject;
@@ -49,7 +51,6 @@ const DEFAULT_TEXT_FONT_WEIGHT: f64 = 0.0;
 const FOOTER_LINE_HEIGHT: f64 = 14.0;
 const FOOTER_VERTICAL_PADDING: f64 = 7.0;
 const FOOTER_HEIGHT: f64 = FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING);
-const FOOTER_TEXT_SRGB: (f64, f64, f64) = (0.5, 0.5, 0.5);
 const METER_CLUSTER_MAX_WIDTH: f64 = 260.0;
 const METER_CLUSTER_MIN_WIDTH: f64 = 180.0;
 const METER_CLUSTER_WIDTH_FACTOR: f64 = 0.48;
@@ -72,7 +73,7 @@ pub struct OverlayStyle {
 
 #[derive(Debug)]
 pub struct OverlayWindow {
-    glass: OverlayGlass,
+    glass: Rc<OverlayGlass>,
     state: Arc<AppState>,
     correction_scroll_view: Retained<NSScrollView>,
     correction_text_view: Retained<NSTextView>,
@@ -1097,9 +1098,10 @@ fn usable_text_width() -> f64 {
     OVERLAY_WIDTH - (TEXT_HORIZONTAL_PADDING * 2.0)
 }
 
+/// Semantic, so it follows the appearance the glass content takes for
+/// legibility on a tinted glass (see `legibility`).
 fn footer_text_color() -> Retained<NSColor> {
-    let (red, green, blue) = FOOTER_TEXT_SRGB;
-    NSColor::colorWithSRGBRed_green_blue_alpha(red, green, blue, 1.0)
+    NSColor::secondaryLabelColor()
 }
 
 fn find_screen_visible_frame_for_point(

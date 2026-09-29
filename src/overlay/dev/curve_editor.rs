@@ -46,6 +46,17 @@ fn round(value: f64) -> f64 {
     (value * 1000.0).round() / 1000.0
 }
 
+/// The plot's top edge to start `curve` at: twice its highest point, handles
+/// included, so the curve and every handle show with room above, within
+/// `Y_MAX_RANGE`.
+pub fn default_y_max(curve: HaloCurve) -> f64 {
+    let highest = [curve.start, curve.control1, curve.control2, curve.end]
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(0.0, f64::max);
+    (highest * 2.0).clamp(Y_MAX_RANGE.0, Y_MAX_RANGE.1)
+}
+
 /// `curve` with every strength scaled by `y_max`: a 0..=1 preset fitted to
 /// the plot.
 pub fn fitted(curve: HaloCurve, y_max: f64) -> HaloCurve {
@@ -278,5 +289,23 @@ impl CurveEditor {
                 dot.stroke();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_plot_starts_at_twice_the_curves_highest_point() {
+        let tuned = HaloCurve { start: (0.305, 0.0), control1: (0.605, 0.0), control2: (0.75, 0.04), end: (1.0, 0.04) };
+        assert_eq!(default_y_max(tuned), 0.08);
+        // A control handle above the end still fits the plot.
+        let raised = HaloCurve { control1: (0.5, 0.07), ..tuned };
+        assert_eq!(default_y_max(raised), 0.14);
+        // Kept inside the slider's range.
+        assert_eq!(default_y_max(HaloCurve::LINEAR), Y_MAX_RANGE.1);
+        let flat = HaloCurve { control2: (0.75, 0.0), end: (1.0, 0.0), ..tuned };
+        assert_eq!(default_y_max(flat), Y_MAX_RANGE.0);
     }
 }

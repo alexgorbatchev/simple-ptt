@@ -1,4 +1,4 @@
-//! Dev tool for this branch: `simple-ptt --debug` shows the overlay over the
+//! Dev tool: `simple-ptt --debug` shows the overlay over the
 //! desktop, driven like the app, with a window of live controls for every
 //! `GlassTuning` value and a button that copies the values to the clipboard.
 
@@ -14,7 +14,7 @@ use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThr
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSControlStateValueOn,
     NSFloatingWindowLevel, NSGridView, NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSScreen,
-    NSSlider, NSStackView, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
+    NSSlider, NSStackView, NSStackViewGravity, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
     NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer};
@@ -51,6 +51,10 @@ use crate::state::{
 };
 
 const SCENARIOS: [&str; 4] = ["Recording", "Transforming", "Buffer ready", "Error"];
+/// What the narration loop speaks: the transcript, and the correction
+/// request while the correction is shown.
+const NARRATED_TRANSCRIPT: &str = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the updated mockups before lunch";
+const NARRATED_CORRECTION: &str = "make it Friday instead and keep the review on Monday";
 const SHOW_CORRECTION: &str = "Show correction";
 const HIDE_CORRECTION: &str = "Hide correction";
 const STYLES: [GlassStyle; 2] = [GlassStyle::Regular, GlassStyle::Clear];
@@ -133,9 +137,10 @@ const SWITCHES: [SwitchField; 3] = [
     switch!("internals_enabled", internals_enabled),
 ];
 
-static GENERAL: [NumberField; 13] = [
+static GENERAL: [NumberField; 14] = [
     number!("corner_radius", 0.0, 48.0, corner_radius),
     number!("merge_spacing", 0.0, 40.0, merge_spacing),
+    number!("dim", 0.0, 1.0, dim),
     number!("tint_hue", 0.0, 1.0, tint_hue),
     number!("tint_saturation", 0.0, 1.0, tint_saturation),
     number!("tint_brightness", 0.0, 1.0, tint_brightness),
@@ -203,13 +208,79 @@ pub struct TunerState {
     controls: RefCell<Option<Controls>>,
     /// The overlay stays hidden until then, so "Pop again" shows both motions.
     hidden_until: Cell<Option<Instant>>,
-    /// When the last control change happened, while its re-pop is pending.
-    /// Glass picks up some changes (corner radius) only when the window pops
-    /// in again, so a pause in changes triggers one.
+    /// When the last control change that shows only on the next pop in
+    /// (`needs_repop`) happened, while its re-pop is pending; a pause in
+    /// changes triggers the re-pop.
     repop_after: Cell<Option<Instant>>,
     ticks: Cell<u64>,
     /// Whether the correction glass is shown, over any scenario.
     correction_shown: Cell<bool>,
+    /// Whether the narration loop drives the text (`narration_frame`).
+    narrating: Cell<bool>,
+    /// Ticks into the current narration, and whether it narrates the
+    /// correction; switching between the two starts over.
+    narration_step: Cell<u64>,
+    narrating_correction: Cell<bool>,
+}
+
+/// Whether going from `before` to `after` shows only when the overlay pops
+/// in again. Captured live and after a re-pop (macOS 26.6), the corner radius
+/// and the glass internals differed and every other value matched; the pop
+/// values show nothing until a pop. The correction values are left to the
+/// correction toggle: a re-pop hides the correction and brings it back
+/// without its motion.
+fn needs_repop(before: &GlassTuning, after: &GlassTuning) -> bool {
+    before.corner_radius != after.corner_radius
+        || before.internals_enabled != after.internals_enabled
+        || before.internals != after.internals
+        || before.pop_seconds != after.pop_seconds
+        || before.pop_shrink != after.pop_shrink
+        || before.pop_opacity != after.pop_opacity
+}
+
+/// Ticks (of 75 ms) between narrated words: about 2.7 words a second.
+const NARRATION_TICKS_PER_WORD: u64 = 5;
+/// Words at the end of the narration that stay interim while speaking goes
+/// on, as Deepgram revises the latest words before it finalizes them.
+const NARRATION_INTERIM_WORDS: usize = 3;
+/// Ticks the finished narration holds before it starts over: about 2 s.
+const NARRATION_HOLD_TICKS: u64 = 27;
+
+/// A narration `step` ticks in: how many words are spoken, and how many of
+/// them are final.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NarrationFrame {
+    spoken: usize,
+    finals: usize,
+}
+
+/// Narrates `word_count` words a word at a time, keeps the latest words
+/// interim while speaking, finalizes them all at the end, holds, and loops.
+fn narration_frame(word_count: usize, step: u64) -> NarrationFrame {
+    let speaking = word_count as u64 * NARRATION_TICKS_PER_WORD;
+    let step = step % (speaking + NARRATION_HOLD_TICKS);
+    if step >= speaking {
+        return NarrationFrame { spoken: word_count, finals: word_count };
+    }
+    let spoken = ((step / NARRATION_TICKS_PER_WORD) as usize + 1).min(word_count);
+    NarrationFrame { spoken, finals: spoken.saturating_sub(NARRATION_INTERIM_WORDS) }
+}
+
+/// The first `frame.spoken` words of `words`, with the ones after
+/// `frame.finals` marked interim, as the transcription publishes them.
+fn narration_text(words: &str, frame: NarrationFrame) -> OverlayText {
+    let mut text = String::new();
+    let mut provisional_start = None;
+    for (index, word) in words.split_whitespace().take(frame.spoken).enumerate() {
+        if index == frame.finals {
+            provisional_start = Some(text.len());
+        }
+        text.push_str(word);
+        text.push(' ');
+    }
+    let texts = AppState::new();
+    texts.set_live_overlay_text(text, provisional_start);
+    texts.overlay_text_snapshot()
 }
 
 fn format_value(value: f64) -> String {
@@ -312,6 +383,10 @@ impl TunerState {
             slider.setDoubleValue(value);
             label.setStringValue(&NSString::from_str(&format_value(value)));
         }
+        let y_max = curve_editor::default_y_max(tuning.halo_curve);
+        controls.curve_editor.set_y_max(y_max);
+        controls.curve_range.setDoubleValue(y_max);
+        controls.curve_range_value.setStringValue(&NSString::from_str(&format_value(y_max)));
         controls.curve_editor.set_curve(tuning.halo_curve);
         controls.curve_values.setStringValue(&NSString::from_str(&format_curve(tuning.halo_curve)));
         self.refresh_enabled(tuning);
@@ -363,6 +438,34 @@ impl TunerState {
         };
         let correction_active = self.correction_shown.get();
         let correction = if correction_active { &correction_text } else { scenario_correction };
+        // The narration loop speaks the transcript, or, with the correction
+        // shown, holds the transcript final and speaks the correction.
+        let (narrated_main, narrated_correction);
+        let (main, correction) = if self.narrating.get() {
+            if self.narrating_correction.replace(correction_active) != correction_active {
+                self.narration_step.set(0);
+            }
+            let step = self.narration_step.get();
+            self.narration_step.set(step + 1);
+            let words = |text: &str| text.split_whitespace().count();
+            if correction_active {
+                let all = words(NARRATED_TRANSCRIPT);
+                narrated_main = narration_text(NARRATED_TRANSCRIPT, NarrationFrame { spoken: all, finals: all });
+                narrated_correction = narration_text(
+                    NARRATED_CORRECTION,
+                    narration_frame(words(NARRATED_CORRECTION), step),
+                );
+                (&narrated_main, &narrated_correction)
+            } else {
+                narrated_main = narration_text(
+                    NARRATED_TRANSCRIPT,
+                    narration_frame(words(NARRATED_TRANSCRIPT), step),
+                );
+                (&narrated_main, correction)
+            }
+        } else {
+            (main, correction)
+        };
         let mtm = MainThreadMarker::new().expect("main thread");
         self.overlay.update(mtm, state, false, main, error, correction, correction_active, 1.0, mic);
     }
@@ -383,9 +486,12 @@ define_class!(
         #[unsafe(method(controlChanged:))]
         fn control_changed(&self, _sender: Option<&AnyObject>) {
             let state = &self.ivars().state;
+            let before = state.overlay.glass_tuning();
             let tuning = state.read_tuning();
             state.overlay.set_glass_tuning(tuning);
-            state.repop_after.set(Some(Instant::now()));
+            if needs_repop(&before, &tuning) {
+                state.repop_after.set(Some(Instant::now()));
+            }
         }
 
         #[unsafe(method(scenarioChanged:))]
@@ -438,6 +544,15 @@ define_class!(
             }
         }
 
+        #[unsafe(method(toggleNarration:))]
+        fn toggle_narration(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let checkbox_state: isize = unsafe { msg_send![sender, state] };
+            let state = &self.ivars().state;
+            state.narrating.set(checkbox_state == NSControlStateValueOn);
+            state.narration_step.set(0);
+        }
+
         #[unsafe(method(popAgain:))]
         fn pop_again(&self, _sender: Option<&AnyObject>) {
             self.ivars().state.hidden_until.set(Some(Instant::now() + Duration::from_millis(900)));
@@ -446,9 +561,12 @@ define_class!(
         #[unsafe(method(resetDefaults:))]
         fn reset_defaults(&self, _sender: Option<&AnyObject>) {
             let state = &self.ivars().state;
+            let before = state.overlay.glass_tuning();
             state.show_tuning(&GlassTuning::default());
             state.overlay.set_glass_tuning(GlassTuning::default());
-            state.repop_after.set(Some(Instant::now()));
+            if needs_repop(&before, &GlassTuning::default()) {
+                state.repop_after.set(Some(Instant::now()));
+            }
         }
 
         #[unsafe(method(quit:))]
@@ -562,6 +680,9 @@ pub fn run() {
         repop_after: Cell::new(None),
         ticks: Cell::new(0),
         correction_shown: Cell::new(false),
+        narrating: Cell::new(false),
+        narration_step: Cell::new(0),
+        narrating_correction: Cell::new(false),
     });
     let tuner = OverlayTuner::alloc(mtm).set_ivars(TunerIvars { state: state.clone() });
     let tuner: Retained<OverlayTuner> = unsafe { msg_send![super(tuner), init] };
@@ -676,19 +797,39 @@ pub fn run() {
         small(&button);
         view(&button)
     };
-    let buttons = NSStackView::stackViewWithViews(
-        &NSArray::from_retained_slice(&[
-            button("Copy values", sel!(copyValues:)),
-            button(SHOW_CORRECTION, sel!(toggleCorrection:)),
-            button("Pop again", sel!(popAgain:)),
-            button("Reset defaults", sel!(resetDefaults:)),
-            button("Quit", sel!(quit:)),
-        ]),
+    let narration = unsafe {
+        NSButton::checkboxWithTitle_target_action(
+            &NSString::from_str("Loop narration"),
+            Some(target),
+            Some(sel!(toggleNarration:)),
+            mtm,
+        )
+    };
+    small(&narration);
+    // The narration switch at the leading end, the buttons at the trailing end.
+    let bottom_row = NSStackView::new(mtm);
+    bottom_row.addView_inGravity(&narration, NSStackViewGravity::Leading);
+    for button in [
+        button("Copy values", sel!(copyValues:)),
+        button(SHOW_CORRECTION, sel!(toggleCorrection:)),
+        button("Pop again", sel!(popAgain:)),
+        button("Reset defaults", sel!(resetDefaults:)),
+        button("Quit", sel!(quit:)),
+    ] {
+        bottom_row.addView_inGravity(&button, NSStackViewGravity::Trailing);
+    }
+    // Sets the buttons apart from the controls above them.
+    let divider = objc2_app_kit::NSBox::new(mtm);
+    divider.setBoxType(objc2_app_kit::NSBoxType::Separator);
+    let content = NSStackView::stackViewWithViews(
+        &NSArray::from_retained_slice(&[view(&columns), view(&divider), view(&bottom_row)]),
         mtm,
     );
-    let content = NSStackView::stackViewWithViews(&NSArray::from_retained_slice(&[view(&columns), view(&buttons)]), mtm);
     content.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     content.setSpacing(10.0);
+    // Across the whole width, so its two ends reach the window's edges.
+    bottom_row.widthAnchor().constraintEqualToAnchor(&content.widthAnchor()).setActive(true);
+    divider.widthAnchor().constraintEqualToAnchor(&content.widthAnchor()).setActive(true);
     let container = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
     content.setTranslatesAutoresizingMaskIntoConstraints(false);
     container.addSubview(&content);
@@ -744,4 +885,73 @@ pub fn run() {
 
     let _keep = (tuner, window, timer);
     app.run();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn narration_speaks_a_word_at_a_time_and_settles_its_tail() {
+        let frame = |step| narration_frame(6, step);
+        // The first word is interim; a word arrives every few ticks.
+        assert_eq!(frame(0), NarrationFrame { spoken: 1, finals: 0 });
+        assert_eq!(frame(NARRATION_TICKS_PER_WORD - 1), NarrationFrame { spoken: 1, finals: 0 });
+        assert_eq!(frame(NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 2, finals: 0 });
+        // While speaking, the last words stay interim.
+        assert_eq!(frame(4 * NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 5, finals: 2 });
+        assert_eq!(frame(5 * NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 6, finals: 3 });
+        // Once every word is spoken, all of them turn final and hold.
+        let spoken = 6 * NARRATION_TICKS_PER_WORD;
+        assert_eq!(frame(spoken), NarrationFrame { spoken: 6, finals: 6 });
+        assert_eq!(frame(spoken + NARRATION_HOLD_TICKS - 1), NarrationFrame { spoken: 6, finals: 6 });
+        // Then it starts over.
+        assert_eq!(frame(spoken + NARRATION_HOLD_TICKS), frame(0));
+    }
+
+    #[test]
+    fn narration_text_marks_its_interim_tail() {
+        let text = narration_text("make it Friday instead", NarrationFrame { spoken: 3, finals: 1 });
+        assert_eq!(&*text.text, "make it Friday ");
+        assert_eq!(text.provisional_start, Some("make ".len()));
+        let settled = narration_text("make it Friday instead", NarrationFrame { spoken: 4, finals: 4 });
+        assert_eq!(&*settled.text, "make it Friday instead ");
+        assert_eq!(settled.provisional_start, None);
+    }
+
+    fn changed(change: fn(&mut GlassTuning)) -> bool {
+        let before = GlassTuning::default();
+        let mut after = before;
+        change(&mut after);
+        needs_repop(&before, &after)
+    }
+
+    #[test]
+    fn only_changes_the_glass_shows_on_its_next_pop_in_repop_the_overlay() {
+        // Measured: live and re-popped captures differ for these.
+        assert!(changed(|t| t.corner_radius = 40.0));
+        assert!(changed(|t| t.internals_enabled = true));
+        assert!(changed(|t| t.internals.face_opacity = 0.3));
+        // Nothing to see at rest: a pop is the preview.
+        assert!(changed(|t| t.pop_seconds = 0.5));
+        assert!(changed(|t| t.pop_shrink = 0.2));
+        assert!(changed(|t| t.pop_opacity = 0.5));
+        // Measured: identical live and re-popped.
+        assert!(!changed(|_| {}));
+        assert!(!changed(|t| t.style = GlassStyle::Regular));
+        assert!(!changed(|t| t.appearance = OverlayAppearance::Dark));
+        assert!(!changed(|t| t.tint_alpha = 0.6));
+        assert!(!changed(|t| t.merge_spacing = 0.0));
+        assert!(!changed(|t| t.halo_enabled = false));
+        assert!(!changed(|t| t.halo_under_panels = false));
+        assert!(!changed(|t| t.halo_margin = 80.0));
+        assert!(!changed(|t| t.halo_blur_radius = 60.0));
+        assert!(!changed(|t| t.halo_dim = 0.5));
+        assert!(!changed(|t| t.dim = 0.3));
+        assert!(!changed(|t| t.halo_curve = HaloCurve::LINEAR));
+        // A re-pop drops the correction; the correction toggle previews these.
+        assert!(!changed(|t| t.correction_effect = CorrectionEffect::Emerge));
+        assert!(!changed(|t| t.correction_easing = CorrectionEasing::Smooth));
+        assert!(!changed(|t| t.correction_seconds = 0.8));
+    }
 }
