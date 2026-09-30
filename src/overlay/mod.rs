@@ -318,7 +318,8 @@ impl OverlayWindow {
         self.set_working_text_opacity(overlay_text_opacity);
 
         if meter_is_visible {
-            self.ui_meter_view.update(mic_meter, self.meter_span());
+            let speech = self.state.speech_timeline();
+            self.ui_meter_view.update(mic_meter, self.meter_span(), speech.as_deref());
         } else {
             self.ui_meter_view.clear(self.meter_span());
         }

@@ -74,6 +74,12 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 - **A layer's new model position shows only after the transaction commits.** A recycled pill sampled a few milliseconds after its model moved was still drawn at its old position (off the column on the left, so invisible). Compare model and presentation only after the run loop has turned.
 - Measured with a probe sampling the strip's presentation layer every 4 ms: every pill layer only slid left with the strip or was recycled from beyond the left edge to the right edge (17 recycles in 3.5 s), and painted pills kept their height in all 66,424 checks.
 
+## Telling speech from other sound (the pills)
+
+- **WebRTC VAD does not reject typing or loud noise.** Run as the app would (libfvad through the `webrtc-vad` crate, 16 kHz, 20 ms frames, `VeryAggressive`) on 16 kHz test sounds, it judged speech from `say` 98% voiced, but also loud white noise 100%, and keyboard-like clicks (8 ms bursts every 150 ms over quiet hiss) 60%. Only quiet hiss (2%) and a 120 Hz hum (2%) were rejected, which the adaptive range's noise floor already handles.
+- **SoundAnalysis's built-in classifier does.** `SNClassifySoundRequest` with `SNClassifierIdentifierVersion1`, 0.5 s windows at 50% overlap, "speech" confidence at or above 0.5: speech from `say` (and the same 18 dB softer) in 30 of 30 windows, the loud noise, quiet hiss, clicks and hum in 0 of 15 each, through the app's own `audio/speech.rs` pipeline as well as `SNAudioFileAnalyzer`. It cost about 0.7% of one core. Its shortest window is 0.5 s (`windowDurationConstraint`: 0.5 to 15 s).
+- **The classification delay stays inside the right-hand fade.** A pill waits as a dot until a result covers its 0.2 s, at most about 0.3 s after it closes. A probe of the tuner (which publishes results for its synthetic voice) found all 27 height changes in 6.5 s inside the 25 pt fade, and none in the shown column.
+
 ## Private Core Animation (halo)
 
 - **Changes to an installed `variableBlur` filter must go through key paths**: `filters.variableBlur.inputMaskImage` / `.inputRadius`. Assigning `filters` again does not re-render. The filter's layer `scale` must be the display scale.

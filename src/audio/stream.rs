@@ -3,6 +3,7 @@ use cpal::{
     FromSample, Sample, SampleFormat, SizedSample, Stream, SupportedStreamConfig,
     SupportedStreamConfigRange,
 };
+use objc2_quartz_core::CACurrentMediaTime;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -10,10 +11,12 @@ use std::time::Instant;
 use crate::settings::LiveConfigStore;
 use crate::state::AppState;
 use crate::transcription::TranscriptionController;
+
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
     smooth_meter_level_db, smooth_meter_value,
 };
+use super::speech::SpeechAnalysis;
 
 pub struct InputStreamHandle {
     pub stream: Stream,
@@ -176,6 +179,7 @@ where
 {
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
+    let speech = SpeechAnalysis::start(stream_config.sample_rate, Arc::clone(&state));
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
@@ -237,6 +241,13 @@ where
 
                 if route == AudioRoute::MeterAndDictation {
                     was_capturing = true;
+                    speech.analyze(
+                        pcm_chunk
+                            .chunks_exact(2)
+                            .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0)
+                            .collect(),
+                        CACurrentMediaTime(),
+                    );
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {
                         let chunk = pcm_buffer.split_to(640).freeze();

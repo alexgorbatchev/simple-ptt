@@ -163,7 +163,8 @@ impl MicrophonePane {
     }
 
     pub fn update_meter(&self, meter: MicMeterSnapshot) {
-        self.meter_view.update(meter, METER_WIDTH);
+        // Settings shows the fixed-scale meter, which takes no speech results.
+        self.meter_view.update(meter, METER_WIDTH, None);
     }
 
     pub fn audio_device_value(&self) -> Option<String> {

@@ -78,6 +78,17 @@ fn voice_level_db(tick: u64) -> f32 {
     syllable + louder
 }
 
+/// How often the speech analysis produces a result, and how long each one
+/// spans: its 0.5 s windows overlapping by half.
+const SPEECH_RESULT_EVERY_SECONDS: f64 = 0.25;
+const SPEECH_WINDOW_SECONDS: f64 = 0.5;
+
+/// Whether the synthetic voice is speaking at `tick`: all but its breaths,
+/// which are the room's noise.
+fn voice_is_speaking(tick: u64) -> bool {
+    tick % 32 < 28
+}
+
 /// What the narration loop speaks: the transcript, and the correction
 /// request while the correction is shown.
 const NARRATED_TRANSCRIPT: &str = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the updated mockups before lunch";
@@ -232,6 +243,11 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
+    /// The overlay's app state, where the tuner publishes speech results
+    /// for its synthetic voice (`publish_voice_speech`).
+    app_state: std::sync::Arc<AppState>,
+    /// When the last synthetic speech result ended, on the media clock.
+    last_speech_window_end: Cell<f64>,
     /// The overlay's style, whose meter style the meter picker changes.
     overlay_style: RefCell<OverlayStyle>,
     controls: RefCell<Option<Controls>>,
@@ -421,6 +437,22 @@ impl TunerState {
         self.refresh_enabled(tuning);
     }
 
+    /// Publishes a speech result every `SPEECH_RESULT_EVERY_SECONDS` for the
+    /// synthetic voice, as the speech analysis does for the microphone:
+    /// speech unless the voice is breathing at `tick`.
+    fn publish_voice_speech(&self, tick: u64) {
+        let now = objc2_quartz_core::CACurrentMediaTime();
+        if now - self.last_speech_window_end.get() < SPEECH_RESULT_EVERY_SECONDS {
+            return;
+        }
+        self.last_speech_window_end.set(now);
+        self.app_state.record_speech_window(crate::state::SpeechWindow {
+            start: now - SPEECH_WINDOW_SECONDS,
+            end: now,
+            speech: voice_is_speaking(tick),
+        });
+    }
+
     fn tick(&self) {
         let tick = self.ticks.get() + 1;
         self.ticks.set(tick);
@@ -457,6 +489,7 @@ impl TunerState {
         let preview_text = texts.overlay_text_snapshot();
 
         let level_db = voice_level_db(tick);
+        self.publish_voice_speech(tick);
         let meter = MicMeterSnapshot {
             clip_event_counter: 0,
             level: normalized_meter_value(normalize_meter_amplitude(level_db)),
@@ -714,6 +747,7 @@ pub fn run() {
     app.finishLaunching();
 
     let app_state = AppState::new();
+    app_state.set_speech_analysis_available(true);
     let style = overlay_style_from_config(&Config::default());
     let overlay = OverlayWindow::new(mtm, &style, app_state.clone());
     let overlay_style = RefCell::new(style);
@@ -722,6 +756,8 @@ pub fn run() {
 
     let state = Rc::new(TunerState {
         overlay,
+        app_state,
+        last_speech_window_end: Cell::new(0.0),
         overlay_style,
         controls: RefCell::new(None),
         hidden_until: Cell::new(None),

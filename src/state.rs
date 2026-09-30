@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -53,6 +54,18 @@ impl DeepgramApiKeyFingerprint {
 /// The level, in dBFS, of a microphone that delivers no signal.
 pub const MIC_SILENCE_DB: f32 = -100.0;
 
+/// How long speech analysis results are kept: longer than the meter shows.
+const SPEECH_WINDOW_KEEP_SECONDS: f64 = 20.0;
+
+/// One speech analysis result: whether the captured audio from `start` to
+/// `end`, on the media clock (`CACurrentMediaTime`), was speech.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpeechWindow {
+    pub start: f64,
+    pub end: f64,
+    pub speech: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MicMeterSnapshot {
     pub clip_event_counter: u32,
@@ -94,6 +107,10 @@ pub struct AppState {
     /// Whether the audio stream found a microphone to use the last time it
     /// looked.
     microphone_available: AtomicBool,
+    /// Whether speech analysis runs on the captured audio.
+    speech_analysis_available: AtomicBool,
+    /// Its recent results, oldest first.
+    speech_windows: Mutex<VecDeque<SpeechWindow>>,
     /// Dictation resumes once the background work running now (a
     /// transformation or a correction) finishes, so audio capture and the
     /// meter carry on through it.
@@ -121,6 +138,8 @@ impl AppState {
             mic_active: AtomicBool::new(false),
             dictation_resuming: AtomicBool::new(false),
             microphone_available: AtomicBool::new(true),
+            speech_analysis_available: AtomicBool::new(false),
+            speech_windows: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -132,6 +151,39 @@ impl AppState {
     /// while a dictation that resumes afterwards is transformed or corrected.
     pub fn is_capturing_audio(&self) -> bool {
         self.is_recording() || self.is_dictation_resuming()
+    }
+
+    pub fn set_speech_analysis_available(&self, available: bool) {
+        self.speech_analysis_available.store(available, Ordering::Relaxed);
+    }
+
+    /// The speech analysis results kept, oldest first, or `None` when speech
+    /// analysis does not run.
+    pub fn speech_timeline(&self) -> Option<Vec<SpeechWindow>> {
+        self.speech_analysis_available
+            .load(Ordering::Relaxed)
+            .then(|| self.speech_windows())
+    }
+
+    pub fn speech_windows(&self) -> Vec<SpeechWindow> {
+        self.speech_windows
+            .lock()
+            .map(|windows| windows.iter().copied().collect())
+            .unwrap_or_default()
+    }
+
+    /// Keeps `window`, dropping results older than
+    /// `SPEECH_WINDOW_KEEP_SECONDS` before it.
+    pub fn record_speech_window(&self, window: SpeechWindow) {
+        if let Ok(mut windows) = self.speech_windows.lock() {
+            windows.push_back(window);
+            while windows
+                .front()
+                .is_some_and(|oldest| oldest.end < window.end - SPEECH_WINDOW_KEEP_SECONDS)
+            {
+                windows.pop_front();
+            }
+        }
     }
 
     pub fn set_microphone_available(&self, available: bool) {
@@ -404,6 +456,22 @@ mod tests {
 
         state.set_dictation_resuming(false);
         assert!(!state.is_capturing_audio());
+    }
+
+    #[test]
+    fn speech_results_are_kept_for_twenty_seconds_and_only_while_analysis_runs() {
+        use super::SpeechWindow;
+
+        let state = AppState::new();
+        let window = |end: f64| SpeechWindow { start: end - 0.5, end, speech: true };
+        state.record_speech_window(window(10.0));
+        state.record_speech_window(window(29.0));
+        assert_eq!(state.speech_timeline(), None);
+        state.set_speech_analysis_available(true);
+        assert_eq!(state.speech_timeline(), Some(vec![window(10.0), window(29.0)]));
+        // A result 20.5 s after the first drops it.
+        state.record_speech_window(window(30.5));
+        assert_eq!(state.speech_windows(), vec![window(29.0), window(30.5)]);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use objc2_quartz_core::CACurrentMediaTime;
-use pill_levels::PillLevels;
+use pill_levels::{PillLevels, SpeechInput, SpeechSpan};
 use pill_strip::PillStrip;
 
 use block2::StackBlock;
@@ -12,7 +12,7 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::config::UiMeterStyle;
-use crate::state::MicMeterSnapshot;
+use crate::state::{MicMeterSnapshot, SpeechWindow};
 use crate::MainThreadMarker;
 
 mod pill_levels;
@@ -129,7 +129,10 @@ impl UiMeterView {
         self.meter_style.get() == UiMeterStyle::Pills
     }
 
-    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64) {
+    /// Takes in the microphone's level and, for the pills, the speech
+    /// analysis results on the media clock (`None` when speech analysis does
+    /// not run, so the pills show every sound).
+    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, speech: Option<&[SpeechWindow]>) {
         self.container_view.setHidden(false);
 
         let level = mic_meter.level as f32 / u8::MAX as f32;
@@ -139,7 +142,7 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.push_pill(mic_meter),
+            UiMeterStyle::Pills => self.push_pill(mic_meter, speech),
         }
 
         self.render_meter_bars(cluster_width);
@@ -262,16 +265,33 @@ impl UiMeterView {
 
     /// Takes the level in dBFS into the pills, or rests them while the
     /// microphone delivers nothing.
-    fn push_pill(&self, mic_meter: MicMeterSnapshot) {
+    fn push_pill(&self, mic_meter: MicMeterSnapshot, speech: Option<&[SpeechWindow]>) {
         // The strip's clock, the one its motion runs on, so each pill stands
         // for the time it is moving through the column.
-        let at = self.pill_strip.clock(CACurrentMediaTime());
+        let now = CACurrentMediaTime();
+        let at = self.pill_strip.clock(now);
         let mut pill_levels = self.pill_levels.borrow_mut();
         if mic_meter.mic_active {
             pill_levels.push(mic_meter.level_db, at);
         } else {
             pill_levels.push_rest(at);
         }
+        // The results onto the strip's clock: media time less its start.
+        let started_at = now - at;
+        let spans: Option<Vec<SpeechSpan>> = speech.map(|windows| {
+            windows
+                .iter()
+                .map(|window| SpeechSpan {
+                    start: window.start - started_at,
+                    end: window.end - started_at,
+                    speech: window.speech,
+                })
+                .collect()
+        });
+        pill_levels.classify(match &spans {
+            Some(spans) => SpeechInput::Windows(spans),
+            None => SpeechInput::Unavailable,
+        });
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {
