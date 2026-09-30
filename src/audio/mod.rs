@@ -372,7 +372,7 @@ mod tests {
     use super::{
         build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
         config_with_preferred_rate, normalize_meter_amplitude, normalized_configured_audio_device,
-        smooth_meter_value, stream_error_response, AudioController, AudioInputDeviceChoice,
+        smooth_meter_level_db, smooth_meter_value, stream_error_response, AudioController, AudioInputDeviceChoice,
         InputDeviceDescriptor, StreamErrorResponse,
     };
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
@@ -561,6 +561,12 @@ mod tests {
     #[test]
     fn normalize_meter_amplitude_is_monotonic() {
         assert!(normalize_meter_amplitude(-24.0) > normalize_meter_amplitude(-30.0));
+    }
+
+    #[test]
+    fn meter_level_db_starts_at_the_first_reading_then_smooths() {
+        assert_eq!(smooth_meter_level_db(None, -45.0), -45.0);
+        assert_eq!(smooth_meter_level_db(Some(-45.0), -35.0), smooth_meter_value(-45.0, -35.0));
     }
 
     #[test]

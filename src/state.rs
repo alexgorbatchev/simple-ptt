@@ -50,12 +50,26 @@ impl DeepgramApiKeyFingerprint {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The level, in dBFS, of a microphone that delivers no signal.
+pub const MIC_SILENCE_DB: f32 = -100.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MicMeterSnapshot {
     pub clip_event_counter: u32,
+    /// The smoothed RMS level mapped onto the meter's fixed range, where
+    /// everything below it reads 0.
     pub level: u8,
     pub peak: u8,
+    /// The smoothed RMS level in dBFS, unclamped, for meters that adapt their
+    /// range (`MIC_SILENCE_DB` when there is no signal).
+    pub level_db: f32,
     pub mic_active: bool,
+}
+
+impl Default for MicMeterSnapshot {
+    fn default() -> Self {
+        Self { clip_event_counter: 0, level: 0, peak: 0, level_db: MIC_SILENCE_DB, mic_active: false }
+    }
 }
 
 #[derive(Debug)]
@@ -64,6 +78,8 @@ pub struct AppState {
     clip_event_counter: AtomicU32,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
+    /// `f32` bits of the level in dBFS.
+    mic_meter_level_db: AtomicU32,
     overlay_dismissed: AtomicBool,
     overlay_correction_active: AtomicBool,
     overlay_correction_text: Mutex<OverlayText>,
@@ -75,6 +91,10 @@ pub struct AppState {
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
     mic_active: AtomicBool,
+    /// Dictation resumes once the background work running now (applying a
+    /// correction) finishes, so audio capture and the meter carry on through
+    /// it.
+    dictation_resuming: AtomicBool,
 }
 
 impl AppState {
@@ -84,6 +104,7 @@ impl AppState {
             clip_event_counter: AtomicU32::new(0),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
+            mic_meter_level_db: AtomicU32::new(MIC_SILENCE_DB.to_bits()),
             overlay_dismissed: AtomicBool::new(false),
             overlay_correction_active: AtomicBool::new(false),
             overlay_correction_text: Mutex::new(OverlayText::default()),
@@ -95,11 +116,26 @@ impl AppState {
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
             mic_active: AtomicBool::new(false),
+            dictation_resuming: AtomicBool::new(false),
         })
     }
 
     pub fn is_recording(&self) -> bool {
         self.get_state() == STATE_RECORDING
+    }
+
+    /// Whether the microphone's audio goes to dictation: while recording, and
+    /// while a correction is applied to a dictation that resumes after it.
+    pub fn is_capturing_audio(&self) -> bool {
+        self.is_recording() || self.is_dictation_resuming()
+    }
+
+    pub fn set_dictation_resuming(&self, resuming: bool) {
+        self.dictation_resuming.store(resuming, Ordering::Relaxed);
+    }
+
+    pub fn is_dictation_resuming(&self) -> bool {
+        self.dictation_resuming.load(Ordering::Relaxed)
     }
 
     pub fn set_preview_mic_gain(&self, gain: Option<f32>) {
@@ -118,6 +154,12 @@ impl AppState {
 
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
+        // Applying a correction to a dictation that resumes after it never
+        // stops the microphone, so its meter and activity carry on; any other
+        // state (the resume failed) stops them as usual.
+        if self.is_dictation_resuming() && matches!(state, STATE_RECORDING | STATE_TRANSFORMING) {
+            return;
+        }
         if state == STATE_RECORDING {
             self.set_mic_active(false);
         }
@@ -294,7 +336,7 @@ impl AppState {
         self.mic_active.store(active, Ordering::Relaxed);
     }
 
-    pub fn set_mic_meter(&self, level: f32, peak: f32, clip_detected: bool) {
+    pub fn set_mic_meter(&self, level: f32, peak: f32, level_db: f32, clip_detected: bool) {
         if clip_detected {
             self.clip_event_counter.fetch_add(1, Ordering::Relaxed);
         }
@@ -303,11 +345,13 @@ impl AppState {
             .store(normalized_meter_value(level), Ordering::Relaxed);
         self.mic_meter_peak
             .store(normalized_meter_value(peak), Ordering::Relaxed);
+        self.mic_meter_level_db.store(level_db.to_bits(), Ordering::Relaxed);
     }
 
     pub fn clear_mic_meter(&self) {
         self.mic_meter_level.store(0, Ordering::Relaxed);
         self.mic_meter_peak.store(0, Ordering::Relaxed);
+        self.mic_meter_level_db.store(MIC_SILENCE_DB.to_bits(), Ordering::Relaxed);
     }
 
     pub fn mic_meter_snapshot(&self) -> MicMeterSnapshot {
@@ -315,44 +359,122 @@ impl AppState {
             clip_event_counter: self.clip_event_counter.load(Ordering::Relaxed),
             level: self.mic_meter_level.load(Ordering::Relaxed),
             peak: self.mic_meter_peak.load(Ordering::Relaxed),
+            level_db: f32::from_bits(self.mic_meter_level_db.load(Ordering::Relaxed)),
             mic_active: self.is_mic_active(),
         }
     }
 }
 
-fn normalized_meter_value(value: f32) -> u8 {
+/// A meter level from 0 to 1 as a byte.
+pub(crate) fn normalized_meter_value(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * u8::MAX as f32).round() as u8
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, STATE_IDLE, STATE_RECORDING,
+        AppState, MIC_SILENCE_DB, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
     };
+
+    #[test]
+    fn audio_capture_carries_on_while_dictation_resumes_after_a_correction() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        assert!(state.is_capturing_audio());
+
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_TRANSFORMING);
+        assert!(!state.is_recording());
+        assert!(state.is_capturing_audio());
+
+        state.set_dictation_resuming(false);
+        assert!(!state.is_capturing_audio());
+    }
+
+    #[test]
+    fn a_resume_that_fails_stops_the_meter() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_mic_meter(0.4, 0.5, -40.0, false);
+        state.set_mic_active(true);
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_TRANSFORMING);
+
+        // The resumed session could not start: the buffer is ready instead.
+        state.set_state(STATE_BUFFER_READY);
+
+        let meter = state.mic_meter_snapshot();
+        assert_eq!(meter.level_db, MIC_SILENCE_DB);
+        assert!(!meter.mic_active);
+    }
+
+    #[test]
+    fn a_transformation_without_resuming_dictation_stops_capture() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_mic_meter(0.4, 0.5, -40.0, false);
+
+        state.set_state(STATE_TRANSFORMING);
+
+        assert!(!state.is_capturing_audio());
+        assert_eq!(state.mic_meter_snapshot().level_db, MIC_SILENCE_DB);
+    }
+
+    #[test]
+    fn the_meter_carries_on_through_a_correction_applied_mid_dictation() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_mic_meter(0.4, 0.5, -40.0, false);
+        state.set_mic_active(true);
+
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_TRANSFORMING);
+        let meter = state.mic_meter_snapshot();
+        assert_eq!(meter.level_db, -40.0);
+        assert!(meter.mic_active);
+
+        // Dictation resumes: the microphone never stopped delivering.
+        state.set_state(STATE_RECORDING);
+        assert!(state.mic_meter_snapshot().mic_active);
+    }
 
     #[test]
     fn non_recording_states_clear_the_mic_meter() {
         let state = AppState::new();
         state.set_state(STATE_RECORDING);
-        state.set_mic_meter(0.4, 0.7, true);
+        state.set_mic_meter(0.4, 0.7, -38.5, true);
 
         state.set_state(STATE_IDLE);
 
         let mic_meter = state.mic_meter_snapshot();
         assert_eq!(mic_meter.level, 0);
         assert_eq!(mic_meter.peak, 0);
+        assert_eq!(mic_meter.level_db, MIC_SILENCE_DB);
         assert_eq!(mic_meter.clip_event_counter, 1);
+    }
+
+    #[test]
+    fn mic_meter_carries_the_level_in_decibels_unclamped() {
+        let state = AppState::new();
+        assert_eq!(state.mic_meter_snapshot().level_db, MIC_SILENCE_DB);
+
+        // Far below the -42 dBFS the normalized level clamps to 0.
+        state.set_mic_meter(0.0, 0.0, -51.25, false);
+
+        let mic_meter = state.mic_meter_snapshot();
+        assert_eq!(mic_meter.level, 0);
+        assert_eq!(mic_meter.level_db, -51.25);
     }
 
     #[test]
     fn clip_events_increment_the_counter() {
         let state = AppState::new();
 
-        state.set_mic_meter(0.1, 0.2, false);
+        state.set_mic_meter(0.1, 0.2, -40.0, false);
         assert_eq!(state.mic_meter_snapshot().clip_event_counter, 0);
 
-        state.set_mic_meter(0.3, 0.4, true);
-        state.set_mic_meter(0.3, 0.4, true);
+        state.set_mic_meter(0.3, 0.4, -30.0, true);
+        state.set_mic_meter(0.3, 0.4, -30.0, true);
 
         assert_eq!(state.mic_meter_snapshot().clip_event_counter, 2);
     }

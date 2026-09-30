@@ -225,6 +225,7 @@ impl OverlayWindow {
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
         mic_meter: MicMeterSnapshot,
+        capturing_audio: bool,
     ) {
         let should_show = !overlay_dismissed
             && matches!(
@@ -252,8 +253,10 @@ impl OverlayWindow {
         let overlay_correction_text_value = &*overlay_correction_text.text;
         let footer_is_visible = self.footer_hint.borrow().is_some();
         let correction_is_visible = overlay_correction_active;
+        // The meter runs while audio is captured: while recording, and while a
+        // correction is applied to a dictation that resumes after it.
         let meter_is_visible =
-            state == STATE_RECORDING && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
+            capturing_audio && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
 
         let inline_correction_preview = (state == STATE_TRANSFORMING
             && !overlay_correction_active
@@ -291,7 +294,7 @@ impl OverlayWindow {
         };
 
         let current_alpha = self.meter_alpha.get();
-        if state != STATE_RECORDING || is_error {
+        if !capturing_audio || is_error {
             self.meter_alpha.set(0.0);
         } else if (current_alpha - target_alpha).abs() > 0.01 {
             let step = 0.375;

@@ -1,6 +1,8 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Host};
 
+use crate::state::MIC_SILENCE_DB;
+
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
 const METER_MIN_DB: f32 = -42.0;
 const METER_MAX_DB: f32 = -6.0;
@@ -211,13 +213,13 @@ where
     let level_db = if rms > 1e-6 {
         20.0 * rms.log10()
     } else {
-        -100.0
+        MIC_SILENCE_DB
     };
 
     let peak_db = if max_abs > 1e-6 {
         20.0 * max_abs.log10()
     } else {
-        -100.0
+        MIC_SILENCE_DB
     };
 
     (pcm_bytes.freeze(), clipped_sample_count, level_db, peak_db)
@@ -231,6 +233,13 @@ pub fn normalize_meter_amplitude(db: f32) -> f32 {
     } else {
         (db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)
     }
+}
+
+/// The next smoothed level in dBFS for `level_db`: the level itself when
+/// metering starts (`previous` is `None`), so a meter that adapts to the
+/// room never sees a ramp up from silence, then `smooth_meter_value`.
+pub fn smooth_meter_level_db(previous: Option<f32>, level_db: f32) -> f32 {
+    previous.map_or(level_db, |current| smooth_meter_value(current, level_db))
 }
 
 pub fn smooth_meter_value(current: f32, target: f32) -> f32 {

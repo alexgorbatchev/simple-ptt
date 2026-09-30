@@ -1,6 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
+use objc2_quartz_core::CACurrentMediaTime;
+use pill_levels::PillLevels;
+use pill_strip::PillStrip;
+
 use block2::StackBlock;
 use objc2::{rc::Retained, MainThreadOnly};
 use objc2_app_kit::{NSAppearanceCustomization, NSColor, NSView};
@@ -10,6 +14,9 @@ use objc2_foundation::{NSPoint, NSRect, NSSize};
 use crate::config::UiMeterStyle;
 use crate::state::MicMeterSnapshot;
 use crate::MainThreadMarker;
+
+mod pill_levels;
+mod pill_strip;
 
 pub const CLIP_INDICATOR_BORDER_WIDTH: f64 = 1.0;
 pub const CLIP_INDICATOR_CORNER_RADIUS: f64 = 4.0;
@@ -24,15 +31,6 @@ pub const METER_COLOR_ONLY_BAR_HEIGHT: f64 = 4.0;
 pub const METER_MIN_BAR_HEIGHT: f64 = 0.0;
 pub const METER_VIEW_HEIGHT: f64 = 19.6;
 
-/// Width of each pill (`UiMeterStyle::Pills`).
-const PILL_WIDTH: f64 = 4.75;
-/// Least gap between pills; the gap grows a little so the pills reach both
-/// ends of the text column.
-const PILL_MIN_SPACING: f64 = 2.0;
-const PILL_CORNER_RADIUS: f64 = 2.0;
-/// Every pill's opacity, in the label color: the level changes only heights.
-const PILL_OPACITY: f64 = 0.5;
-
 #[derive(Debug, Default)]
 struct ClipIndicatorState {
     alpha: f64,
@@ -45,16 +43,13 @@ struct ClipIndicatorState {
 pub struct UiMeterView {
     container_view: Retained<NSView>,
     meter_bar_views: Vec<Retained<NSView>>,
-    /// The pills, as many as fit the text column (`pill_layout`).
-    pill_views: RefCell<Vec<Retained<NSView>>>,
     meter_bar_levels: RefCell<Vec<f32>>,
     clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: Cell<UiMeterStyle>,
-    /// The pills' recent levels, oldest first (newest at the right), one per
-    /// update.
-    history: RefCell<Vec<f32>>,
-    /// The level, smoothed, for the pills.
-    smoothed_level: Cell<f32>,
+    /// The pills' heights and the level range they are painted from.
+    pill_levels: RefCell<PillLevels>,
+    /// The pills on screen (`UiMeterStyle::Pills`).
+    pill_strip: PillStrip,
 }
 
 impl UiMeterView {
@@ -93,15 +88,18 @@ impl UiMeterView {
             meter_bar_views.push(bar_view);
         }
 
+        let pill_strip = PillStrip::new(
+            &container_view.layer().expect("the meter's view is layer-backed (setWantsLayer)"),
+        );
+
         Self {
             container_view,
             meter_bar_views,
-            pill_views: RefCell::new(Vec::new()),
             meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
             clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
             meter_style: Cell::new(style),
-            history: RefCell::new(vec![0.0; METER_BAR_COUNT]),
-            smoothed_level: Cell::new(0.0),
+            pill_levels: RefCell::new(PillLevels::new(METER_BAR_COUNT)),
+            pill_strip,
         }
     }
 
@@ -141,7 +139,7 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.update_smoothed_level(level, peak),
+            UiMeterStyle::Pills => self.push_pill(mic_meter),
         }
 
         self.render_meter_bars(cluster_width);
@@ -153,8 +151,8 @@ impl UiMeterView {
         let mut meter_bar_levels = self.meter_bar_levels.borrow_mut();
         meter_bar_levels.fill(0.0);
         drop(meter_bar_levels);
-        self.history.borrow_mut().fill(0.0);
-        self.smoothed_level.set(0.0);
+        self.pill_levels.borrow_mut().clear();
+        self.pill_strip.stop();
         self.render_meter_bars(cluster_width);
 
         self.clear_clip_indicator();
@@ -232,14 +230,12 @@ impl UiMeterView {
     }
 
     fn render_meter_bars(&self, cluster_width: f64) {
-        // The pills draw with their own views, the other styles with the bars.
+        // The pills draw with their own strip, the other styles with the bars.
         let pills = self.meter_style.get() == UiMeterStyle::Pills;
         for meter_bar_view in &self.meter_bar_views {
             meter_bar_view.setHidden(pills);
         }
-        for pill_view in self.pill_views.borrow().iter() {
-            pill_view.setHidden(!pills);
-        }
+        self.pill_strip.set_hidden(!pills);
         match self.meter_style.get() {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.render_meter_bars_animated_height(cluster_width),
@@ -264,15 +260,18 @@ impl UiMeterView {
         }
     }
 
-    /// Smooths the level for the pills, and flows it
-    /// into the pills' history.
-    fn update_smoothed_level(&self, level: f32, peak: f32) {
-        let target = ((level.powf(0.9) * 0.82) + (peak.powf(0.78) * 0.18)).clamp(0.0, 1.0);
-        let current = self.smoothed_level.get();
-        let smoothing = if target >= current { 0.6 } else { 0.35 };
-        let smoothed = current + ((target - current) * smoothing);
-        self.smoothed_level.set(smoothed);
-        push_history(&mut self.history.borrow_mut(), smoothed);
+    /// Takes the level in dBFS into the pills, or rests them while the
+    /// microphone delivers nothing.
+    fn push_pill(&self, mic_meter: MicMeterSnapshot) {
+        // The strip's clock, the one its motion runs on, so each pill stands
+        // for the time it is moving through the column.
+        let at = self.pill_strip.clock(CACurrentMediaTime());
+        let mut pill_levels = self.pill_levels.borrow_mut();
+        if mic_meter.mic_active {
+            pill_levels.push(mic_meter.level_db, at);
+        } else {
+            pill_levels.push_rest(at);
+        }
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {
@@ -313,42 +312,14 @@ impl UiMeterView {
         }
     }
 
-    /// One pill per level of the history, newest at the right, across
-    /// `span` (the text column), in the label color at `PILL_OPACITY`.
+    /// The pills across `span` (the text column), newest (still open) at
+    /// the right.
     fn render_pills(&self, span: f64) {
-        let (count, pitch) = pill_layout(span);
-        self.ensure_pill_views(count);
-        fit_history(&mut self.history.borrow_mut(), count);
-        let history = self.history.borrow();
-        for (index, pill_view) in self.pill_views.borrow().iter().enumerate() {
-            let x = METER_BORDER_PADDING + (pitch * index as f64);
-            pill_view.setFrame(centred_bar_frame(x, PILL_WIDTH, history[index]));
-            if let Some(layer) = pill_view.layer() {
-                let color = cg_color_in(pill_view, &|| NSColor::labelColor().colorWithAlphaComponent(PILL_OPACITY));
-                layer.setBackgroundColor(Some(&color));
-                layer.setCornerRadius(PILL_CORNER_RADIUS);
-            }
-        }
-    }
-
-    /// Adds or removes pill views until there are `count`.
-    fn ensure_pill_views(&self, count: usize) {
-        let mut pill_views = self.pill_views.borrow_mut();
-        while pill_views.len() > count {
-            if let Some(pill_view) = pill_views.pop() {
-                pill_view.removeFromSuperview();
-            }
-        }
-        let mtm = MainThreadMarker::from(&*self.container_view);
-        while pill_views.len() < count {
-            let pill_view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
-            pill_view.setWantsLayer(true);
-            if let Some(layer) = pill_view.layer() {
-                layer.setMasksToBounds(true);
-            }
-            self.container_view.addSubview(&pill_view);
-            pill_views.push(pill_view);
-        }
+        let pool = pill_strip::pool_size(span);
+        let mut pill_levels = self.pill_levels.borrow_mut();
+        // Every pill the strip holds but the next, which is not open yet.
+        pill_levels.fit(pool.saturating_sub(1));
+        self.pill_strip.render(&self.container_view, span, pill_levels.heights(), pill_levels.open_index());
     }
 
     fn render_meter_bars_animated_color(&self, cluster_width: f64) {
@@ -376,15 +347,6 @@ impl UiMeterView {
     }
 }
 
-/// How many `PILL_WIDTH` pills fit `span` with at least `PILL_MIN_SPACING`
-/// between them, and the distance from one to the next that puts the first
-/// at the start of `span` and the last at its end.
-fn pill_layout(span: f64) -> (usize, f64) {
-    let count = (((span + PILL_MIN_SPACING) / (PILL_WIDTH + PILL_MIN_SPACING)).floor() as usize).max(1);
-    let pitch = if count > 1 { (span - PILL_WIDTH) / (count - 1) as f64 } else { 0.0 };
-    (count, pitch)
-}
-
 /// A capsule at `x` for `level`, centred on the track's middle line: a dot
 /// as tall as it is wide when silent, the whole track at full level.
 fn centred_bar_frame(x: f64, bar_width: f64, level: f32) -> NSRect {
@@ -394,25 +356,6 @@ fn centred_bar_frame(x: f64, bar_width: f64, level: f32) -> NSRect {
         NSPoint::new(x, METER_BORDER_PADDING + ((METER_VIEW_HEIGHT - height) / 2.0)),
         NSSize::new(bar_width, height),
     )
-}
-
-/// Flows `level` into `history` as its newest (last, rightmost) value; the
-/// oldest leaves at the left.
-fn push_history(history: &mut Vec<f32>, level: f32) {
-    if !history.is_empty() {
-        history.remove(0);
-        history.push(level);
-    }
-}
-
-/// Makes `history` `count` long, keeping its newest (rightmost) levels:
-/// silence is added, or the oldest levels dropped, at the left.
-fn fit_history(history: &mut Vec<f32>, count: usize) {
-    if history.len() > count {
-        history.drain(..history.len() - count);
-    } else {
-        history.splice(0..0, std::iter::repeat_n(0.0, count - history.len()));
-    }
 }
 
 /// `color()` as a layer color, resolved in `view`'s appearance: the one the
@@ -581,39 +524,5 @@ mod tests {
         assert_eq!(full.size.height, METER_VIEW_HEIGHT);
         assert_eq!(full.origin.y, METER_BORDER_PADDING);
         assert_eq!(full.origin.x, 10.0);
-    }
-
-    #[test]
-    fn pills_history_flows_right_to_left_one_level_per_update() {
-        let mut history = vec![0.0; 4];
-        push_history(&mut history, 0.5);
-        push_history(&mut history, 0.9);
-        assert_eq!(history, vec![0.0, 0.0, 0.5, 0.9]);
-    }
-
-    #[test]
-    fn pills_history_keeps_its_newest_levels_when_the_count_changes() {
-        let mut history = vec![0.1, 0.2, 0.3];
-        fit_history(&mut history, 5);
-        assert_eq!(history, vec![0.0, 0.0, 0.1, 0.2, 0.3]);
-        fit_history(&mut history, 2);
-        assert_eq!(history, vec![0.2, 0.3]);
-    }
-
-    #[test]
-    fn pills_fill_the_span_edge_to_edge_at_a_fixed_width() {
-        let span = 514.0;
-        let (count, pitch) = pill_layout(span);
-        // As many pills as fit with at least the minimum gap between them.
-        assert_eq!(count, 76);
-        assert!(pitch - PILL_WIDTH >= PILL_MIN_SPACING);
-        // One more pill at the minimum gap would not fit.
-        assert!((count as f64 * (PILL_WIDTH + PILL_MIN_SPACING)) + PILL_WIDTH > span);
-        // The last pill ends where the span ends.
-        let last_right_edge = (pitch * (count - 1) as f64) + PILL_WIDTH;
-        assert!((last_right_edge - span).abs() < 1e-9);
-        assert_eq!(PILL_WIDTH, 4.75);
-        assert_eq!(PILL_CORNER_RADIUS, 2.0);
-        assert_eq!(PILL_OPACITY, 0.5);
     }
 }

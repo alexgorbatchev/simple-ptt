@@ -52,7 +52,7 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
   - Measured with the paired method over busy backdrop text, the hardest case is dark mode (white text) over a light backdrop: 1.89:1 with no dim, 3.67 at 0.5, 4.32 at 0.6, and 4.71 at 0.65. Every other case was already at 4.26 or more with no dim.
   - The tint and footer figures above came from the old full-screen backdrop, whose text did not reach under the glass, so they measure a flat backdrop only.
 - **AppKit's resolved values on macOS 26.6:** `windowBackgroundColor` is 1.0 (Aqua) and 0.118 (Dark Aqua); `labelColor` is black or white at alpha 0.847.
-- **Only text uses semantic colours.** The status dot, meter bars, and shimmer mask are fixed sRGB and do not adapt.
+- **Only text and the pills use semantic colours.** The pills are `labelColor` resolved in their view's appearance (`cg_color_in` in `ui_meter.rs`); the other meter styles' bars and the shimmer mask are fixed sRGB and do not adapt.
 
 ## Window and halo
 
@@ -63,6 +63,16 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 - **Window frames are whole points; views are not.** Moving the window's top edge with the glass put the halo 0.5pt off the glass on about 1 step in 10. That is why the window takes its grown height at once (it is transparent there) and only the halo views follow.
 - **Drawing the progressive-blur mask ring by ring at full size takes 14–22ms** (release, 1280×520–724px), longer than a display frame. `blur_mask_image` stretches a small `blur_mask_cap` in about 1.7ms, and a test proves the result is byte-identical. The first image draw in a process costs about 100ms of one-time warm-up.
 - **`NSImageResizingModeStretch` is 0 on macOS** (1 is the iOS value; see `NSImage.h`). objc2-app-kit declares the type without its constants.
+
+## The pill strip (Core Animation)
+
+- **A timing function wrecks a long linear animation, even `kCAMediaTimingFunctionLinear`.** The pill strip (`ui_meter/pill_strip.rs`) moves by one `transform.translation.x` animation lasting 24 hours, so a few seconds in its progress is about 1e-5.
+  - With the linear `CAMediaTimingFunction`, the presentation layer's translation crawled at 0.4 pt/s, then jumped 42 and 21 pt, then ran 13% slow. It sat 13–28 pt off the expected line in the first 5 seconds.
+  - A timing function is a cubic Bézier that Core Animation solves numerically; near 0 the linear one is x ≈ 3t², so the solver's tolerance shows as tens of points over a 2.9 million-point travel.
+  - With no timing function (`nil` is linear pacing), the translation stayed within one display frame of the expected line (0–0.56 pt at 33.75 pt/s) in all 875 samples. Leave `timingFunction` unset on long animations.
+- **The presentation layer advances once per display frame,** so a sample of it lags the ideal value by up to one frame of motion. Judge smoothness by the step between frames, not by an exact match with `CACurrentMediaTime`.
+- **A layer's new model position shows only after the transaction commits.** A recycled pill sampled a few milliseconds after its model moved was still drawn at its old position (off the column on the left, so invisible). Compare model and presentation only after the run loop has turned.
+- Measured with a probe sampling the strip's presentation layer every 4 ms: every pill layer only slid left with the strip or was recycled from beyond the left edge to the right edge (17 recycles in 3.5 s), and painted pills kept their height in all 66,424 checks.
 
 ## Private Core Animation (halo)
 
