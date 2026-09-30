@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-30 11:51
-last_modified: 2026-09-30 12:03
+last_modified: 2026-09-30 13:29
 status: current
 ---
 
@@ -48,7 +48,7 @@ Evidence: a probe of the debug tuner sampled every pill layer every 4 ms. In eac
 - One pill stands for 0.2 s (`PILL_SECONDS`), about one syllable: conversational English runs at 4 to 5 syllables a second.
 - The strip moves by one linear Core Animation translation that lasts 24 hours and has no timing function, so the render server moves it at the display's rate and the app does nothing per frame. Even the linear `CAMediaTimingFunction` put the strip up to 28 pt off (see `findings.md` in the `overlay-visual-debugging` skill).
 - Only enough pill layers to cover the column and the way in exist. A layer that leaves on the left becomes the next pill on the right.
-- The column fades out over 25 pt at both ends (`FADE_WIDTH`), through a gradient mask.
+- The column fades pills out over 25 pt on the left (`EXIT_FADE_WIDTH`) and in over 8 pt on the right (`ENTRY_FADE_WIDTH`), through a gradient mask. The right-hand fade was 25 pt too, but pills enter final (R2), so it only delayed them: crossing it took 0.74 s at the strip's 33.75 pt/s, and 8 pt takes 0.24 s. The user asked for this after the pills felt late ("the pills indicating speach feel delayed by noticable amount"; "8 pt and keep 25 pt -> sure").
 - With Reduce Motion on, the strip steps one pill spacing at a time instead of gliding.
 
 ### R4. Only speech raises the pills

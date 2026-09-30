@@ -1,6 +1,6 @@
 //! The pills on screen: a strip of pill layers that Core Animation moves
 //! from right to left at one pill spacing per `PILL_SECONDS`, in a column
-//! that fades out at both ends.
+//! that fades pills in quickly on the right and out slowly on the left.
 //!
 //! The strip carries one linear animation of its translation, started with
 //! the strip's clock, so the render server moves it at the display's rate
@@ -38,8 +38,13 @@ const PILL_PITCH: f64 = PILL_WIDTH + PILL_SPACING;
 const PILL_CORNER_RADIUS: f64 = 2.0;
 /// Every pill's opacity, in the label color: the level changes only heights.
 const PILL_OPACITY: f64 = 0.5;
-/// How far in from each end of the column the pills fade out.
-const FADE_WIDTH: f64 = 25.0;
+/// How far in from the column's right edge the pills fade in. Short, since
+/// pills enter final (`ENTRY_DELAY_SECONDS`) and the fade only delays them:
+/// at the strip's 33.75 pt/s, 8 pt takes 0.24 s to cross, and 25 pt took
+/// 0.74 s.
+const ENTRY_FADE_WIDTH: f64 = 8.0;
+/// How far in from the column's left edge the pills fade out.
+const EXIT_FADE_WIDTH: f64 = 25.0;
 /// How long the strip's animation runs: longer than any recording. At the
 /// strip's speed it moves under 3 million points in that time, where layer
 /// geometry is still exact to well under a point.
@@ -253,10 +258,14 @@ fn pill_height(index: i64, open_index: u64, heights: &[f32]) -> f32 {
 }
 
 /// The fade mask's stops across a column `span` wide: clear at both ends,
-/// opaque `FADE_WIDTH` in from each.
+/// opaque from `EXIT_FADE_WIDTH` in from the left to `ENTRY_FADE_WIDTH` in
+/// from the right. A column narrower than both fades shares its width
+/// between them in proportion.
 fn fade_locations(span: f64) -> [f64; 4] {
-    let fade = (FADE_WIDTH / span).min(0.5);
-    [0.0, fade, 1.0 - fade, 1.0]
+    let scale = (span / (EXIT_FADE_WIDTH + ENTRY_FADE_WIDTH)).min(1.0);
+    let exit = (EXIT_FADE_WIDTH * scale) / span;
+    let entry = (ENTRY_FADE_WIDTH * scale) / span;
+    [0.0, exit, 1.0 - entry, 1.0]
 }
 
 #[cfg(test)]
@@ -341,10 +350,30 @@ mod tests {
     }
 
     #[test]
-    fn the_column_fades_in_and_out_over_the_fade_width() {
-        assert_eq!(fade_locations(COLUMN), [0.0, FADE_WIDTH / COLUMN, 1.0 - (FADE_WIDTH / COLUMN), 1.0]);
-        // A column narrower than both fades fades to its middle.
-        assert_eq!(fade_locations(30.0), [0.0, 0.5, 0.5, 1.0]);
+    fn pills_fade_in_quickly_on_the_right_and_out_slowly_on_the_left() {
+        // Opaque from 25 pt in from the left edge to 8 pt in from the right.
+        let [start, left_opaque, right_opaque, end] = fade_locations(COLUMN);
+        assert_eq!((start, end), (0.0, 1.0));
+        assert!((left_opaque * COLUMN - 25.0).abs() < 1e-9, "{left_opaque}");
+        assert!(((1.0 - right_opaque) * COLUMN - 8.0).abs() < 1e-9, "{right_opaque}");
+        // A column narrower than both fades shares it between them in
+        // proportion: 30 pt split 25 : 8.
+        let [_, left_opaque, right_opaque, _] = fade_locations(30.0);
+        assert!((left_opaque - (25.0 / 33.0)).abs() < 1e-9, "{left_opaque}");
+        assert!((right_opaque - left_opaque).abs() < 1e-9, "{right_opaque}");
+    }
+
+    #[test]
+    fn a_pill_is_fully_shown_within_0_4_s_of_entering() {
+        // It crosses its own width and the 8 pt fade at 33.75 pt/s: 0.38 s.
+        // Across a 25 pt fade it took 0.88 s.
+        let entry = ENTRY_DELAY_SECONDS;
+        let [_, _, right_opaque, _] = fade_locations(COLUMN);
+        let fully_shown = (0..=1000)
+            .map(|step| entry + (f64::from(step) * 0.001))
+            .find(|at| visible_x(0, *at) + PILL_WIDTH <= right_opaque * COLUMN)
+            .unwrap();
+        assert!(fully_shown - entry < 0.4, "{}", fully_shown - entry);
     }
 
     #[test]
