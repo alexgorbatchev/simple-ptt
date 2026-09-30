@@ -450,19 +450,7 @@ fn handle_key_release(
             STATE_RECORDING if state.is_overlay_correction_active() => {
                 log::info!("ignoring transform hotkey while correction is recording");
             }
-            STATE_RECORDING => {
-                state.set_overlay_text_opacity(0.02);
-                state.set_state(STATE_PROCESSING);
-                match controller.stop_session_and_transform_and_resume() {
-                    Ok(()) => {
-                        log::info!("stopping recording, transforming buffered text, and resuming");
-                    }
-                    Err(error) => {
-                        log::error!("failed to stop recording for transformation: {}", error);
-                        state.report_error(error.to_string());
-                    }
-                }
-            }
+            STATE_RECORDING => stop_recording_and_transform_and_resume(state, controller, "transform hotkey"),
             STATE_BUFFER_READY => {
                 state.set_state(STATE_TRANSFORMING);
                 match controller.transform_buffer() {
@@ -564,6 +552,30 @@ fn stop_recording_and_transform_and_paste(
     }
 }
 
+/// Transforms the transcript so far and resumes dictation after it. Audio
+/// capture carries on meanwhile (`AppState::set_dictation_resuming`), so
+/// what is said while the transformation runs joins the transformed text; the
+/// transcription worker ends the mark when it is done.
+fn stop_recording_and_transform_and_resume(
+    state: &AppState,
+    controller: &TranscriptionController,
+    reason: &str,
+) {
+    state.set_dictation_resuming(true);
+    state.set_overlay_text_opacity(0.02);
+    state.set_state(STATE_PROCESSING);
+    match controller.stop_session_and_transform_and_resume() {
+        Ok(()) => {
+            log::info!("stopping recording, transforming buffered text, and resuming ({})", reason);
+        }
+        Err(error) => {
+            log::error!("failed to stop recording for transformation: {}", error);
+            state.set_dictation_resuming(false);
+            state.report_error(error.to_string());
+        }
+    }
+}
+
 fn abort_recording(
     state: &AppState,
     controller: &TranscriptionController,
@@ -590,8 +602,52 @@ fn abort_recording(
 mod tests {
     use super::{
         is_clipboard_insert_shortcut, parse_correction_key, stop_recording_and_paste,
-        stop_recording_and_transform_and_paste,
+        stop_recording_and_transform_and_paste, stop_recording_and_transform_and_resume,
     };
+
+    fn test_controller(state: &std::sync::Arc<crate::state::AppState>) -> crate::transcription::TranscriptionController {
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        crate::transcription::spawn_transcription_thread(state.clone(), config_store)
+    }
+
+    #[test]
+    fn the_transform_hotkey_mid_dictation_keeps_capturing_audio() {
+        use crate::state::{AppState, STATE_PROCESSING, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        // Its commands wait, so the state is seen before the worker acts.
+        let controller = crate::transcription::TranscriptionController::without_worker();
+
+        stop_recording_and_transform_and_resume(&state, &controller, "test");
+
+        assert_eq!(state.get_state(), STATE_PROCESSING);
+        assert!(state.is_dictation_resuming());
+        assert!(state.is_capturing_audio());
+    }
+
+    #[test]
+    fn the_worker_ends_resuming_when_the_transform_and_resume_is_done() {
+        use crate::state::{AppState, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        let controller = test_controller(&state);
+
+        stop_recording_and_transform_and_resume(&state, &controller, "test");
+
+        // There is no session to transform, so the worker is done at once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while state.is_dictation_resuming() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!state.is_dictation_resuming());
+    }
     use crate::hotkey_binding::HotkeyModifiers;
     use crate::key::Key;
 

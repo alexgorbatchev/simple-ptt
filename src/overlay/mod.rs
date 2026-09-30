@@ -254,10 +254,7 @@ impl OverlayWindow {
         let overlay_correction_text_value = &*overlay_correction_text.text;
         let footer_is_visible = self.footer_hint.borrow().is_some();
         let correction_is_visible = overlay_correction_active;
-        // The meter runs while audio is captured: while recording, and while a
-        // correction is applied to a dictation that resumes after it.
-        let meter_is_visible =
-            capturing_audio && self.ui_meter_view.style() != UiMeterStyle::None && !is_error;
+        let meter_is_visible = meter_runs(capturing_audio, is_error, self.ui_meter_view.style());
 
         let inline_correction_preview = (state == STATE_TRANSFORMING
             && !overlay_correction_active
@@ -295,7 +292,7 @@ impl OverlayWindow {
         };
 
         let current_alpha = self.meter_alpha.get();
-        if !capturing_audio || is_error {
+        if !meter_is_visible {
             self.meter_alpha.set(0.0);
         } else if (current_alpha - target_alpha).abs() > 0.01 {
             let step = 0.375;
@@ -1065,6 +1062,13 @@ fn main_text_view_frame(
     )
 }
 
+/// Whether the meter shows and runs: while audio is captured (recording, or
+/// a dictation that resumes after the transformation or correction running
+/// now), unless the overlay shows an error or no meter is configured.
+fn meter_runs(capturing_audio: bool, is_error: bool, meter_style: UiMeterStyle) -> bool {
+    capturing_audio && !is_error && meter_style != UiMeterStyle::None
+}
+
 fn meter_reserved_height(meter_style: UiMeterStyle) -> f64 {
     match meter_style {
         UiMeterStyle::AnimatedColor => {
@@ -1217,6 +1221,16 @@ mod tests {
         FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
     };
     use crate::ui_meter::METER_BORDER_PADDING;
+
+    #[test]
+    fn the_meter_runs_while_audio_is_captured() {
+        use crate::config::UiMeterStyle;
+
+        assert!(super::meter_runs(true, false, UiMeterStyle::Pills));
+        assert!(!super::meter_runs(false, false, UiMeterStyle::Pills));
+        assert!(!super::meter_runs(true, true, UiMeterStyle::Pills));
+        assert!(!super::meter_runs(true, false, UiMeterStyle::None));
+    }
 
     #[test]
     fn footer_holds_one_line_with_even_padding() {

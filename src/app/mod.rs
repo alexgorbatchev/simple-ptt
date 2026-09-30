@@ -1889,7 +1889,8 @@ mod tests {
     use crate::settings_window::actions::SettingsAction;
     use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{
-        MicMeterSnapshot, OverlayText, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
+        AppState, MicMeterSnapshot, OverlayText, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
+        STATE_TRANSFORMING,
     };
 
     #[test]
@@ -2045,6 +2046,16 @@ mod tests {
 
     fn idle_snapshot() -> UiSnapshot {
         UiSnapshot::initial()
+    }
+
+    #[test]
+    fn a_snapshot_counts_a_resuming_dictation_as_capturing_audio() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_TRANSFORMING);
+
+        assert!(UiSnapshot::capture(&state).capturing_audio);
     }
 
     #[test]
