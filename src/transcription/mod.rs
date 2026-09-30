@@ -184,7 +184,9 @@ pub fn spawn_transcription_thread(
                     };
 
                     let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
-                    if state.is_abort_requested() {
+                    // Skipping the start uses the abort up; left set, it would
+                    // skip every later start too.
+                    if state.consume_abort_request() {
                         log::info!(
                             "skipping dictation start because abort was requested before startup completed"
                         );
@@ -195,7 +197,6 @@ pub fn spawn_transcription_thread(
                         continue;
                     }
 
-                    state.clear_abort_request();
                     state.restore_overlay();
                     state.set_overlay_text(recording_prefix.clone());
                     state.set_overlay_text_opacity(1.0);
@@ -261,7 +262,8 @@ pub fn spawn_transcription_thread(
                     resume_after_correction = was_recording_dictation;
 
                     let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
-                    if state.is_abort_requested() {
+                    // As for the dictation start: skipping uses the abort up.
+                    if state.consume_abort_request() {
                         log::info!(
                             "skipping correction start because abort was requested before startup completed"
                         );
@@ -272,7 +274,6 @@ pub fn spawn_transcription_thread(
                         continue;
                     }
 
-                    state.clear_abort_request();
                     state.restore_overlay();
                     state.set_overlay_correction_active(true);
                     state.clear_overlay_correction_text();
@@ -884,5 +885,56 @@ mod tests {
 
         let _not_resuming = super::ResumingDictation::new(&state, false);
         assert!(!state.is_dictation_resuming());
+    }
+
+    /// A worker for `state`, with a Deepgram API key set so a dictation start
+    /// gets as far as its abort check. No test here lets it connect.
+    fn worker(state: &std::sync::Arc<crate::state::AppState>) -> super::TranscriptionController {
+        let mut config = crate::config::Config::default();
+        config.deepgram.api_key = Some("test-key".to_owned());
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        super::spawn_transcription_thread(state.clone(), config_store)
+    }
+
+    /// Waits up to 2 s for `state` to reach `expected`.
+    fn wait_for_state(state: &crate::state::AppState, expected: u8) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while state.get_state() != expected && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(state.get_state(), expected);
+    }
+
+    #[test]
+    fn a_dictation_start_skipped_for_an_abort_uses_the_abort_up() {
+        use crate::state::{AppState, STATE_IDLE, STATE_RECORDING};
+
+        // The record key was pressed, then Escape before the session started.
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.request_abort();
+        worker(&state).start_session().unwrap();
+
+        wait_for_state(&state, STATE_IDLE);
+        // Left set, it would skip every later start as well.
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn a_correction_start_skipped_for_an_abort_uses_the_abort_up() {
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_overlay_text("the annotation");
+        state.set_state(STATE_RECORDING);
+        state.request_abort();
+        worker(&state).start_correction_session().unwrap();
+
+        wait_for_state(&state, STATE_BUFFER_READY);
+        assert!(!state.is_abort_requested());
     }
 }

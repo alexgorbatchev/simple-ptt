@@ -140,9 +140,13 @@ fn handle_key_press(
         if current_state == STATE_ERROR {
             state.set_state(STATE_IDLE);
             state.clear_overlay_error_text();
+        } else {
+            // The work in progress uses the request up: the recording's start
+            // or its paste, the buffer's discard, or the transformation. An
+            // error has none, and a request left set would make the worker
+            // skip the next recording start.
+            state.request_abort();
         }
-
-        state.request_abort();
         state.dismiss_overlay();
         state.clear_overlay_text();
         state.set_overlay_text_opacity(1.0);
@@ -635,6 +639,44 @@ mod tests {
         assert_eq!(state.get_state(), STATE_ERROR);
         assert_eq!(&*state.overlay_error_text(), NO_MICROPHONE_MESSAGE);
         assert!(!state.is_overlay_dismissed());
+    }
+
+    #[test]
+    fn escape_on_an_error_dismisses_it_without_leaving_an_abort_behind() {
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_IDLE};
+        use std::cell::Cell;
+
+        let state = AppState::new();
+        state.report_error("failed to start Deepgram session: HTTP error: 500 Internal Server Error");
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let controller = crate::transcription::TranscriptionController::without_worker();
+
+        let handled = super::handle_key_press(
+            Key::Escape,
+            crate::hotkey_binding::HotkeyModifiers::default(),
+            &config_store,
+            &state,
+            &controller,
+            &Cell::new(None),
+            &Cell::new(None),
+            &Cell::new(false),
+            &Cell::new(false),
+            &Cell::new(false),
+        );
+
+        assert!(handled);
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(state.is_overlay_dismissed());
+        assert!(state.overlay_error_text().is_empty());
+        // Nothing runs that would use the abort up, so a request left set
+        // would make the transcription worker skip the next recording start.
+        assert!(!state.is_abort_requested());
     }
 
     #[test]
