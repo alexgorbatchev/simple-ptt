@@ -19,7 +19,6 @@ pub struct InputStreamHandle {
     pub stream: Stream,
     pub sample_rate: u32,
     pub device: cpal::Device,
-    pub device_name: Option<String>,
     pub healthy: Arc<AtomicBool>,
     pub last_callback_millis: Arc<AtomicU64>,
 }
@@ -29,9 +28,10 @@ pub fn build_input_stream(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     mic_config: &crate::config::MicConfig,
+    prefer_built_in: bool,
 ) -> Result<InputStreamHandle, String> {
     let host = cpal::default_host();
-    let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
+    let device = resolve_input_device(&host, mic_config.audio_device.as_deref(), prefer_built_in)?;
 
     let config = select_input_config(&device, mic_config.sample_rate)?;
     let actual_rate = config.sample_rate();
@@ -92,7 +92,6 @@ pub fn build_input_stream(
         stream,
         sample_rate: actual_rate,
         device,
-        device_name: actual_audio_device_name,
         healthy,
         last_callback_millis,
     })
@@ -254,6 +253,13 @@ where
                     log::warn!("audio stream invalidated, rebuilding: {}", error);
                     stream_healthy.store(false, Ordering::SeqCst);
                 }
+                StreamErrorResponse::DeviceLost => {
+                    log::warn!("audio input device disappeared, switching: {}", error);
+                    stream_healthy.store(false, Ordering::SeqCst);
+                    if error_state.is_capturing_audio() {
+                        error_state.report_error(super::MICROPHONE_LOST_MESSAGE);
+                    }
+                }
                 StreamErrorResponse::RebuildAndReport => {
                     log::error!("audio stream error: {}", error);
                     stream_healthy.store(false, Ordering::SeqCst);
@@ -271,6 +277,9 @@ pub enum StreamErrorResponse {
     Ignore,
     /// The stream stopped for a recoverable reason; mark it unhealthy so it is rebuilt.
     Rebuild,
+    /// The stream's device disappeared; rebuild it on another microphone,
+    /// telling the user only if it cut audio being captured short.
+    DeviceLost,
     /// The stream failed; rebuild it and surface the error to the user.
     RebuildAndReport,
 }
@@ -287,6 +296,7 @@ pub fn stream_error_response(error: &cpal::Error) -> StreamErrorResponse {
         | cpal::ErrorKind::DeviceChanged
         | cpal::ErrorKind::RealtimeDenied => StreamErrorResponse::Ignore,
         cpal::ErrorKind::StreamInvalidated => StreamErrorResponse::Rebuild,
+        cpal::ErrorKind::DeviceNotAvailable => StreamErrorResponse::DeviceLost,
         _ => StreamErrorResponse::RebuildAndReport,
     }
 }

@@ -1,7 +1,10 @@
 pub mod devices;
+mod input_choice;
 pub mod stream;
 
 pub use devices::*;
+pub use input_choice::{MICROPHONE_LOST_MESSAGE, NO_MICROPHONE_MESSAGE};
+use input_choice::{device_uid, BuiltInPreference};
 pub use stream::*;
 
 use cpal::traits::{HostTrait, StreamTrait};
@@ -35,12 +38,17 @@ pub struct AudioController {
     transcription_controller: TranscriptionController,
     last_rebuild_attempt: Mutex<Option<Instant>>,
     preview_audio_device: Mutex<PreviewDeviceState>,
+    /// Whether the built-in microphone stands in for a device that
+    /// disappeared.
+    built_in_preference: Mutex<BuiltInPreference>,
 }
 
 struct ActiveAudioStream {
     configured_audio_device: Option<String>,
     actual_device: cpal::Device,
-    actual_audio_device_name: Option<String>,
+    /// The Core Audio UID of `actual_device`, to tell whether it is still
+    /// connected.
+    actual_device_uid: Option<String>,
     requested_sample_rate: u32,
     _stream: Stream,
     healthy: Arc<AtomicBool>,
@@ -51,8 +59,8 @@ impl ActiveAudioStream {
     fn new(handle: InputStreamHandle, mic_config: &MicConfig) -> Self {
         Self {
             configured_audio_device: mic_config.audio_device.clone(),
+            actual_device_uid: device_uid(&handle.device),
             actual_device: handle.device,
-            actual_audio_device_name: handle.device_name,
             requested_sample_rate: mic_config.sample_rate,
             _stream: handle.stream,
             healthy: handle.healthy,
@@ -69,7 +77,7 @@ pub enum AudioConfigApplyEffect {
 
 pub fn validate_mic_config(mic_config: &MicConfig) -> Result<(), String> {
     let host = cpal::default_host();
-    let device = resolve_input_device(&host, mic_config.audio_device.as_deref())?;
+    let device = resolve_input_device(&host, mic_config.audio_device.as_deref(), false)?;
     let config = select_input_config(&device, mic_config.sample_rate)?;
     let stream_config = config.config();
 
@@ -107,6 +115,7 @@ impl AudioController {
             transcription_controller,
             last_rebuild_attempt: Mutex::new(None),
             preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
+            built_in_preference: Mutex::new(BuiltInPreference::default()),
         }
     }
 
@@ -121,12 +130,15 @@ impl AudioController {
         });
 
         let mic_config = config_store.current().mic;
-        let (active_stream, startup_error) = match build_input_stream(
+        let built = build_input_stream(
             state.clone(),
             transcription_controller.clone(),
             config_store.clone(),
             &mic_config,
-        ) {
+            false,
+        );
+        state.set_microphone_available(microphone_found(&built));
+        let (active_stream, startup_error) = match built {
             Ok(handle) => {
                 transcription_controller.set_sample_rate(handle.sample_rate);
                 (Some(ActiveAudioStream::new(handle, &mic_config)), None)
@@ -146,6 +158,7 @@ impl AudioController {
                 transcription_controller,
                 last_rebuild_attempt: Mutex::new(None),
                 preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
+                built_in_preference: Mutex::new(BuiltInPreference::default()),
             },
             startup_error,
         )
@@ -218,25 +231,28 @@ impl AudioController {
         #[cfg(not(target_os = "macos"))]
         let hardware_changed = false;
 
-        if let Some(configured_name) =
-            normalized_configured_audio_device(mic_config.audio_device.as_deref())
-        {
-            let actual_name = active.actual_audio_device_name.as_deref().unwrap_or("");
-            if actual_name != configured_name
-                && actual_name.to_lowercase() != configured_name.to_lowercase()
-            {
-                return true;
-            }
-            if hardware_changed {
-                return true;
-            }
-        } else {
-            if hardware_changed {
-                return true;
-            }
+        // A device appearing or disappearing, or the default input changing,
+        // is the moment to choose again: a named device that reconnects, or
+        // a new default, is taken then (Core Audio's listener sets the flag).
+        if hardware_changed {
+            return true;
+        }
+        if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
             let host = cpal::default_host();
-            if host.default_input_device().as_ref() != Some(&active.actual_device) {
-                return true;
+            let system_default = host.default_input_device();
+            if system_default.as_ref() != Some(&active.actual_device) {
+                // Standing in for a lost device, the built-in microphone
+                // differs from the default macOS picked then; that is no
+                // reason to rebuild.
+                let default_uid = system_default.as_ref().and_then(device_uid);
+                let standing_in = self
+                    .built_in_preference
+                    .lock()
+                    .map(|preference| preference.next(false, true, default_uid.as_deref()).is_active())
+                    .unwrap_or(false);
+                if !standing_in {
+                    return true;
+                }
             }
         }
 
@@ -347,12 +363,16 @@ impl AudioController {
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
-        let handle = build_input_stream(
+        let prefer_built_in = self.update_built_in_preference(mic_config);
+        let built = build_input_stream(
             self.state.clone(),
             self.transcription_controller.clone(),
             self.config_store.clone(),
             mic_config,
-        )?;
+            prefer_built_in,
+        );
+        self.state.set_microphone_available(microphone_found(&built));
+        let handle = built?;
 
         #[cfg(target_os = "macos")]
         core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
@@ -365,6 +385,42 @@ impl AudioController {
         *active_stream = Some(ActiveAudioStream::new(handle, mic_config));
         Ok(())
     }
+}
+
+impl AudioController {
+    /// Looks at the inputs before choosing one: when the device in use has
+    /// disappeared, the built-in microphone is preferred until the system
+    /// default changes (see `BuiltInPreference`). Returns whether it is.
+    fn update_built_in_preference(&self, mic_config: &MicConfig) -> bool {
+        let host = cpal::default_host();
+        let connected = host
+            .input_devices()
+            .map(|devices| devices.filter_map(|device| device_uid(&device)).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let device_in_use_lost = self
+            .active_stream
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().and_then(|active| active.actual_device_uid.clone()))
+            .is_some_and(|uid| !connected.contains(&uid));
+        let default_uid = host.default_input_device().as_ref().and_then(device_uid);
+        let follows_system_default =
+            normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none();
+        let Ok(mut preference) = self.built_in_preference.lock() else {
+            return false;
+        };
+        *preference = preference.next(device_in_use_lost, follows_system_default, default_uid.as_deref());
+        if device_in_use_lost {
+            log::info!("the audio input device in use disappeared; preferring the built-in microphone");
+        }
+        preference.is_active()
+    }
+}
+
+/// Whether building a stream found a microphone: anything but the no
+/// microphone error counts, so another failure is reported as itself.
+fn microphone_found<T>(built: &Result<T, String>) -> bool {
+    !matches!(built, Err(error) if error == NO_MICROPHONE_MESSAGE)
 }
 
 #[cfg(test)]
@@ -402,9 +458,24 @@ mod tests {
     }
 
     #[test]
+    fn only_finding_no_device_counts_as_no_microphone() {
+        assert!(!super::microphone_found::<()>(&Err(super::NO_MICROPHONE_MESSAGE.to_owned())));
+        // Another failure is reported as itself, not as a missing microphone.
+        assert!(super::microphone_found::<()>(&Err("unsupported audio input sample format".to_owned())));
+        assert!(super::microphone_found(&Ok(())));
+    }
+
+    #[test]
+    fn a_lost_device_is_switched_away_from_instead_of_reported() {
+        assert_eq!(
+            stream_error_response(&ErrorKind::DeviceNotAvailable.into()),
+            StreamErrorResponse::DeviceLost
+        );
+    }
+
+    #[test]
     fn stream_failures_are_rebuilt_and_reported() {
         for kind in [
-            ErrorKind::DeviceNotAvailable,
             ErrorKind::BackendError,
             ErrorKind::Other,
         ] {

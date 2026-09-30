@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use self::platform::run_hotkey_event_loop;
+use crate::audio::NO_MICROPHONE_MESSAGE;
 use crate::hotkey_binding::{
     is_modifier_key, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
 };
@@ -261,18 +262,9 @@ fn handle_key_press(
                     state.clear_overlay_text();
                 }
                 state.set_overlay_text_opacity(1.0);
-                
-                match controller.start_session() {
-                    Ok(()) => {
-                        state.set_state(STATE_RECORDING);
-                        log::info!("recording started");
-                        Some(RecordHotkeyAction::StartRecording)
-                    }
-                    Err(start_error) => {
-                        log::error!("failed to start recording: {}", start_error);
-                        state.report_error(start_error.to_string());
-                        return true;
-                    }
+                match start_recording(state, controller, current_state) {
+                    Some(action) => Some(action),
+                    None => return true,
                 }
             }
             STATE_RECORDING => Some(if hotkey_config.auto_transform_enabled {
@@ -539,6 +531,32 @@ fn stop_recording_and_transform_and_paste(
     }
 }
 
+/// Starts recording from `current_state`, or shows why it cannot: with no
+/// microphone the overlay explains that instead of recording silence.
+fn start_recording(
+    state: &AppState,
+    controller: &TranscriptionController,
+    current_state: u8,
+) -> Option<RecordHotkeyAction> {
+    if !state.is_microphone_available() {
+        log::warn!("record hotkey pressed with no microphone available (state {})", current_state);
+        state.report_error(NO_MICROPHONE_MESSAGE);
+        return None;
+    }
+    match controller.start_session() {
+        Ok(()) => {
+            state.set_state(STATE_RECORDING);
+            log::info!("recording started");
+            Some(RecordHotkeyAction::StartRecording)
+        }
+        Err(start_error) => {
+            log::error!("failed to start recording: {}", start_error);
+            state.report_error(start_error.to_string());
+            None
+        }
+    }
+}
+
 /// Transforms the transcript so far and resumes dictation after it. Audio
 /// capture carries on meanwhile (`AppState::set_dictation_resuming`), so
 /// what is said while the transformation runs joins the transformed text; the
@@ -600,6 +618,38 @@ mod tests {
             std::path::PathBuf::from("/tmp/config.toml"),
         );
         crate::transcription::spawn_transcription_thread(state.clone(), config_store)
+    }
+
+    #[test]
+    fn the_record_key_explains_a_missing_microphone_instead_of_recording() {
+        use crate::audio::NO_MICROPHONE_MESSAGE;
+        use crate::state::{AppState, STATE_ERROR, STATE_IDLE};
+
+        let state = AppState::new();
+        state.set_state(STATE_IDLE);
+        state.set_microphone_available(false);
+        let controller = crate::transcription::TranscriptionController::without_worker();
+
+        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE), None);
+
+        assert_eq!(state.get_state(), STATE_ERROR);
+        assert_eq!(&*state.overlay_error_text(), NO_MICROPHONE_MESSAGE);
+        assert!(!state.is_overlay_dismissed());
+    }
+
+    #[test]
+    fn the_record_key_starts_recording_when_a_microphone_is_available() {
+        use crate::state::{AppState, STATE_IDLE, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_state(STATE_IDLE);
+        let controller = crate::transcription::TranscriptionController::without_worker();
+
+        assert_eq!(
+            super::start_recording(&state, &controller, STATE_IDLE),
+            Some(super::RecordHotkeyAction::StartRecording)
+        );
+        assert_eq!(state.get_state(), STATE_RECORDING);
     }
 
     #[test]

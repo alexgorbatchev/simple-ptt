@@ -56,6 +56,8 @@ Starting up a microphone in macOS normally takes about a quarter of a second, wh
 
 Additionally, the app automatically and instantly detects when you switch your default system microphone (like plugging in USB headphones or connecting AirPods) without using any heavy background polling or lagging your system.
 
+If the microphone in use disconnects, `simple-ptt` switches to the Mac's built-in microphone and stays on it until the system default input changes again (for example, when the disconnected device reconnects). A microphone named in `mic.audio_device` is used whenever it is connected, with the built-in microphone standing in while it is not. If it disconnects mid-recording, the overlay says so, and the record shortcut continues on the new microphone. With no microphone connected at all, the record shortcut shows the overlay with a message saying so instead of recording.
+
 
 ## Features
 

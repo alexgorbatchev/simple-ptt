@@ -1,6 +1,10 @@
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Host};
 
+use super::input_choice::{
+    built_in_microphone_uids, choose_input, device_uid, InputAvailability, InputChoice,
+    NO_MICROPHONE_MESSAGE,
+};
 use crate::state::MIC_SILENCE_DB;
 
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
@@ -126,43 +130,57 @@ pub fn build_audio_input_device_choices(
         .collect()
 }
 
+/// The input device to record from (see `input_choice::choose_input`): the
+/// device `configured_value` names while it is connected, else the built-in
+/// microphone or the system default; with `prefer_built_in` (the device in
+/// use disappeared) the built-in microphone before the system default.
 pub fn resolve_input_device(
     host: &Host,
     configured_value: Option<&str>,
+    prefer_built_in: bool,
 ) -> Result<cpal::Device, String> {
-    let Some(raw_configured) = configured_value.map(str::trim).filter(|s| !s.is_empty()) else {
-        return host
-            .default_input_device()
-            .ok_or_else(|| "no default audio input device is available".to_owned());
-    };
-
-    if is_system_default_audio_device_value(raw_configured) {
-        return host
-            .default_input_device()
-            .ok_or_else(|| "no default audio input device is available".to_owned());
-    }
-
     let devices = host
         .input_devices()
         .map_err(|error| format!("failed to enumerate audio input devices: {}", error))?
         .collect::<Vec<_>>();
+    let configured = normalized_configured_audio_device(configured_value)
+        .map(|configured| find_configured_device(&devices, configured));
+    let built_in_uids = built_in_microphone_uids();
+    let built_in = devices
+        .iter()
+        .find(|device| device_uid(device).is_some_and(|uid| built_in_uids.contains(&uid)))
+        .cloned();
+    let system_default = host.default_input_device();
 
-    if let Ok(index) = raw_configured.parse::<usize>() {
-        if let Some(device) = devices.get(index) {
-            return Ok(device.clone());
-        }
+    let available = InputAvailability {
+        configured: configured.as_ref().map(Option::is_some),
+        built_in: built_in.is_some(),
+        system_default: system_default.is_some(),
+    };
+    let choice = choose_input(available, prefer_built_in);
+    log::info!("choosing audio input {:?} from {:?}", choice, available);
+    match choice {
+        Some(InputChoice::Configured) => configured.flatten(),
+        Some(InputChoice::BuiltIn) => built_in,
+        Some(InputChoice::SystemDefault) => system_default,
+        None => None,
     }
+    .ok_or_else(|| NO_MICROPHONE_MESSAGE.to_owned())
+}
 
-    if let Some(device) = devices.iter().find(|device| {
-        device_name(device)
-            .map(|name| name.eq_ignore_ascii_case(raw_configured))
-            .unwrap_or(false)
-    }) {
-        return Ok(device.clone());
+/// The device `configured` names: by its index in `devices`, or by its name.
+fn find_configured_device(devices: &[cpal::Device], configured: &str) -> Option<cpal::Device> {
+    if let Some(device) = configured.parse::<usize>().ok().and_then(|index| devices.get(index)) {
+        return Some(device.clone());
     }
-
-    host.default_input_device()
-        .ok_or_else(|| format!("audio input device '{}' not found and no default device available", raw_configured))
+    devices
+        .iter()
+        .find(|device| {
+            device_name(device)
+                .map(|name| name.eq_ignore_ascii_case(configured))
+                .unwrap_or(false)
+        })
+        .cloned()
 }
 
 pub fn is_system_default_audio_device_value(value: &str) -> bool {
