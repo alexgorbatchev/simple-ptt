@@ -4,13 +4,13 @@ description: ALWAYS USE when debugging, tuning, or fixing how the simple-ptt ove
 author: alexgorbatchev
 metadata:
   created_on: 2026-09-27 11:30
-  last_modified: 2026-09-29 15:15
+  last_modified: 2026-09-29 16:47
   status: current
 ---
 
 ## Tools
 
-- `simple-ptt --debug` (`just debug-overlay`, `src/overlay/dev/tuner.rs`): the overlay pinned near the top of the screen, plus a window with a control for every `GlassTuning` value, a meter style picker (the `meter_style` values Settings offers), a correction toggle, a "Loop narration" checkbox (narrates the transcript a word at a time, or the correction while it is shown), "Pop again", and "Copy values", which copies the values for the user to paste. Controls that have no effect under the current values are disabled.
+- `simple-ptt --debug` (`just debug-overlay`, `src/overlay/dev/tuner.rs`): the overlay pinned near the top of the screen, plus a window with a control for every `GlassTuning` value, a meter style picker (the `meter_style` values Settings offers) fed by a synthetic voice that alternates about 8 seconds soft and 8 seconds 15 dB louder (`voice_level_db`), so the pills' adaptive range and their stable history can be watched, a correction toggle, a "Loop narration" checkbox (narrates the transcript a word at a time, or the correction while it is shown), "Pop again", and "Copy values", which copies the values for the user to paste. Controls that have no effect under the current values are disabled.
 - `simple-ptt --overlay-snapshot <dir>` (`src/overlay/dev/snapshot.rs`): captures every overlay state over light and dark backdrops as `<dir>/<theme>-<step>.png`, then exits. Use `.tmp/snapshots/` as `<dir>`. It needs Screen Recording permission for the terminal. Captures that show only the desktop wallpaper or solid black mean the display is locked or asleep, or that permission changed; stop and tell the user rather than measuring them.
 - `assets/view_probe.rs`: a module for scripted, self-exiting runs that samples view geometry and prints who changes a frame. Read [references/probes.md](references/probes.md) before using it.
 - `scripts/contrast.ts`: WCAG contrast of the text against the glass behind it, measured on captures. It is for text colour and legibility bugs; see "Measuring legibility on captures" in [references/probes.md](references/probes.md).

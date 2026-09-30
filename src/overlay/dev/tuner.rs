@@ -20,6 +20,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer};
 
 use crate::app::overlay_style_from_config;
+use crate::audio::normalize_meter_amplitude;
 use crate::config::Config;
 use crate::overlay::OverlayStyle;
 use crate::settings_window::form::METER_STYLE_TITLES;
@@ -48,11 +49,35 @@ const CURVE_PRESETS: [(&str, HaloCurve); 4] = [
 ];
 use crate::overlay::OverlayWindow;
 use crate::state::{
+    normalized_meter_value,
     AppState, MicMeterSnapshot, OverlayText,
     STATE_BUFFER_READY, STATE_ERROR, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 const SCENARIOS: [&str; 4] = ["Recording", "Transforming", "Buffer ready", "Error"];
+/// Ticks (75 ms each) of each loudness in `voice_level_db`: about 8 seconds.
+const VOICE_PHASE_TICKS: u64 = 107;
+/// How much louder the loud phase is.
+const VOICE_LOUDER_DB: f32 = 15.0;
+/// The room's noise, heard in the breaths between phrases.
+const VOICE_ROOM_DB: f32 = -57.0;
+/// How far the peak sits above the RMS level of speech.
+const VOICE_CREST_DB: f32 = 10.0;
+
+/// A voice for the meter, in dBFS, as the audio thread smooths it: syllables
+/// between -44 and -37 dBFS with dips between words and a breath at the
+/// room's noise every 2.4 seconds, soft for about 8 seconds, then
+/// `VOICE_LOUDER_DB` louder for as long, so the pills can be watched adapting
+/// both ways.
+fn voice_level_db(tick: u64) -> f32 {
+    if tick % 32 >= 28 {
+        return VOICE_ROOM_DB;
+    }
+    let louder = if (tick / VOICE_PHASE_TICKS) % 2 == 1 { VOICE_LOUDER_DB } else { 0.0 };
+    let syllable = if tick % 8 == 7 { -50.0 } else { -44.0 + (7.0 * ((tick as f32) * 0.9).sin().abs()) };
+    syllable + louder
+}
+
 /// What the narration loop speaks: the transcript, and the correction
 /// request while the correction is shown.
 const NARRATED_TRANSCRIPT: &str = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the updated mockups before lunch";
@@ -431,8 +456,14 @@ impl TunerState {
         texts.set_overlay_text(format!("{final_text}{interim}").replace("Thursday", "Friday"));
         let preview_text = texts.overlay_text_snapshot();
 
-        let level = (128.0 + 110.0 * ((tick as f64) * 0.35).sin()) as u8;
-        let meter = MicMeterSnapshot { clip_event_counter: 0, level, peak: level.saturating_add(30), mic_active: true };
+        let level_db = voice_level_db(tick);
+        let meter = MicMeterSnapshot {
+            clip_event_counter: 0,
+            level: normalized_meter_value(normalize_meter_amplitude(level_db)),
+            peak: normalized_meter_value(normalize_meter_amplitude(level_db + VOICE_CREST_DB)),
+            level_db,
+            mic_active: true,
+        };
         let quiet = MicMeterSnapshot::default();
         let (state, main, error, scenario_correction, mic) = match scenario {
             0 => (STATE_RECORDING, &main_text, "", &live, meter),
