@@ -187,6 +187,7 @@ pub fn run(dir: &str) {
                       mic: MicMeterSnapshot| {
             overlay.update(
                 mtm, state_value, false, main, error, correction, correction_active, 1.0, mic,
+                state_value == STATE_RECORDING,
             );
         };
         // Like the status poll: one update, then ~75 ms of run loop, and a

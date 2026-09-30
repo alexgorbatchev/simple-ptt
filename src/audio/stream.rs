@@ -173,7 +173,7 @@ where
                     PROCESS_START.elapsed().as_millis() as u64,
                     Ordering::Relaxed,
                 );
-                let is_recording = meter_state.is_recording();
+                let is_recording = meter_state.is_capturing_audio();
                 let is_preview = meter_state.is_settings_window_visible();
                 if !is_recording && !is_preview {
                     if was_recording {

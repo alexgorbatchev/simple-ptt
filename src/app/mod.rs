@@ -1374,6 +1374,7 @@ impl AppDelegate {
             snapshot.overlay_correction_active,
             snapshot.overlay_text_opacity,
             snapshot.mic_meter,
+            snapshot.capturing_audio,
         );
     }
 
@@ -1388,6 +1389,7 @@ impl AppDelegate {
         overlay_correction_active: bool,
         overlay_text_opacity: f64,
         mic_meter: MicMeterSnapshot,
+        capturing_audio: bool,
     ) {
         self.handle_pending_hotkey_capture_preview();
         self.handle_pending_hotkey_capture();
@@ -1413,6 +1415,7 @@ impl AppDelegate {
             overlay_correction_active,
             overlay_text_opacity,
             mic_meter,
+            capturing_audio,
         );
     }
 }
@@ -1716,6 +1719,7 @@ fn update_overlay_window(
     overlay_correction_active: bool,
     overlay_text_opacity: f64,
     mic_meter: MicMeterSnapshot,
+    capturing_audio: bool,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
         overlay_window.update(
@@ -1728,6 +1732,7 @@ fn update_overlay_window(
             overlay_correction_active,
             overlay_text_opacity,
             mic_meter,
+            capturing_audio,
         );
     }
 }
@@ -1748,6 +1753,8 @@ struct UiSnapshot {
     overlay_text: OverlayText,
     overlay_error_text: Arc<str>,
     overlay_text_opacity: f64,
+    /// `AppState::is_capturing_audio`: the meter runs while it holds.
+    capturing_audio: bool,
 }
 
 impl UiSnapshot {
@@ -1761,6 +1768,7 @@ impl UiSnapshot {
             overlay_text: OverlayText::default(),
             overlay_error_text: Arc::from(""),
             overlay_text_opacity: 1.0,
+            capturing_audio: false,
         }
     }
 
@@ -1774,6 +1782,7 @@ impl UiSnapshot {
             overlay_text: state.overlay_text_snapshot(),
             overlay_error_text: state.overlay_error_text(),
             overlay_text_opacity: state.overlay_text_opacity(),
+            capturing_audio: state.is_capturing_audio(),
         }
     }
 
@@ -1790,6 +1799,7 @@ impl UiSnapshot {
             || !Arc::ptr_eq(&self.overlay_text.text, &other.overlay_text.text)
             || !Arc::ptr_eq(&self.overlay_error_text, &other.overlay_error_text)
             || (self.overlay_text_opacity - other.overlay_text_opacity).abs() > f64::EPSILON
+            || self.capturing_audio != other.capturing_audio
     }
 }
 
@@ -1823,7 +1833,7 @@ impl StatusPollState {
         self.frame_count += 1;
         let ui_changed = current.ui_differs_from(&self.last);
         let mic_meter_changed = current.mic_meter != self.last.mic_meter;
-        let should_animate_meter = current.state == STATE_RECORDING;
+        let should_animate_meter = current.capturing_audio;
         let should_animate_overlay = matches!(current.state, STATE_PROCESSING | STATE_TRANSFORMING)
             && !current.overlay_dismissed;
         let background_refresh_due = self.frame_count % STATUS_POLL_BACKGROUND_REFRESH_TICKS == 0;
@@ -2038,6 +2048,20 @@ mod tests {
     }
 
     #[test]
+    fn status_poll_refreshes_when_audio_capture_starts_or_stops() {
+        let mut poll_state = StatusPollState::new();
+        let mut snapshot = idle_snapshot();
+        poll_state.advance(&snapshot, false);
+
+        snapshot.capturing_audio = true;
+
+        assert_eq!(
+            poll_state.advance(&snapshot, false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
+    }
+
+    #[test]
     fn status_poll_refreshes_on_first_tick_because_text_identity_differs() {
         let mut poll_state = StatusPollState::new();
 
@@ -2101,6 +2125,7 @@ mod tests {
         let mut poll_state = StatusPollState::new();
         let mut snapshot = idle_snapshot();
         snapshot.state = STATE_RECORDING;
+        snapshot.capturing_audio = true;
 
         assert_eq!(
             poll_state.advance(&snapshot, false),

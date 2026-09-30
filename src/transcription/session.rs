@@ -14,6 +14,12 @@ use crate::state::AppState;
 use super::text_builder::{build_overlay_text, join_transcript_parts};
 
 pub const AUDIO_QUEUE_CAPACITY: usize = 512;
+/// How long a chunk waits for room in a full audio queue before it is
+/// dropped. Audio held while a correction was applied arrives all at once
+/// when dictation resumes, faster than the session sends it on; waiting keeps
+/// it, and the audio thread never waits because it hands audio over through
+/// an unbounded channel.
+const AUDIO_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushAudioResult {
@@ -39,11 +45,23 @@ impl ActiveSession {
         self.kind
     }
 
-    pub fn push_audio(&self, pcm_data: Bytes) -> PushAudioResult {
-        match self.audio_tx.try_send(Ok(pcm_data)) {
-            Ok(()) => PushAudioResult::Ok,
-            Err(tokio_mpsc::error::TrySendError::Full(_)) => PushAudioResult::Full,
-            Err(tokio_mpsc::error::TrySendError::Closed(_)) => PushAudioResult::Closed,
+    /// Queues `pcm_data` for the session, waiting up to `AUDIO_QUEUE_WAIT`
+    /// for room when the queue is full.
+    pub fn push_audio(&self, runtime: &Runtime, pcm_data: Bytes) -> PushAudioResult {
+        self.push_audio_within(runtime, pcm_data, AUDIO_QUEUE_WAIT)
+    }
+
+    fn push_audio_within(&self, runtime: &Runtime, pcm_data: Bytes, wait: std::time::Duration) -> PushAudioResult {
+        let pcm_data = match self.audio_tx.try_send(Ok(pcm_data)) {
+            Ok(()) => return PushAudioResult::Ok,
+            Err(tokio_mpsc::error::TrySendError::Closed(_)) => return PushAudioResult::Closed,
+            Err(tokio_mpsc::error::TrySendError::Full(pcm_data)) => pcm_data,
+        };
+        // Built inside the runtime: the timeout needs its timer.
+        match runtime.block_on(async { tokio::time::timeout(wait, self.audio_tx.send(pcm_data)).await }) {
+            Ok(Ok(())) => PushAudioResult::Ok,
+            Ok(Err(_)) => PushAudioResult::Closed,
+            Err(_) => PushAudioResult::Full,
         }
     }
 
@@ -300,6 +318,54 @@ mod tests {
     #[test]
     fn audio_queue_capacity_provides_ample_buffer_depth() {
         assert!(AUDIO_QUEUE_CAPACITY >= 256);
+    }
+
+    /// A session whose audio queue holds one chunk, and its receiving end.
+    fn one_chunk_session(runtime: &Runtime) -> (ActiveSession, tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>) {
+        let (audio_tx, audio_rx) = tokio_mpsc::channel(1);
+        let task = runtime.spawn(async { Ok(String::new()) });
+        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task }, audio_rx)
+    }
+
+    #[test]
+    fn a_full_audio_queue_waits_for_room_instead_of_dropping() {
+        let runtime = Runtime::new().unwrap();
+        let (session, mut audio_rx) = one_chunk_session(&runtime);
+        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"first")), PushAudioResult::Ok);
+        // The queue is full until the receiver takes a chunk 50 ms later.
+        let received = runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let first = audio_rx.recv().await;
+            let second = audio_rx.recv().await;
+            (first, second)
+        });
+
+        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"second")), PushAudioResult::Ok);
+        drop(session);
+        let (first, second) = runtime.block_on(received).unwrap();
+        assert_eq!(first.unwrap().unwrap(), Bytes::from_static(b"first"));
+        assert_eq!(second.unwrap().unwrap(), Bytes::from_static(b"second"));
+    }
+
+    #[test]
+    fn a_queue_that_stays_full_drops_the_chunk_after_waiting() {
+        let runtime = Runtime::new().unwrap();
+        let (session, _audio_rx) = one_chunk_session(&runtime);
+        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"first")), PushAudioResult::Ok);
+        let started = std::time::Instant::now();
+        assert_eq!(
+            session.push_audio_within(&runtime, Bytes::from_static(b"second"), std::time::Duration::from_millis(30)),
+            PushAudioResult::Full
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_closed_audio_queue_reports_closed() {
+        let runtime = Runtime::new().unwrap();
+        let (session, audio_rx) = one_chunk_session(&runtime);
+        drop(audio_rx);
+        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"chunk")), PushAudioResult::Closed);
     }
 
     #[test]

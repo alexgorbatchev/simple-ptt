@@ -300,7 +300,7 @@ pub fn spawn_transcription_thread(
                 }
                 Command::PushAudio(pcm_data) => {
                     if let Some(session) = &active_session {
-                        match session.push_audio(pcm_data) {
+                        match session.push_audio(&runtime, pcm_data) {
                             PushAudioResult::Ok => {}
                             PushAudioResult::Full => {
                                 log::warn!("audio queue full; dropping audio chunk");
@@ -476,6 +476,11 @@ pub fn spawn_transcription_thread(
                                 }
                             };
 
+                        // Dictation that resumes after the correction keeps
+                        // capturing while it is applied; its audio waits in
+                        // this worker's queue for the resumed session.
+                        let _resuming =
+                            ResumingDictation::new(&state, should_resume_after_correction);
                         state.set_state(STATE_TRANSFORMING);
                         let correction_config =
                             transformation_correction_runtime_config(&transformation_config);
@@ -830,4 +835,39 @@ fn resolve_transformation_config(
     config: &Config,
 ) -> Result<TransformationRuntimeConfig, String> {
     config.resolve_transformation_config()
+}
+
+/// Marks dictation as resuming (`AppState::set_dictation_resuming`) while it
+/// lives, and clears the mark however the work it covers ends.
+struct ResumingDictation<'a> {
+    state: &'a AppState,
+}
+
+impl<'a> ResumingDictation<'a> {
+    fn new(state: &'a AppState, resuming: bool) -> Self {
+        state.set_dictation_resuming(resuming);
+        Self { state }
+    }
+}
+
+impl Drop for ResumingDictation<'_> {
+    fn drop(&mut self) {
+        self.state.set_dictation_resuming(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dictation_counts_as_resuming_only_while_the_guard_lives() {
+        let state = crate::state::AppState::new();
+        {
+            let _resuming = super::ResumingDictation::new(&state, true);
+            assert!(state.is_dictation_resuming());
+        }
+        assert!(!state.is_dictation_resuming());
+
+        let _not_resuming = super::ResumingDictation::new(&state, false);
+        assert!(!state.is_dictation_resuming());
+    }
 }

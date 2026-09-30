@@ -502,7 +502,7 @@ impl TunerState {
             (main, correction)
         };
         let mtm = MainThreadMarker::new().expect("main thread");
-        self.overlay.update(mtm, state, false, main, error, correction, correction_active, 1.0, mic);
+        self.overlay.update(mtm, state, false, main, error, correction, correction_active, 1.0, mic, state == STATE_RECORDING);
     }
 }
 
