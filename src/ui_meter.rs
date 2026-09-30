@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use objc2_quartz_core::CACurrentMediaTime;
-use pill_levels::{PillLevels, SpeechInput, SpeechSpan};
+use pill_levels::{LevelSpan, PillAudio, PillLevels, SpeechSpan};
 use pill_strip::PillStrip;
 
 use block2::StackBlock;
@@ -12,7 +12,7 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::config::UiMeterStyle;
-use crate::state::{MicMeterSnapshot, SpeechWindow};
+use crate::state::{AudioTimeline, MicMeterSnapshot};
 use crate::MainThreadMarker;
 
 mod pill_levels;
@@ -46,7 +46,7 @@ pub struct UiMeterView {
     meter_bar_levels: RefCell<Vec<f32>>,
     clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: Cell<UiMeterStyle>,
-    /// The pills' heights and the level range they are painted from.
+    /// The pills' heights and the loudness range they are painted from.
     pill_levels: RefCell<PillLevels>,
     /// The pills on screen (`UiMeterStyle::Pills`).
     pill_strip: PillStrip,
@@ -129,10 +129,9 @@ impl UiMeterView {
         self.meter_style.get() == UiMeterStyle::Pills
     }
 
-    /// Takes in the microphone's level and, for the pills, the speech
-    /// analysis results on the media clock (`None` when speech analysis does
-    /// not run, so the pills show every sound).
-    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, speech: Option<&[SpeechWindow]>) {
+    /// Takes in the microphone's level and, for the pills, the captured
+    /// audio's loudness and speech analysis results on the media clock.
+    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, audio: &AudioTimeline) {
         self.container_view.setHidden(false);
 
         let level = mic_meter.level as f32 / u8::MAX as f32;
@@ -142,7 +141,7 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.push_pill(mic_meter, speech),
+            UiMeterStyle::Pills => self.push_pill(audio),
         }
 
         self.render_meter_bars(cluster_width);
@@ -263,22 +262,16 @@ impl UiMeterView {
         }
     }
 
-    /// Takes the level in dBFS into the pills, or rests them while the
-    /// microphone delivers nothing.
-    fn push_pill(&self, mic_meter: MicMeterSnapshot, speech: Option<&[SpeechWindow]>) {
+    /// Moves the pills to now and paints the ones whose audio is in. While
+    /// the microphone delivers nothing, no audio comes in and they rest.
+    fn push_pill(&self, audio: &AudioTimeline) {
         // The strip's clock, the one its motion runs on, so each pill stands
         // for the time it is moving through the column.
         let now = CACurrentMediaTime();
         let at = self.pill_strip.clock(now);
-        let mut pill_levels = self.pill_levels.borrow_mut();
-        if mic_meter.mic_active {
-            pill_levels.push(mic_meter.level_db, at);
-        } else {
-            pill_levels.push_rest(at);
-        }
-        // The results onto the strip's clock: media time less its start.
+        // The audio onto the strip's clock: media time less its start.
         let started_at = now - at;
-        let spans: Option<Vec<SpeechSpan>> = speech.map(|windows| {
+        let speech: Option<Vec<SpeechSpan>> = audio.speech.as_ref().map(|windows| {
             windows
                 .iter()
                 .map(|window| SpeechSpan {
@@ -288,10 +281,18 @@ impl UiMeterView {
                 })
                 .collect()
         });
-        pill_levels.classify(match &spans {
-            Some(spans) => SpeechInput::Windows(spans),
-            None => SpeechInput::Unavailable,
-        });
+        let levels: Vec<LevelSpan> = audio
+            .levels
+            .iter()
+            .map(|block| LevelSpan {
+                start: block.start - started_at,
+                end: block.end - started_at,
+                mean_square: block.mean_square,
+            })
+            .collect();
+        let mut pill_levels = self.pill_levels.borrow_mut();
+        pill_levels.advance(at);
+        pill_levels.paint(PillAudio { speech: speech.as_deref(), levels: &levels }, at);
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {

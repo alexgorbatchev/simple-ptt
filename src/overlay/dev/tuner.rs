@@ -64,7 +64,7 @@ const VOICE_ROOM_DB: f32 = -57.0;
 /// How far the peak sits above the RMS level of speech.
 const VOICE_CREST_DB: f32 = 10.0;
 
-/// A voice for the meter, in dBFS, as the audio thread smooths it: syllables
+/// A voice for the meter, in dBFS: syllables
 /// between -44 and -37 dBFS with dips between words and a breath at the
 /// room's noise every 2.4 seconds, soft for about 8 seconds, then
 /// `VOICE_LOUDER_DB` louder for as long, so the pills can be watched adapting
@@ -243,11 +243,13 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
-    /// The overlay's app state, where the tuner publishes speech results
-    /// for its synthetic voice (`publish_voice_speech`).
+    /// The overlay's app state, where the tuner publishes the loudness and
+    /// speech results of its synthetic voice (`publish_voice`).
     app_state: std::sync::Arc<AppState>,
     /// When the last synthetic speech result ended, on the media clock.
     last_speech_window_end: Cell<f64>,
+    /// When the last synthetic block of audio ended, on the media clock.
+    last_level_block_end: Cell<Option<f64>>,
     /// The overlay's style, whose meter style the meter picker changes.
     overlay_style: RefCell<OverlayStyle>,
     controls: RefCell<Option<Controls>>,
@@ -437,11 +439,19 @@ impl TunerState {
         self.refresh_enabled(tuning);
     }
 
-    /// Publishes a speech result every `SPEECH_RESULT_EVERY_SECONDS` for the
-    /// synthetic voice, as the speech analysis does for the microphone:
-    /// speech unless the voice is breathing at `tick`.
-    fn publish_voice_speech(&self, tick: u64) {
+    /// Publishes the synthetic voice as the speech analysis thread does for
+    /// the microphone: its loudness since the last tick (`level_db` as an
+    /// RMS), and a speech result every `SPEECH_RESULT_EVERY_SECONDS`, speech
+    /// unless the voice is breathing at `tick`.
+    fn publish_voice(&self, tick: u64, level_db: f32) {
         let now = objc2_quartz_core::CACurrentMediaTime();
+        if let Some(start) = self.last_level_block_end.replace(Some(now)) {
+            self.app_state.record_level_block(crate::state::LevelBlock {
+                start,
+                end: now,
+                mean_square: 10f32.powf(level_db / 10.0),
+            });
+        }
         if now - self.last_speech_window_end.get() < SPEECH_RESULT_EVERY_SECONDS {
             return;
         }
@@ -489,12 +499,11 @@ impl TunerState {
         let preview_text = texts.overlay_text_snapshot();
 
         let level_db = voice_level_db(tick);
-        self.publish_voice_speech(tick);
+        self.publish_voice(tick, level_db);
         let meter = MicMeterSnapshot {
             clip_event_counter: 0,
             level: normalized_meter_value(normalize_meter_amplitude(level_db)),
             peak: normalized_meter_value(normalize_meter_amplitude(level_db + VOICE_CREST_DB)),
-            level_db,
             mic_active: true,
         };
         let quiet = MicMeterSnapshot::default();
@@ -758,6 +767,7 @@ pub fn run() {
         overlay,
         app_state,
         last_speech_window_end: Cell::new(0.0),
+        last_level_block_end: Cell::new(None),
         overlay_style,
         controls: RefCell::new(None),
         hidden_until: Cell::new(None),

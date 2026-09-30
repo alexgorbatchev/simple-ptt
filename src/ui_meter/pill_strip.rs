@@ -5,9 +5,11 @@
 //! The strip carries one linear animation of its translation, started with
 //! the strip's clock, so the render server moves it at the display's rate
 //! and the app does nothing per frame. Pill `k` sits at `k × PILL_PITCH` in
-//! the strip and reaches the column's right edge as its time begins. Only
-//! enough layers to cover the column exist: the layer of a pill that has
-//! left the column on the left becomes the next pill to enter on the right.
+//! the strip and enters the column at its right edge `ENTRY_DELAY_SECONDS`
+//! after its time begins, so its height is final before it can be seen. Only
+//! enough layers to cover the column and the way in exist: the layer of a
+//! pill that has left the column on the left becomes the next pill on the
+//! right.
 //!
 //! With Reduce Motion on when the strip starts, it does not glide: it steps
 //! one pill spacing to the left as each pill opens.
@@ -23,7 +25,7 @@ use objc2_quartz_core::{
     CATransform3D,
 };
 
-use super::pill_levels::PILL_SECONDS;
+use super::pill_levels::{ENTRY_DELAY_SECONDS, PILL_SECONDS};
 use crate::overlay::reduce_motion;
 use super::{cg_color_in, centred_bar_frame};
 
@@ -213,21 +215,22 @@ fn stepped_offset(open_index: u64) -> f64 {
     strip_offset(open_index as f64 * PILL_SECONDS)
 }
 
-/// Where the open pill starts in a column `span` wide: its right edge at the
-/// column's.
+/// Where pill 0 sits at the strip's start in a column `span` wide: as far
+/// right of the column as the strip moves in `ENTRY_DELAY_SECONDS`, so each
+/// pill enters the column that long after its time begins.
 fn right_anchor(span: f64) -> f64 {
-    span - PILL_WIDTH
+    span - strip_offset(ENTRY_DELAY_SECONDS)
 }
 
-/// How many pill layers cover a column `span` wide: when pill `k` opens, the
-/// layer of pill `k - pool + 1` becomes pill `k + 1`, so it must have left
-/// the column by then.
+/// How many pill layers cover a column `span` wide and the way in: when pill
+/// `k` opens, the layer of pill `k - pool + 1` becomes pill `k + 1`, so it
+/// must have left the column by then.
 pub(super) fn pool_size(span: f64) -> usize {
-    (span / PILL_PITCH).ceil().max(0.0) as usize + 1
+    ((right_anchor(span) + PILL_WIDTH) / PILL_PITCH).ceil().max(0.0) as usize + 1
 }
 
 /// The pills the layers hold while pill `open_index` is open: the `pool - 1`
-/// up to it, and the next one, waiting at the column's right edge.
+/// up to it, and the next one, on its way in.
 fn held_pills(open_index: u64, pool: usize) -> impl Iterator<Item = i64> {
     let next = open_index as i64 + 1;
     (next + 1 - pool as i64)..=next
@@ -259,26 +262,41 @@ fn fade_locations(span: f64) -> [f64; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui_meter::pill_levels::LATEST_PAINT_SECONDS;
 
     const COLUMN: f64 = 514.0;
 
+    /// Where pill `index`'s left edge shows in the column `at` on the strip's
+    /// clock.
+    fn visible_x(index: i64, at: f64) -> f64 {
+        right_anchor(COLUMN) + pill_x(index) + strip_offset(at)
+    }
+
     #[test]
-    fn a_pill_reaches_the_right_edge_as_its_time_begins() {
+    fn a_pill_enters_the_column_after_its_entry_delay() {
         for index in [0_i64, 1, 7, 1_000, 18_000] {
-            let at = index as f64 * PILL_SECONDS;
-            let visible_x = right_anchor(COLUMN) + pill_x(index) + strip_offset(at);
-            assert!((visible_x - right_anchor(COLUMN)).abs() < 1e-6, "pill {index}: {visible_x}");
+            let entry = (index as f64 * PILL_SECONDS) + ENTRY_DELAY_SECONDS;
+            assert!((visible_x(index, entry) - COLUMN).abs() < 1e-6, "pill {index}: {}", visible_x(index, entry));
         }
-        // The open pill's right edge is the column's right edge.
-        assert_eq!(right_anchor(COLUMN) + PILL_WIDTH, COLUMN);
+    }
+
+    #[test]
+    fn a_pill_painted_at_its_latest_is_out_of_view_until_the_next_update_shows_it() {
+        // The overlay updates every 75 ms.
+        for index in [0_i64, 7, 18_000] {
+            let shown = (index as f64 * PILL_SECONDS) + LATEST_PAINT_SECONDS + 0.075;
+            assert!(visible_x(index, shown) >= COLUMN, "pill {index}: {}", visible_x(index, shown));
+        }
     }
 
     #[test]
     fn with_reduce_motion_the_strip_steps_one_pill_as_each_opens() {
-        // The open pill stands at the right edge for its whole time.
+        // Pill k stays out of the column while pills up to k + 3 are open,
+        // and enters as pill k + 4 opens, 0.8 s in: after its latest paint.
         for index in [0_u64, 1, 7, 500] {
-            let visible_x = right_anchor(COLUMN) + pill_x(index as i64) + stepped_offset(index);
-            assert!((visible_x - right_anchor(COLUMN)).abs() < 1e-6, "pill {index}: {visible_x}");
+            let stepped_x = |open: u64| right_anchor(COLUMN) + pill_x(index as i64) + stepped_offset(open);
+            assert!(stepped_x(index + 3) >= COLUMN, "pill {index}: {}", stepped_x(index + 3));
+            assert!(stepped_x(index + 4) < COLUMN, "pill {index}: {}", stepped_x(index + 4));
         }
         // Each opening pill moves the strip one spacing to the left.
         assert!((stepped_offset(3) - stepped_offset(2) + PILL_PITCH).abs() < 1e-9);

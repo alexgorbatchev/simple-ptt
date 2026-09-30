@@ -170,7 +170,7 @@ pub fn run(dir: &str) {
     let dictated = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the";
     let interim_tail = "updated mockups before lunch";
     let full = format!("{dictated} {interim_tail} ");
-    let meter = MicMeterSnapshot { clip_event_counter: 0, level: 150, peak: 200, level_db: -21.0, mic_active: true };
+    let meter = MicMeterSnapshot { clip_event_counter: 0, level: 150, peak: 200, mic_active: true };
     let empty = text("", None);
 
     let screen = NSScreen::mainScreen(mtm).unwrap().visibleFrame();

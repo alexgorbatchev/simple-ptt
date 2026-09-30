@@ -20,7 +20,7 @@ use crate::settings_window::controls::{
 use crate::settings_window::form::{mic_gain_label, mic_gain_load_problem, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
 use crate::settings_window::helpers::{mic_audio_device_popup_state, MicAudioDeviceOption};
-use crate::state::MicMeterSnapshot;
+use crate::state::{AudioTimeline, MicMeterSnapshot};
 use crate::ui_meter::{meter_container_height, UiMeterView, METER_BORDER_PADDING};
 
 const GAIN_SLIDER_MIN_WIDTH: f64 = 150.0;
@@ -163,8 +163,8 @@ impl MicrophonePane {
     }
 
     pub fn update_meter(&self, meter: MicMeterSnapshot) {
-        // Settings shows the fixed-scale meter, which takes no speech results.
-        self.meter_view.update(meter, METER_WIDTH, None);
+        // Settings shows the fixed-scale meter, which draws from the level alone.
+        self.meter_view.update(meter, METER_WIDTH, &AudioTimeline::default());
     }
 
     pub fn audio_device_value(&self) -> Option<String> {

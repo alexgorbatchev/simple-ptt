@@ -14,7 +14,7 @@ use crate::transcription::TranscriptionController;
 
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
-    smooth_meter_level_db, smooth_meter_value,
+    smooth_meter_value,
 };
 use super::speech::SpeechAnalysis;
 
@@ -186,7 +186,6 @@ where
     let callback_last_millis = Arc::clone(&last_callback_millis);
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
-    let mut smoothed_level_db: Option<f32> = None;
     let mut was_capturing = false;
     let mut pcm_buffer = bytes::BytesMut::with_capacity(65536);
 
@@ -208,7 +207,6 @@ where
                         was_capturing = false;
                         pcm_buffer.clear();
                     }
-                    smoothed_level_db = None;
                     meter_state.clear_mic_meter();
                     meter_state.set_mic_active(false);
                     return;
@@ -228,13 +226,10 @@ where
                 let target_peak = normalize_meter_amplitude(peak_db);
                 smoothed_level = smooth_meter_value(smoothed_level, target_level);
                 smoothed_peak = smooth_meter_value(smoothed_peak, target_peak);
-                let level_db = smooth_meter_level_db(smoothed_level_db, level_db);
-                smoothed_level_db = Some(level_db);
 
                 meter_state.set_mic_meter(
                     smoothed_level,
                     smoothed_peak,
-                    level_db,
                     clipped_count > 0,
                 );
                 meter_state.set_mic_active(true);

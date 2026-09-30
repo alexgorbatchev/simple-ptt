@@ -1,11 +1,12 @@
 //! Whether the microphone hears speech: Apple's SoundAnalysis built-in sound
 //! classifier, run on its own thread over the captured audio, so the meter
-//! can tell speech from typing, coughs and other sounds.
+//! can tell speech from typing, coughs and other sounds. The same thread
+//! publishes each block's loudness, which the pills are drawn from.
 //!
 //! The analysis is not safe on the real-time audio thread, so the audio
 //! callback hands each block over through a bounded queue. Results arrive
 //! for 0.5 s windows (the shortest the classifier takes), one every 0.25 s,
-//! and are published to `AppState` on the media clock
+//! and are published to `AppState`, with the loudness, on the media clock
 //! (`CACurrentMediaTime`), the clock the pill strip moves by.
 
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
@@ -22,7 +23,7 @@ use objc2_sound_analysis::{
     SNClassifySoundRequest, SNRequest, SNResult, SNResultsObserving,
 };
 
-use crate::state::{AppState, SpeechWindow};
+use crate::state::{AppState, LevelBlock, SpeechWindow};
 
 /// The analysis window: the shortest the built-in classifier takes.
 const WINDOW_SECONDS: f64 = 0.5;
@@ -215,18 +216,41 @@ impl Analyzer {
     }
 }
 
+impl AudioBlock {
+    /// The block's loudness on the media clock: it ends when it arrived.
+    fn level(&self, sample_rate: u32) -> Option<LevelBlock> {
+        if self.samples.is_empty() {
+            return None;
+        }
+        let energy: f64 = self.samples.iter().map(|sample| f64::from(*sample).powi(2)).sum();
+        let seconds = self.samples.len() as f64 / f64::from(sample_rate);
+        Some(LevelBlock {
+            start: self.arrived_at - seconds,
+            end: self.arrived_at,
+            mean_square: (energy / self.samples.len() as f64) as f32,
+        })
+    }
+}
+
 fn run(sample_rate: u32, state: &Arc<AppState>, received: &Receiver<AudioBlock>) {
     let mut analyzer = match Analyzer::new(sample_rate, state) {
-        Ok(analyzer) => analyzer,
+        Ok(analyzer) => {
+            state.set_speech_analysis_available(true);
+            Some(analyzer)
+        }
         Err(error) => {
             log::warn!("speech analysis unavailable; the meter shows every sound: {}", error);
             state.set_speech_analysis_available(false);
-            return;
+            None
         }
     };
-    state.set_speech_analysis_available(true);
     while let Ok(block) = received.recv() {
-        analyzer.analyze(&block);
+        if let Some(level) = block.level(sample_rate) {
+            state.record_level_block(level);
+        }
+        if let Some(analyzer) = analyzer.as_mut() {
+            analyzer.analyze(&block);
+        }
     }
 }
 
@@ -241,6 +265,15 @@ mod tests {
         let clock = FrameClock { end_frame: 32_000, end_media: 100.0, sample_rate: 16_000.0 };
         assert!((clock.media_time(2.0) - 100.0).abs() < 1e-9);
         assert!((clock.media_time(1.5) - 99.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_blocks_loudness_is_its_mean_square_ending_when_it_arrived() {
+        // 160 frames at 16 kHz (10 ms), half at 0.5 and half at -0.5 full scale.
+        let samples = [0.5f32, -0.5].repeat(80);
+        let level = AudioBlock { samples, arrived_at: 7.0 }.level(16_000).unwrap();
+        assert_eq!(level, LevelBlock { start: 6.99, end: 7.0, mean_square: 0.25 });
+        assert_eq!(AudioBlock { samples: Vec::new(), arrived_at: 7.0 }.level(16_000), None);
     }
 
     #[test]

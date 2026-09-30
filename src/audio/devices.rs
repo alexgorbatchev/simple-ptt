@@ -5,7 +5,9 @@ use super::input_choice::{
     built_in_microphone_uids, choose_input, device_uid, InputAvailability, InputChoice,
     NO_MICROPHONE_MESSAGE,
 };
-use crate::state::MIC_SILENCE_DB;
+
+/// The level, in dBFS, of a microphone that delivers no signal.
+const MIC_SILENCE_DB: f32 = -100.0;
 
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
 /// The fixed meters (the Settings microphone meter and the overlay meter
@@ -256,13 +258,6 @@ pub fn normalize_meter_amplitude(db: f32) -> f32 {
     } else {
         (db - METER_MIN_DB) / (METER_MAX_DB - METER_MIN_DB)
     }
-}
-
-/// The next smoothed level in dBFS for `level_db`: the level itself when
-/// metering starts (`previous` is `None`), so a meter that adapts to the
-/// room never sees a ramp up from silence, then `smooth_meter_value`.
-pub fn smooth_meter_level_db(previous: Option<f32>, level_db: f32) -> f32 {
-    previous.map_or(level_db, |current| smooth_meter_value(current, level_db))
 }
 
 pub fn smooth_meter_value(current: f32, target: f32) -> f32 {
