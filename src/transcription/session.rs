@@ -15,10 +15,11 @@ use super::text_builder::{build_overlay_text, join_transcript_parts};
 
 pub const AUDIO_QUEUE_CAPACITY: usize = 512;
 /// How long a chunk waits for room in a full audio queue before it is
-/// dropped. Audio held while a correction was applied arrives all at once
-/// when dictation resumes, faster than the session sends it on; waiting keeps
-/// it, and the audio thread never waits because it hands audio over through
-/// an unbounded channel.
+/// dropped and the session counts as stalled (see `push_audio_within`).
+/// Audio held while a correction or transformation was applied arrives all at
+/// once when dictation resumes, faster than the session sends it on; waiting
+/// keeps it, and the audio thread never waits because it hands audio over
+/// through an unbounded channel.
 const AUDIO_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +39,9 @@ pub struct ActiveSession {
     audio_tx: TokioSender<Result<Bytes, std::io::Error>>,
     kind: SessionKind,
     task: tokio::task::JoinHandle<Result<String, String>>,
+    /// The queue stayed full through a whole wait: chunks are dropped
+    /// without waiting until it has room again.
+    stalled: std::cell::Cell<bool>,
 }
 
 impl ActiveSession {
@@ -51,17 +55,28 @@ impl ActiveSession {
         self.push_audio_within(runtime, pcm_data, AUDIO_QUEUE_WAIT)
     }
 
+    /// Queues `pcm_data`, waiting up to `wait` for room in a full queue. Once
+    /// a wait runs out the session is stalled, and chunks are dropped at once
+    /// until the queue takes one again, so a stall holds the worker (and the
+    /// commands queued behind the audio) up for one wait, not one per chunk.
     fn push_audio_within(&self, runtime: &Runtime, pcm_data: Bytes, wait: std::time::Duration) -> PushAudioResult {
         let pcm_data = match self.audio_tx.try_send(Ok(pcm_data)) {
-            Ok(()) => return PushAudioResult::Ok,
+            Ok(()) => {
+                self.stalled.set(false);
+                return PushAudioResult::Ok;
+            }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => return PushAudioResult::Closed,
+            Err(tokio_mpsc::error::TrySendError::Full(_)) if self.stalled.get() => return PushAudioResult::Full,
             Err(tokio_mpsc::error::TrySendError::Full(pcm_data)) => pcm_data,
         };
         // Built inside the runtime: the timeout needs its timer.
         match runtime.block_on(async { tokio::time::timeout(wait, self.audio_tx.send(pcm_data)).await }) {
             Ok(Ok(())) => PushAudioResult::Ok,
             Ok(Err(_)) => PushAudioResult::Closed,
-            Err(_) => PushAudioResult::Full,
+            Err(_) => {
+                self.stalled.set(true);
+                PushAudioResult::Full
+            }
         }
     }
 
@@ -121,6 +136,7 @@ pub fn start_session(
         audio_tx,
         kind: session_kind,
         task,
+        stalled: std::cell::Cell::new(false),
     })
 }
 
@@ -324,7 +340,7 @@ mod tests {
     fn one_chunk_session(runtime: &Runtime) -> (ActiveSession, tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>) {
         let (audio_tx, audio_rx) = tokio_mpsc::channel(1);
         let task = runtime.spawn(async { Ok(String::new()) });
-        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task }, audio_rx)
+        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task, stalled: std::cell::Cell::new(false) }, audio_rx)
     }
 
     #[test]
@@ -358,6 +374,33 @@ mod tests {
             PushAudioResult::Full
         );
         assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_stalled_queue_drops_at_once_until_it_has_room_again() {
+        let runtime = Runtime::new().unwrap();
+        let (session, mut audio_rx) = one_chunk_session(&runtime);
+        let wait = std::time::Duration::from_millis(40);
+        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"1"), wait), PushAudioResult::Ok);
+
+        // The first chunk to meet the full queue waits, then is dropped.
+        let started = std::time::Instant::now();
+        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"2"), wait), PushAudioResult::Full);
+        assert!(started.elapsed() >= wait);
+
+        // The session is stalled: the next chunks are dropped without waiting,
+        // so commands behind them are not held up a wait each.
+        let started = std::time::Instant::now();
+        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"3"), wait), PushAudioResult::Full);
+        assert!(started.elapsed() < wait / 2, "{:?}", started.elapsed());
+
+        // Once the queue has room, chunks go in and a full queue is waited on
+        // again.
+        assert!(audio_rx.try_recv().is_ok());
+        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"4"), wait), PushAudioResult::Ok);
+        let started = std::time::Instant::now();
+        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"5"), wait), PushAudioResult::Full);
+        assert!(started.elapsed() >= wait);
     }
 
     #[test]

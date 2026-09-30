@@ -4,7 +4,12 @@ use cpal::{FromSample, Host};
 use crate::state::MIC_SILENCE_DB;
 
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
-const METER_MIN_DB: f32 = -42.0;
+/// The fixed meters (the Settings microphone meter and the overlay meter
+/// styles other than the pills) map this range of RMS levels, in dBFS, from
+/// empty to full: soft speech (about -45 to -35 dBFS) shows, and a quiet room
+/// (about -58) barely lifts them. The Settings meter is for setting the gain,
+/// so it keeps this absolute scale rather than adapting.
+const METER_MIN_DB: f32 = -60.0;
 const METER_MAX_DB: f32 = -6.0;
 const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 

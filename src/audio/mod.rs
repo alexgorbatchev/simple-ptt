@@ -553,9 +553,18 @@ mod tests {
     #[test]
     fn normalize_meter_amplitude_clamps_silence_and_hot_input() {
         assert_eq!(normalize_meter_amplitude(-100.0), 0.0);
-        assert_eq!(normalize_meter_amplitude(-42.0), 0.0);
+        assert_eq!(normalize_meter_amplitude(-60.0), 0.0);
         assert_eq!(normalize_meter_amplitude(-6.0), 1.0);
         assert_eq!(normalize_meter_amplitude(0.0), 1.0);
+    }
+
+    #[test]
+    fn soft_speech_registers_on_the_fixed_meter() {
+        // Soft speech in a quiet office sits around -45 to -35 dBFS.
+        assert!(normalize_meter_amplitude(-45.0) >= 0.25);
+        assert!(normalize_meter_amplitude(-35.0) >= 0.45);
+        // A quiet room barely lifts the meter.
+        assert!(normalize_meter_amplitude(-58.0) < 0.05);
     }
 
     #[test]

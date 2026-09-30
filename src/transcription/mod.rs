@@ -44,6 +44,18 @@ pub struct TranscriptionController {
     command_tx: Sender<Command>,
 }
 
+#[cfg(test)]
+impl TranscriptionController {
+    /// A controller whose commands are queued and never handled, for tests
+    /// that look at the state a hotkey leaves before the worker acts.
+    pub fn without_worker() -> Self {
+        let (command_tx, command_rx) = channel();
+        // Keeps the queue open for the test's lifetime.
+        Box::leak(Box::new(command_rx));
+        Self { command_tx }
+    }
+}
+
 impl TranscriptionController {
     pub fn set_sample_rate(&self, sample_rate: u32) {
         let _ = self.command_tx.send(Command::SetSampleRate(sample_rate));
@@ -639,6 +651,9 @@ pub fn spawn_transcription_thread(
                     }
                 }
                 Command::StopSessionAndTransformAndResume => {
+                    // The transform hotkey marked dictation as resuming;
+                    // capture carries on until this ends, however it ends.
+                    let _resuming = ResumingDictation::new(&state, true);
                     if let Some(session) = active_session.take() {
                         match session.finish(&runtime, state.clone()) {
                             Ok(text) => {

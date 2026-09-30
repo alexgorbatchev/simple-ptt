@@ -91,9 +91,9 @@ pub struct AppState {
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
     mic_active: AtomicBool,
-    /// Dictation resumes once the background work running now (applying a
-    /// correction) finishes, so audio capture and the meter carry on through
-    /// it.
+    /// Dictation resumes once the background work running now (a
+    /// transformation or a correction) finishes, so audio capture and the
+    /// meter carry on through it.
     dictation_resuming: AtomicBool,
 }
 
@@ -125,7 +125,7 @@ impl AppState {
     }
 
     /// Whether the microphone's audio goes to dictation: while recording, and
-    /// while a correction is applied to a dictation that resumes after it.
+    /// while a dictation that resumes afterwards is transformed or corrected.
     pub fn is_capturing_audio(&self) -> bool {
         self.is_recording() || self.is_dictation_resuming()
     }
@@ -154,10 +154,12 @@ impl AppState {
 
     pub fn set_state(&self, state: u8) {
         self.state.store(state, Ordering::Relaxed);
-        // Applying a correction to a dictation that resumes after it never
+        // Transforming or correcting a dictation that resumes after it never
         // stops the microphone, so its meter and activity carry on; any other
         // state (the resume failed) stops them as usual.
-        if self.is_dictation_resuming() && matches!(state, STATE_RECORDING | STATE_TRANSFORMING) {
+        if self.is_dictation_resuming()
+            && matches!(state, STATE_RECORDING | STATE_PROCESSING | STATE_TRANSFORMING)
+        {
             return;
         }
         if state == STATE_RECORDING {
@@ -373,7 +375,8 @@ pub(crate) fn normalized_meter_value(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, MIC_SILENCE_DB, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
+        AppState, MIC_SILENCE_DB, STATE_BUFFER_READY, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
+        STATE_TRANSFORMING,
     };
 
     #[test]
@@ -389,6 +392,22 @@ mod tests {
 
         state.set_dictation_resuming(false);
         assert!(!state.is_capturing_audio());
+    }
+
+    #[test]
+    fn the_meter_carries_on_while_a_transformation_is_prepared_mid_dictation() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_mic_meter(0.4, 0.5, -40.0, false);
+        state.set_mic_active(true);
+
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_PROCESSING);
+
+        let meter = state.mic_meter_snapshot();
+        assert_eq!(meter.level_db, -40.0);
+        assert!(meter.mic_active);
+        assert!(state.is_capturing_audio());
     }
 
     #[test]

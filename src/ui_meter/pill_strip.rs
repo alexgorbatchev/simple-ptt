@@ -8,6 +8,9 @@
 //! the strip and reaches the column's right edge as its time begins. Only
 //! enough layers to cover the column exist: the layer of a pill that has
 //! left the column on the left becomes the next pill to enter on the right.
+//!
+//! With Reduce Motion on when the strip starts, it does not glide: it steps
+//! one pill spacing to the left as each pill opens.
 
 use std::cell::{Cell, RefCell};
 
@@ -17,9 +20,11 @@ use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{ns_string, NSArray, NSNumber, NSString};
 use objc2_quartz_core::{
     kCAFillModeForwards, CABasicAnimation, CAGradientLayer, CALayer, CAMediaTiming, CATransaction,
+    CATransform3D,
 };
 
 use super::pill_levels::PILL_SECONDS;
+use crate::overlay::reduce_motion;
 use super::{cg_color_in, centred_bar_frame};
 
 /// Width of each pill.
@@ -49,6 +54,9 @@ pub(super) struct PillStrip {
     pills: RefCell<Vec<Retained<CALayer>>>,
     /// When the strip started moving, in media time (`CACurrentMediaTime`).
     started_at: Cell<Option<f64>>,
+    /// Whether the strip steps instead of gliding: Reduce Motion was on when
+    /// it started.
+    steps: Cell<bool>,
 }
 
 impl PillStrip {
@@ -73,7 +81,14 @@ impl PillStrip {
         let strip = CALayer::new();
         column.addSublayer(&strip);
         container.addSublayer(&column);
-        Self { column, fade, strip, pills: RefCell::new(Vec::new()), started_at: Cell::new(None) }
+        Self {
+            column,
+            fade,
+            strip,
+            pills: RefCell::new(Vec::new()),
+            started_at: Cell::new(None),
+            steps: Cell::new(false),
+        }
     }
 
     pub(super) fn set_hidden(&self, hidden: bool) {
@@ -96,6 +111,7 @@ impl PillStrip {
     /// Stops the strip and puts it back at its start.
     pub(super) fn stop(&self) {
         self.strip.removeAnimationForKey(&NSString::from_str(STRIP_ANIMATION_KEY));
+        without_actions(|| self.strip.setTransform(CATransform3D::new_translation(0.0, 0.0, 0.0)));
         self.started_at.set(None);
     }
 
@@ -116,6 +132,9 @@ impl PillStrip {
             let locations = fade_locations(span).map(NSNumber::new_f64);
             self.fade.setLocations(Some(&NSArray::from_retained_slice(&locations)));
             self.strip.setFrame(CGRect::new(CGPoint::new(right_anchor(span), 0.0), CGSize::new(PILL_WIDTH, bounds.size.height)));
+            if self.steps.get() {
+                self.strip.setTransform(CATransform3D::new_translation(stepped_offset(open_index), 0.0, 0.0));
+            }
 
             self.ensure_pills(pool);
             let pills = self.pills.borrow();
@@ -131,6 +150,12 @@ impl PillStrip {
 
     fn start(&self, now: f64) {
         self.started_at.set(Some(now));
+        // Read as the motion starts, like the overlay's other motion, so a
+        // change applies from the next recording.
+        self.steps.set(reduce_motion());
+        if self.steps.get() {
+            return;
+        }
         let animation = CABasicAnimation::animationWithKeyPath(Some(ns_string!("transform.translation.x")));
         // SAFETY: `transform.translation.x` animates between NSNumbers.
         unsafe {
@@ -180,6 +205,12 @@ fn pill_x(index: i64) -> f64 {
 /// How far the strip has moved `elapsed` seconds after it started.
 fn strip_offset(elapsed: f64) -> f64 {
     -elapsed * (PILL_PITCH / PILL_SECONDS)
+}
+
+/// How far the stepping strip (Reduce Motion) has moved while pill
+/// `open_index` is open: the open pill stands at the right edge for its time.
+fn stepped_offset(open_index: u64) -> f64 {
+    strip_offset(open_index as f64 * PILL_SECONDS)
 }
 
 /// Where the open pill starts in a column `span` wide: its right edge at the
@@ -240,6 +271,17 @@ mod tests {
         }
         // The open pill's right edge is the column's right edge.
         assert_eq!(right_anchor(COLUMN) + PILL_WIDTH, COLUMN);
+    }
+
+    #[test]
+    fn with_reduce_motion_the_strip_steps_one_pill_as_each_opens() {
+        // The open pill stands at the right edge for its whole time.
+        for index in [0_u64, 1, 7, 500] {
+            let visible_x = right_anchor(COLUMN) + pill_x(index as i64) + stepped_offset(index);
+            assert!((visible_x - right_anchor(COLUMN)).abs() < 1e-6, "pill {index}: {visible_x}");
+        }
+        // Each opening pill moves the strip one spacing to the left.
+        assert!((stepped_offset(3) - stepped_offset(2) + PILL_PITCH).abs() < 1e-9);
     }
 
     #[test]

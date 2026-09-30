@@ -14,7 +14,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Build the `.app` bundle: `just bundle-release`
 - Build the DMG: `just bundle-dmg`
 - Install to `~/Applications` and launch: `just install-app && just start`
-- Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` value, the meter style, the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
+- Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` value, the meter style (fed a synthetic voice that alternates soft and loud), the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
 - Capture every overlay state over light and dark backdrops, then exit: `cargo run -- --overlay-snapshot .tmp/snapshots` (needs Screen Recording permission for the terminal).
 
 ## Setup
@@ -31,7 +31,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Preserve user config comments and unknown TOML sections by writing through `config::save_config` in `src/config/mod.rs`. It intentionally uses `toml_edit`; do not replace it with a lossy serializer.
 - Permission changes are stateful and may require relaunch after grant. Follow the `NeedsRelaunch` flow in `src/permissions.rs` and `src/permissions_dialog.rs` instead of shortcutting it.
 - Keep packaging changes aligned across `scripts/build-macos-app.sh`, `scripts/build-macos-dmg.sh`, and `.github/workflows/release.yml`.
-- Before changing how the overlay looks or moves (`src/overlay/`, `src/ui_meter.rs`), load the `overlay-visual-debugging` skill in `.agents/skills/`; it holds the probe workflow and measured macOS 26 glass behaviors. Values the user settles on in debug mode become the `GlassTuning` defaults in `src/overlay/glass.rs`, pinned by its tests. Debug mode lives in `src/overlay/dev/`; product code must not call the `OverlayWindow` methods only it uses (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`). Debug mode is a developer tool: keep it out of `README.md`.
+- Before changing how the overlay looks or moves (`src/overlay/`, `src/ui_meter.rs`, `src/ui_meter/`), load the `overlay-visual-debugging` skill in `.agents/skills/`; it holds the probe workflow and measured macOS 26 glass behaviors. Values the user settles on in debug mode become the `GlassTuning` defaults in `src/overlay/glass.rs`, pinned by its tests. Debug mode lives in `src/overlay/dev/`; product code must not call the `OverlayWindow` methods only it uses (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`). Debug mode is a developer tool: keep it out of `README.md`.
 
 ## Releases & Versioning
 - **SemVer:** Automatically determine the next best SemVer release version based on the git history (e.g. `feat:` for minor, `fix:` for patch). Always confirm the proposed next version with the user before committing bumps or creating tags.

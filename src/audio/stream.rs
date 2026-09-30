@@ -133,6 +133,30 @@ pub fn config_with_preferred_rate(
         .find_map(|config| config.try_with_sample_rate(preferred_sample_rate))
 }
 
+/// Where one callback's audio goes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AudioRoute {
+    /// Nowhere: the meter rests.
+    Idle,
+    /// Only the meter, for the Settings window's live meter.
+    Meter,
+    /// The meter and dictation.
+    MeterAndDictation,
+}
+
+/// Where audio goes now: to dictation while it is captured (recording, or a
+/// dictation that resumes after the transformation or correction running
+/// now), to the meter alone while Settings is open.
+fn audio_route(state: &AppState) -> AudioRoute {
+    if state.is_capturing_audio() {
+        AudioRoute::MeterAndDictation
+    } else if state.is_settings_window_visible() {
+        AudioRoute::Meter
+    } else {
+        AudioRoute::Idle
+    }
+}
+
 /// Amplitude multiplier for `mic.gain`, which is in decibels.
 fn db_to_linear_gain(gain_db: f32) -> f32 {
     10.0f32.powf(gain_db / 20.0)
@@ -160,7 +184,7 @@ where
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut smoothed_level_db: Option<f32> = None;
-    let mut was_recording = false;
+    let mut was_capturing = false;
     let mut pcm_buffer = bytes::BytesMut::with_capacity(65536);
 
     static PROCESS_START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
@@ -173,13 +197,12 @@ where
                     PROCESS_START.elapsed().as_millis() as u64,
                     Ordering::Relaxed,
                 );
-                let is_recording = meter_state.is_capturing_audio();
-                let is_preview = meter_state.is_settings_window_visible();
-                if !is_recording && !is_preview {
-                    if was_recording {
+                let route = audio_route(&meter_state);
+                if route == AudioRoute::Idle {
+                    if was_capturing {
                         smoothed_level = 0.0;
                         smoothed_peak = 0.0;
-                        was_recording = false;
+                        was_capturing = false;
                         pcm_buffer.clear();
                     }
                     smoothed_level_db = None;
@@ -213,8 +236,8 @@ where
                 );
                 meter_state.set_mic_active(true);
 
-                if is_recording {
-                    was_recording = true;
+                if route == AudioRoute::MeterAndDictation {
+                    was_capturing = true;
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {
                         let chunk = pcm_buffer.split_to(640).freeze();
@@ -293,7 +316,29 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::db_to_linear_gain;
+    use super::{audio_route, db_to_linear_gain, AudioRoute};
+    use crate::state::{AppState, STATE_RECORDING, STATE_TRANSFORMING};
+
+    #[test]
+    fn audio_goes_to_dictation_while_captured_and_only_to_the_meter_for_settings() {
+        let state = AppState::new();
+        assert_eq!(audio_route(&state), AudioRoute::Idle);
+
+        state.set_settings_window_visible(true);
+        assert_eq!(audio_route(&state), AudioRoute::Meter);
+        state.set_settings_window_visible(false);
+
+        state.set_state(STATE_RECORDING);
+        assert_eq!(audio_route(&state), AudioRoute::MeterAndDictation);
+
+        // A correction or transformation applied mid-dictation.
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_TRANSFORMING);
+        assert_eq!(audio_route(&state), AudioRoute::MeterAndDictation);
+
+        state.set_dictation_resuming(false);
+        assert_eq!(audio_route(&state), AudioRoute::Idle);
+    }
 
     #[test]
     fn db_to_linear_gain_converts_decibels_to_an_amplitude_multiplier() {
