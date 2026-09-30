@@ -1732,18 +1732,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "objc2-sound-analysis"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "559a92de909f247233dc155863acfd5cad7b48b8c827729535a294abf9b74d31"
-dependencies = [
- "objc2",
- "objc2-avf-audio",
- "objc2-core-media",
- "objc2-foundation",
-]
-
-[[package]]
 name = "objc2-ui-kit"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2583,13 +2571,10 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-av-foundation",
- "objc2-avf-audio",
  "objc2-core-foundation",
  "objc2-core-graphics",
- "objc2-core-media",
  "objc2-foundation",
  "objc2-quartz-core",
- "objc2-sound-analysis",
  "reqwest",
  "rig-core",
  "serde",

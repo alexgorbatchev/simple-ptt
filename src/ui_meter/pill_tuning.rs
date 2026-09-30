@@ -6,24 +6,20 @@ use super::pill_levels::PILL_SECONDS;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PillTuning {
-    /// A speech analysis window whose "speech" confidence reaches this is
-    /// speech.
-    pub speech_confidence: f64,
     /// Pills up to this far above the noise floor, in dB, rest as dots.
     pub noise_gate_db: f64,
     /// The least distance from the gate to the top of the range, in dB, so
     /// background noise is never stretched to full height.
     pub min_span_db: f64,
-    /// The noise floor is the quietest pill that was not speech in this
-    /// long (counted in pills of the room, not in time).
+    /// The noise floor is the quietest pill of this long.
     pub floor_seconds: f64,
-    /// The top of the range is this share of the recent speech pills.
+    /// The top of the range is this share of the recent pills above the
+    /// gate.
     pub top_quantile: f64,
-    /// How much recent speech the top is taken over (counted in speech
-    /// pills).
+    /// How long the top is taken over (counted in pills above the gate).
     pub top_seconds: f64,
-    /// How much of a speech pill's height its loudness decides; the rest is
-    /// always drawn, so the softest speech still shows its texture.
+    /// How much of a pill's height its loudness decides; the rest is always
+    /// drawn, so the softest speech still shows its texture.
     pub loudness_share: f64,
     /// The texture's tall band, which even pills take a height in.
     pub tall_low: f64,
@@ -36,7 +32,6 @@ pub struct PillTuning {
 impl Default for PillTuning {
     fn default() -> Self {
         Self {
-            speech_confidence: 0.5,
             noise_gate_db: 6.0,
             min_span_db: 12.0,
             floor_seconds: 10.0,
@@ -67,7 +62,7 @@ impl PillTuning {
         pills_in(self.floor_seconds)
     }
 
-    /// How many speech pills the top is taken over.
+    /// How many pills above the gate the top is taken over.
     pub(super) fn top_pills(&self) -> usize {
         pills_in(self.top_seconds)
     }
@@ -88,10 +83,10 @@ mod tests {
 
     #[test]
     fn decibels_become_amplitude_ratios_and_seconds_whole_pills() {
-        let tuning = PillTuning { noise_gate_db: 6.0, min_span_db: 20.0, floor_seconds: 10.0, top_seconds: 0.05, ..PillTuning::default() };
+        let tuning = PillTuning { noise_gate_db: 6.0, min_span_db: 20.0, floor_seconds: 10.0, top_seconds: 0.01, ..PillTuning::default() };
         assert!((tuning.gate_ratio() - 1.995).abs() < 1e-3, "{}", tuning.gate_ratio());
         assert!((tuning.min_span_ratio() - 10.0).abs() < 1e-4, "{}", tuning.min_span_ratio());
-        assert_eq!(tuning.floor_pills(), 50);
+        assert_eq!(tuning.floor_pills(), 100);
         // Never less than one pill.
         assert_eq!(tuning.top_pills(), 1);
     }

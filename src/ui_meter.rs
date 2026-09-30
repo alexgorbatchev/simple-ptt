@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use objc2_quartz_core::CACurrentMediaTime;
-use pill_levels::{LevelSpan, PillAudio, PillLevels, SpeechSpan};
+use pill_levels::{LevelSpan, PillLevels};
 use pill_strip::PillStrip;
 
 use block2::StackBlock;
@@ -12,7 +12,7 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::config::UiMeterStyle;
-use crate::state::{AudioTimeline, MicMeterSnapshot};
+use crate::state::{LevelBlock, MicMeterSnapshot};
 use crate::MainThreadMarker;
 
 mod pill_levels;
@@ -147,9 +147,9 @@ impl UiMeterView {
         self.meter_style.get() == UiMeterStyle::Pills
     }
 
-    /// Takes in the microphone's level and, for the pills, the captured
-    /// audio's loudness and speech analysis results on the media clock.
-    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, audio: &AudioTimeline) {
+    /// Takes in the microphone's level and, for the pills, the loudness of
+    /// the recent captured audio on the media clock.
+    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, blocks: &[LevelBlock]) {
         self.container_view.setHidden(false);
 
         let level = mic_meter.level as f32 / u8::MAX as f32;
@@ -159,7 +159,7 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.push_pill(audio),
+            UiMeterStyle::Pills => self.push_pill(blocks),
         }
 
         self.render_meter_bars(cluster_width);
@@ -282,35 +282,20 @@ impl UiMeterView {
 
     /// Moves the pills to now and paints the ones whose audio is in. While
     /// the microphone delivers nothing, no audio comes in and they rest.
-    fn push_pill(&self, audio: &AudioTimeline) {
+    fn push_pill(&self, blocks: &[LevelBlock]) {
         // The strip's clock, the one its motion runs on, so each pill stands
         // for the time it is moving through the column.
         let now = CACurrentMediaTime();
         let at = self.pill_strip.clock(now);
         // The audio onto the strip's clock: media time less its start.
         let started_at = now - at;
-        let speech: Option<Vec<SpeechSpan>> = audio.speech.as_ref().map(|windows| {
-            windows
-                .iter()
-                .map(|window| SpeechSpan {
-                    start: window.start - started_at,
-                    end: window.end - started_at,
-                    confidence: window.confidence,
-                })
-                .collect()
-        });
-        let levels: Vec<LevelSpan> = audio
-            .levels
+        let levels: Vec<LevelSpan> = blocks
             .iter()
-            .map(|block| LevelSpan {
-                start: block.start - started_at,
-                end: block.end - started_at,
-                mean_square: block.mean_square,
-            })
+            .map(|block| LevelSpan { start: block.start - started_at, end: block.end - started_at, peak: block.peak })
             .collect();
         let mut pill_levels = self.pill_levels.borrow_mut();
         pill_levels.advance(at);
-        pill_levels.paint(PillAudio { speech: speech.as_deref(), levels: &levels }, at);
+        pill_levels.paint(&levels, at);
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {

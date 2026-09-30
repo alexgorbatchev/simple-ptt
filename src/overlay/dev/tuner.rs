@@ -81,17 +81,6 @@ fn voice_level_db(tick: u64) -> f32 {
     syllable + louder
 }
 
-/// How often the speech analysis produces a result, and how long each one
-/// spans: its 0.5 s windows overlapping by half.
-const SPEECH_RESULT_EVERY_SECONDS: f64 = 0.25;
-const SPEECH_WINDOW_SECONDS: f64 = 0.5;
-
-/// Whether the synthetic voice is speaking at `tick`: all but its breaths,
-/// which are the room's noise.
-fn voice_is_speaking(tick: u64) -> bool {
-    tick % 32 < 28
-}
-
 /// What the narration loop speaks: the transcript, and the correction
 /// request while the correction is shown.
 const NARRATED_TRANSCRIPT: &str = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the updated mockups before lunch";
@@ -211,8 +200,7 @@ static INTERNALS: [NumberField; 12] = [
 ];
 
 /// The pills' values (`PillTuning`), each with the range worth trying.
-static PILLS: [NumberField<PillTuning>; 11] = [
-    number!("speech_confidence", 0.05, 0.95, speech_confidence),
+static PILLS: [NumberField<PillTuning>; 10] = [
     number!("noise_gate_db", 0.0, 30.0, noise_gate_db),
     number!("min_span_db", 3.0, 30.0, min_span_db),
     number!("floor_seconds", 1.0, 30.0, floor_seconds),
@@ -233,7 +221,7 @@ type NumberControl<T = GlassTuning> = (&'static NumberField<T>, Retained<NSSlide
 
 /// The microphone, captured as the app captures it while recording: the
 /// audio controller builds the stream, whose callback feeds the meter and
-/// the speech analysis thread, and an idle transcription worker takes the
+/// the pills' loudness, and an idle transcription worker takes the
 /// dictation audio and drops it, since no session starts. Dropping it stops
 /// the capture.
 struct Microphone {
@@ -270,8 +258,7 @@ struct Controls {
     curve_values: Retained<NSTextField>,
     curve_presets: Vec<Retained<NSButton>>,
     pill_numbers: Vec<NumberControl<PillTuning>>,
-    /// The range the next pill is drawn from, and the latest speech
-    /// confidence.
+    /// The range the next pill is drawn from, and the latest peak.
     pill_readout: Retained<NSTextField>,
 }
 
@@ -295,11 +282,9 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
-    /// The overlay's app state, where the tuner publishes the loudness and
-    /// speech results of its synthetic voice (`publish_voice`).
+    /// The overlay's app state, where the tuner publishes the loudness of
+    /// its synthetic voice (`publish_voice`).
     app_state: std::sync::Arc<AppState>,
-    /// When the last synthetic speech result ended, on the media clock.
-    last_speech_window_end: Cell<f64>,
     /// When the last synthetic block of audio ended, on the media clock.
     last_level_block_end: Cell<Option<f64>>,
     /// The overlay's style, whose meter style the meter picker changes.
@@ -424,8 +409,8 @@ impl TunerState {
         }
     }
 
-    /// Shows the range the next pill is drawn from and the latest speech
-    /// confidence, or why the microphone could not start.
+    /// Shows the range the next pill is drawn from and the latest peak, or
+    /// why the microphone could not start.
     fn show_pill_readout(&self) {
         let controls = self.controls.borrow();
         let Some(controls) = controls.as_ref() else { return };
@@ -433,12 +418,12 @@ impl TunerState {
             Some(error) => format!("microphone: {error}"),
             None => {
                 let range = self.overlay.pill_range_now();
-                let speech = self
+                let peak = self
                     .app_state
-                    .speech_windows()
+                    .level_blocks()
                     .last()
-                    .map_or_else(|| "–".to_owned(), |window| format!("{:.2}", window.confidence));
-                pill_readout_text(range, &speech)
+                    .map_or_else(|| "–".to_owned(), |block| format!("{:.1}", 20.0 * block.peak.max(1e-9).log10()));
+                pill_readout_text(range, &peak)
             }
         };
         let text = NSString::from_str(&text);
@@ -452,7 +437,6 @@ impl TunerState {
         self.microphone_error.replace(None);
         self.app_state.set_state(STATE_IDLE);
         if !on {
-            self.app_state.set_speech_analysis_available(true);
             return;
         }
         match Microphone::start(&self.app_state) {
@@ -559,28 +543,15 @@ impl TunerState {
         self.refresh_enabled(tuning);
     }
 
-    /// Publishes the synthetic voice as the speech analysis thread does for
-    /// the microphone: its loudness since the last tick (`level_db` as an
-    /// RMS), and a speech result every `SPEECH_RESULT_EVERY_SECONDS`, speech
-    /// unless the voice is breathing at `tick`.
-    fn publish_voice(&self, tick: u64, level_db: f32) {
+    /// Publishes the synthetic voice as the audio callback does for the
+    /// microphone: the loudness of the audio since the last tick, whose peak
+    /// is `VOICE_CREST_DB` above its level `level_db`.
+    fn publish_voice(&self, level_db: f32) {
         let now = objc2_quartz_core::CACurrentMediaTime();
         if let Some(start) = self.last_level_block_end.replace(Some(now)) {
-            self.app_state.record_level_block(crate::state::LevelBlock {
-                start,
-                end: now,
-                mean_square: 10f32.powf(level_db / 10.0),
-            });
+            let peak = 10f32.powf((level_db + VOICE_CREST_DB) / 20.0);
+            let _ = self.app_state.level_sender().try_send(crate::state::LevelBlock { start, end: now, peak });
         }
-        if now - self.last_speech_window_end.get() < SPEECH_RESULT_EVERY_SECONDS {
-            return;
-        }
-        self.last_speech_window_end.set(now);
-        self.app_state.record_speech_window(crate::state::SpeechWindow {
-            start: now - SPEECH_WINDOW_SECONDS,
-            end: now,
-            confidence: if voice_is_speaking(tick) { 1.0 } else { 0.0 },
-        });
     }
 
     fn tick(&self) {
@@ -619,12 +590,11 @@ impl TunerState {
         let preview_text = texts.overlay_text_snapshot();
 
         let meter = if self.microphone.borrow().is_some() {
-            // The audio thread publishes the meter and the speech analysis
-            // thread the loudness and speech results.
+            // The audio callback publishes the meter and the loudness.
             self.app_state.mic_meter_snapshot()
         } else {
             let level_db = voice_level_db(tick);
-            self.publish_voice(tick, level_db);
+            self.publish_voice(level_db);
             MicMeterSnapshot {
                 clip_event_counter: 0,
                 level: normalized_meter_value(normalize_meter_amplitude(level_db)),
@@ -827,7 +797,7 @@ fn name_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 /// so its changing numbers never resize the grid and move the controls.
 /// Longer text (a microphone error) is cut short, and whole in its tooltip.
 fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "0.00"));
+    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "-100.0"));
     label.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
         objc2_app_kit::NSFont::smallSystemFontSize(),
         unsafe { objc2_app_kit::NSFontWeightRegular },
@@ -839,10 +809,10 @@ fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
 }
 
 /// The readout for the range the next pill is drawn from and the latest
-/// speech confidence.
-fn pill_readout_text(range: PillRange, speech: &str) -> String {
+/// block's peak, in dBFS.
+fn pill_readout_text(range: PillRange, peak: &str) -> String {
     format!(
-        "floor {:.1} · gate {:.1} · top {:.1} dBFS · speech {speech}",
+        "floor {:.1} · gate {:.1} · top {:.1} · peak {peak} dBFS",
         range.floor_db, range.gate_db, range.top_db
     )
 }
@@ -924,7 +894,6 @@ pub fn run() {
     app.finishLaunching();
 
     let app_state = AppState::new();
-    app_state.set_speech_analysis_available(true);
     let style = overlay_style_from_config(&Config::default());
     let overlay = OverlayWindow::new(mtm, &style, app_state.clone());
     let overlay_style = RefCell::new(style);
@@ -934,7 +903,6 @@ pub fn run() {
     let state = Rc::new(TunerState {
         overlay,
         app_state,
-        last_speech_window_end: Cell::new(0.0),
         last_level_block_end: Cell::new(None),
         overlay_style,
         controls: RefCell::new(None),

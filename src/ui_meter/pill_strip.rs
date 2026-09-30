@@ -40,8 +40,8 @@ const PILL_CORNER_RADIUS: f64 = 2.0;
 const PILL_OPACITY: f64 = 0.5;
 /// How far in from the column's right edge the pills fade in. Short, since
 /// pills enter final (`ENTRY_DELAY_SECONDS`) and the fade only delays them:
-/// at the strip's 33.75 pt/s, 8 pt takes 0.24 s to cross, and 25 pt took
-/// 0.74 s.
+/// at the strip's 67.5 pt/s, 8 pt takes 0.12 s to cross, and 25 pt took
+/// 0.37 s.
 const ENTRY_FADE_WIDTH: f64 = 8.0;
 /// How far in from the column's left edge the pills fade out.
 const EXIT_FADE_WIDTH: f64 = 25.0;
@@ -290,22 +290,24 @@ mod tests {
     }
 
     #[test]
-    fn a_pill_painted_at_its_latest_is_out_of_view_until_the_next_update_shows_it() {
-        // The overlay updates every 75 ms.
+    fn a_pill_is_still_out_of_view_when_it_is_painted_at_its_latest() {
         for index in [0_i64, 7, 18_000] {
-            let shown = (index as f64 * PILL_SECONDS) + LATEST_PAINT_SECONDS + 0.075;
-            assert!(visible_x(index, shown) >= COLUMN, "pill {index}: {}", visible_x(index, shown));
+            let latest = (index as f64 * PILL_SECONDS) + LATEST_PAINT_SECONDS;
+            assert!(visible_x(index, latest) >= COLUMN, "pill {index}: {}", visible_x(index, latest));
         }
     }
 
     #[test]
     fn with_reduce_motion_the_strip_steps_one_pill_as_each_opens() {
-        // Pill k stays out of the column while pills up to k + 3 are open,
-        // and enters as pill k + 4 opens, 0.8 s in: after its latest paint.
+        // Pill k enters the column only as a pill opens after its latest
+        // paint time.
         for index in [0_u64, 1, 7, 500] {
             let stepped_x = |open: u64| right_anchor(COLUMN) + pill_x(index as i64) + stepped_offset(open);
-            assert!(stepped_x(index + 3) >= COLUMN, "pill {index}: {}", stepped_x(index + 3));
-            assert!(stepped_x(index + 4) < COLUMN, "pill {index}: {}", stepped_x(index + 4));
+            let enters = (index..).find(|open| stepped_x(*open) < COLUMN).unwrap();
+            assert!(
+                enters as f64 * PILL_SECONDS >= (index as f64 * PILL_SECONDS) + LATEST_PAINT_SECONDS,
+                "pill {index} enters as pill {enters} opens"
+            );
         }
         // Each opening pill moves the strip one spacing to the left.
         assert!((stepped_offset(3) - stepped_offset(2) + PILL_PITCH).abs() < 1e-9);
@@ -364,16 +366,16 @@ mod tests {
     }
 
     #[test]
-    fn a_pill_is_fully_shown_within_0_4_s_of_entering() {
-        // It crosses its own width and the 8 pt fade at 33.75 pt/s: 0.38 s.
-        // Across a 25 pt fade it took 0.88 s.
+    fn a_pill_is_fully_shown_within_a_quarter_second_of_entering() {
+        // It crosses its own width and the 8 pt fade at 67.5 pt/s: 0.19 s.
+        // Across a 25 pt fade it took 0.44 s.
         let entry = ENTRY_DELAY_SECONDS;
         let [_, _, right_opaque, _] = fade_locations(COLUMN);
         let fully_shown = (0..=1000)
             .map(|step| entry + (f64::from(step) * 0.001))
             .find(|at| visible_x(0, *at) + PILL_WIDTH <= right_opaque * COLUMN)
             .unwrap();
-        assert!(fully_shown - entry < 0.4, "{}", fully_shown - entry);
+        assert!(fully_shown - entry < 0.25, "{}", fully_shown - entry);
     }
 
     #[test]

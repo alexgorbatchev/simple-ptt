@@ -9,14 +9,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::settings::LiveConfigStore;
-use crate::state::AppState;
+use crate::state::{AppState, LevelBlock};
 use crate::transcription::TranscriptionController;
 
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
     smooth_meter_value,
 };
-use super::speech::SpeechAnalysis;
 
 pub struct InputStreamHandle {
     pub stream: Stream,
@@ -179,7 +178,8 @@ where
 {
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
-    let speech = SpeechAnalysis::start(stream_config.sample_rate, Arc::clone(&state));
+    let sample_rate = f64::from(stream_config.sample_rate);
+    let levels = state.level_sender();
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
@@ -236,13 +236,11 @@ where
 
                 if route == AudioRoute::MeterAndDictation {
                     was_capturing = true;
-                    speech.analyze(
-                        pcm_chunk
-                            .chunks_exact(2)
-                            .map(|pair| f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0)
-                            .collect(),
-                        CACurrentMediaTime(),
-                    );
+                    // The block's loudness for the pills, queued without waiting:
+                    // it ends as it arrives.
+                    let end = CACurrentMediaTime();
+                    let seconds = (data.len() / channels.max(1)) as f64 / sample_rate;
+                    let _ = levels.try_send(LevelBlock { start: end - seconds, end, peak: 10f32.powf(peak_db / 20.0) });
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {
                         let chunk = pcm_buffer.split_to(640).freeze();

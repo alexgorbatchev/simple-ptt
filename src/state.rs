@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
@@ -51,37 +52,21 @@ impl DeepgramApiKeyFingerprint {
     }
 }
 
-/// How long speech analysis results are kept: longer than the meter shows.
-const SPEECH_WINDOW_KEEP_SECONDS: f64 = 20.0;
 /// How long the loudness of captured audio is kept: longer than a pill waits
 /// to be painted.
 const LEVEL_BLOCK_KEEP_SECONDS: f64 = 2.0;
-
-/// One speech analysis result: how confident the classifier was, from 0 to
-/// 1, that the captured audio from `start` to `end`, on the media clock
-/// (`CACurrentMediaTime`), was speech.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SpeechWindow {
-    pub start: f64,
-    pub end: f64,
-    pub confidence: f64,
-}
+/// Blocks the audio callback may queue before the overlay takes them in:
+/// several seconds of audio at the usual callback size, while the overlay
+/// takes them in every 75 ms. Blocks beyond it are dropped.
+const QUEUED_LEVEL_BLOCKS: usize = 256;
 
 /// The loudness of one block of captured audio, from `start` to `end` on the
-/// media clock: its mean square (its RMS squared, 1 at full scale).
+/// media clock (`CACurrentMediaTime`): its loudest sample (1 is full scale).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LevelBlock {
     pub start: f64,
     pub end: f64,
-    pub mean_square: f32,
-}
-
-/// What the pills are drawn from: the recent speech analysis results
-/// (`None` when speech analysis does not run) and loudness, oldest first.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct AudioTimeline {
-    pub speech: Option<Vec<SpeechWindow>>,
-    pub levels: Vec<LevelBlock>,
+    pub peak: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -114,10 +99,10 @@ pub struct AppState {
     /// Whether the audio stream found a microphone to use the last time it
     /// looked.
     microphone_available: AtomicBool,
-    /// Whether speech analysis runs on the captured audio.
-    speech_analysis_available: AtomicBool,
-    /// Its recent results, oldest first.
-    speech_windows: Mutex<VecDeque<SpeechWindow>>,
+    /// Where the audio callback queues the loudness of each block it
+    /// captures: a bounded channel, so the real-time thread never waits.
+    level_sender: SyncSender<LevelBlock>,
+    level_receiver: Mutex<Receiver<LevelBlock>>,
     /// The loudness of the recent captured audio, oldest first.
     level_blocks: Mutex<VecDeque<LevelBlock>>,
     /// Dictation resumes once the background work running now (a
@@ -128,6 +113,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Arc<Self> {
+        let (level_sender, level_receiver) = sync_channel(QUEUED_LEVEL_BLOCKS);
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
@@ -146,8 +132,8 @@ impl AppState {
             mic_active: AtomicBool::new(false),
             dictation_resuming: AtomicBool::new(false),
             microphone_available: AtomicBool::new(true),
-            speech_analysis_available: AtomicBool::new(false),
-            speech_windows: Mutex::new(VecDeque::new()),
+            level_sender,
+            level_receiver: Mutex::new(level_receiver),
             level_blocks: Mutex::new(VecDeque::new()),
         })
     }
@@ -162,53 +148,27 @@ impl AppState {
         self.is_recording() || self.is_dictation_resuming()
     }
 
-    pub fn set_speech_analysis_available(&self, available: bool) {
-        self.speech_analysis_available.store(available, Ordering::Relaxed);
+    /// Where to queue the loudness of each captured block. `try_send` on it
+    /// never waits, so the audio callback can use it: when the queue is full,
+    /// the block is dropped.
+    pub fn level_sender(&self) -> SyncSender<LevelBlock> {
+        self.level_sender.clone()
     }
 
-    /// The speech analysis results kept (`None` when speech analysis does
-    /// not run) and the loudness kept, oldest first.
-    pub fn audio_timeline(&self) -> AudioTimeline {
-        AudioTimeline {
-            speech: self.speech_analysis_available.load(Ordering::Relaxed).then(|| self.speech_windows()),
-            levels: self
-                .level_blocks
-                .lock()
-                .map(|blocks| blocks.iter().copied().collect())
-                .unwrap_or_default(),
-        }
-    }
-
-    /// Keeps `block`, dropping loudness older than
-    /// `LEVEL_BLOCK_KEEP_SECONDS` before it.
-    pub fn record_level_block(&self, block: LevelBlock) {
-        if let Ok(mut blocks) = self.level_blocks.lock() {
-            blocks.push_back(block);
-            while blocks.front().is_some_and(|oldest| oldest.end < block.end - LEVEL_BLOCK_KEEP_SECONDS) {
+    /// The loudness of the recent captured audio, oldest first: the blocks
+    /// kept and those queued since, dropping blocks older than
+    /// `LEVEL_BLOCK_KEEP_SECONDS` before the newest.
+    pub fn level_blocks(&self) -> Vec<LevelBlock> {
+        let (Ok(receiver), Ok(mut blocks)) = (self.level_receiver.lock(), self.level_blocks.lock()) else {
+            return Vec::new();
+        };
+        blocks.extend(receiver.try_iter());
+        if let Some(newest) = blocks.back().map(|block| block.end) {
+            while blocks.front().is_some_and(|oldest| oldest.end < newest - LEVEL_BLOCK_KEEP_SECONDS) {
                 blocks.pop_front();
             }
         }
-    }
-
-    pub fn speech_windows(&self) -> Vec<SpeechWindow> {
-        self.speech_windows
-            .lock()
-            .map(|windows| windows.iter().copied().collect())
-            .unwrap_or_default()
-    }
-
-    /// Keeps `window`, dropping results older than
-    /// `SPEECH_WINDOW_KEEP_SECONDS` before it.
-    pub fn record_speech_window(&self, window: SpeechWindow) {
-        if let Ok(mut windows) = self.speech_windows.lock() {
-            windows.push_back(window);
-            while windows
-                .front()
-                .is_some_and(|oldest| oldest.end < window.end - SPEECH_WINDOW_KEEP_SECONDS)
-            {
-                windows.pop_front();
-            }
-        }
+        blocks.iter().copied().collect()
     }
 
     pub fn set_microphone_available(&self, available: bool) {
@@ -481,33 +441,18 @@ mod tests {
     }
 
     #[test]
-    fn speech_results_are_kept_for_twenty_seconds_and_only_while_analysis_runs() {
-        use super::SpeechWindow;
-
-        let state = AppState::new();
-        let window = |end: f64| SpeechWindow { start: end - 0.5, end, confidence: 0.9 };
-        state.record_speech_window(window(10.0));
-        state.record_speech_window(window(29.0));
-        assert_eq!(state.audio_timeline().speech, None);
-        state.set_speech_analysis_available(true);
-        assert_eq!(state.audio_timeline().speech, Some(vec![window(10.0), window(29.0)]));
-        // A result 20.5 s after the first drops it.
-        state.record_speech_window(window(30.5));
-        assert_eq!(state.speech_windows(), vec![window(29.0), window(30.5)]);
-    }
-
-    #[test]
-    fn loudness_is_kept_for_two_seconds_whether_or_not_analysis_runs() {
+    fn queued_loudness_is_kept_for_two_seconds() {
         use super::LevelBlock;
 
         let state = AppState::new();
-        let block = |end: f64| LevelBlock { start: end - 0.01, end, mean_square: 0.25 };
-        state.record_level_block(block(10.0));
-        state.record_level_block(block(11.5));
-        assert_eq!(state.audio_timeline().levels, vec![block(10.0), block(11.5)]);
-        // A block 2.5 s after the first drops it.
-        state.record_level_block(block(12.5));
-        assert_eq!(state.audio_timeline().levels, vec![block(11.5), block(12.5)]);
+        let block = |end: f64| LevelBlock { start: end - 0.01, end, peak: 0.5 };
+        let sender = state.level_sender();
+        sender.try_send(block(10.0)).unwrap();
+        sender.try_send(block(11.5)).unwrap();
+        assert_eq!(state.level_blocks(), vec![block(10.0), block(11.5)]);
+        // Kept between reads; a block 2.5 s after the first drops it.
+        sender.try_send(block(12.5)).unwrap();
+        assert_eq!(state.level_blocks(), vec![block(11.5), block(12.5)]);
     }
 
     #[test]

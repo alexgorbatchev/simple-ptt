@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-30 11:51
-last_modified: 2026-09-30 13:29
+last_modified: 2026-09-30 14:20
 status: current
 ---
 
@@ -8,84 +8,76 @@ status: current
 
 This reference is for anyone changing the overlay's pill meter (`ui.meter_style = "pills"`). It records what the user asked for, in their words, and which part of the design answers each request, so that no part is "simplified" away without knowing what it protects. Keep it current with the code.
 
-The pills are a picture of someone talking, not a waveform. Accuracy is not a goal. What matters is what the user sees: speech has to be obvious at a glance, and nothing else may look like speech.
+The pills are a picture of someone talking, not a waveform. Accuracy is not a goal. What matters is what the user sees: the pills respond at once to the voice, speech is obvious at a glance, and the room's noise stays quiet.
 
 ## Requirements
 
 Each requirement is quoted from the user and followed by what implements it.
 
-### R1. Soft speech in a quiet office must fill the pills
+### R1. The pills respond at once, like Codex's voice meter
+
+> "the only issue is that the pills indicating speach feel delayed by noticable amount, why?"
+>
+> "lets drop VAD all together implement codex algo"
+
+Codex's meter (`openai/codex`, `codex-rs`) keeps the loudest sample since its last read (`record_peak` in `voice-host/src/devices.rs`), reads and resets it every 100 ms (`take_microphone_peak` in `realtime-webrtc/src/session.rs`), and draws it at once. The pills do the same, with the adaptive range (R2) and texture (R4) the user chose to keep:
+
+- One pill stands for 100 ms (`PILL_SECONDS`), Codex's interval. The user chose it over the earlier 0.2 s ("100 ms like Codex"), which doubles the strip's speed to 67.5 pt/s.
+- A pill's loudness is the loudest sample of its time (`pill_loudness`): the peak of each captured block, which `encode_pcm_mono` in `src/audio/devices.rs` already measures after the gain.
+- The audio callback in `src/audio/stream.rs` queues each block's peak and time span (`LevelBlock`) through a bounded channel with `try_send`, which never waits, so the real-time thread stays real-time; a full queue drops blocks. The overlay drains it on each update (`AppState::level_blocks` in `src/state.rs`), keeping 2 s.
+- There is no speech classifier. A pill is painted as soon as its audio is in, at most `LATEST_PAINT_SECONDS` (0.225 s) after its time begins: its own 0.1 s, 50 ms for the last block of its time to arrive, and one overlay update (75 ms). It enters the column at `ENTRY_DELAY_SECONDS` (0.255 s), 30 ms later, for the paint to reach the screen. With the speech classifier the entry delay was 0.7 s (see Rejected approaches).
+- The 50 ms for the last block covers a callback block of up to 800 frames at 16 kHz. The capture uses the device's default buffer size, which has not been measured; a longer block makes pills rest as dots rather than change in view (R3).
+
+### R2. Soft speech in a quiet office fills the pills
 
 > "im in an office and i speak softly, the transpription works fine, but pills are barely ticking up, we need some kind of adaptive system here maybe?"
 
-`LoudnessRange` in `src/ui_meter/pill_levels.rs` adapts to the room and the speaker instead of using a fixed dBFS scale:
+`LoudnessRange` in `src/ui_meter/pill_levels.rs` adapts to the room and the speaker instead of Codex's fixed scale (a peak of 512 to 8192 in 65535, -42 to -18 dBFS), which reads a soft voice low. The user chose to keep it ("Codex peak, adaptive range"):
 
-- **Noise floor:** the quietest of the last 50 pills that were not speech (10 s), starting from a -50 dBFS prior. It learns only from pills that were not speech, so a long monologue never becomes its own floor: the voice's softest syllables would otherwise become the "floor" after 10 s of talking, turning half the speech into dots.
-- **Gate:** pills up to 6 dB above the floor (about twice its amplitude) rest as dots.
-- **Top of the range:** the 90th percentile of the last 50 speech pills, at least 12 dB above the gate. Pills map linearly in amplitude from the gate to the top.
-- **No audio:** a stretch in which the microphone delivered no audio (`PillLoudness::NoAudio`) teaches the range nothing. Counted as silence it would drop the floor to 0, and every sound would then clear the gate.
+- **Noise floor:** the quietest pill of the last 10 s (`floor_seconds`), starting from Codex's noise floor (-42 dBFS) as a prior. At 100 ms a pill, the gaps between words reach the room's noise, so the floor stays at the room however long someone talks, and follows the room within 10 s when it gets louder.
+- **Gate:** pills up to 6 dB above the floor (`noise_gate_db`, about twice its amplitude) rest as dots. A voice that starts before the room has been heard shows once it is 6 dB above the -42 dBFS prior; softer speech shows from the first gap between words.
+- **Top of the range:** the 90th percentile (`top_quantile`) of the pills above the gate in the last 10 s (`top_seconds`), at least 12 dB above the gate (`min_span_db`). Pills map linearly in amplitude from the gate to the top, so one loud word does not shrink the speech around it.
+- **No audio:** a stretch in which the microphone delivered nothing, and digital silence (peaks below -90 dBFS, a device delivering zeros), teach the range nothing (`PillLoudness::NoAudio`). Counted as a silent room, either would drop the floor so far that every sound would clear the gate.
 
-### R2. Pills already drawn never change
+### R3. Pills already drawn never change
 
 > "we need to make sure that painted pills remain stable, eg if i start softly but then get louder"
 >
 > "when speech is detected the pills that were already in view all of a sudden expand from 0 to 100, users shouldnt see this expansion effect, the pills sliding in from the side should already have the right height"
 
-- A pill's height is set once, from its own 0.2 s, and never recomputed when the range changes later.
-- A pill needs its loudness and its speech result before it can be painted. The speech classifier only answers for 0.5 s windows every 0.25 s, so a pill can wait up to about 0.45 s after its time begins.
-- The strip is drawn `ENTRY_DELAY_SECONDS` (0.7 s) to the right of the column (`right_anchor` in `src/ui_meter/pill_strip.rs`), so a pill enters the column 0.7 s after its time begins. The pool of recycled layers covers that extra distance (`pool_size`).
-- A pill not painted by `LATEST_PAINT_SECONDS` (0.6 s) rests as a dot for good, even if its result arrives later. The 0.1 s between the two is longer than the overlay's 75 ms between updates, so the height a pill enters with is already on screen.
-- The cost is that bars appear about 0.7 s after the sound.
+- A pill's height is set once, from its own 100 ms, and never recomputed when the range changes later.
+- The strip is drawn `ENTRY_DELAY_SECONDS` to the right of the column (`right_anchor` in `src/ui_meter/pill_strip.rs`), so a pill enters the column after its latest paint. The pool of recycled layers covers that extra distance (`pool_size`).
+- A pill not painted by `LATEST_PAINT_SECONDS` rests as a dot for good, even if its audio arrives later.
 
-Evidence: a probe of the debug tuner sampled every pill layer every 4 ms. In each of four runs, all 27 height changes happened while the pill was still right of the column, and none inside it, the fade included. With the entry delay disabled, all 27 happened inside the column, the growth the user reported (for example a dot growing from 4.75 to 8.34 pt at x 492.9 of 514).
+Evidence: a probe of the debug tuner sampled every pill layer every 4 ms for 6.5 s. In each of two runs, all 55 height changes happened while the pill was still right of the column, and none inside it, the fade included. With the entry delay disabled, all 55 happened inside the column, the growth the user reported (for example a dot growing from 4.75 to 12.35 pt at x 498.6 of 514).
 
-### R3. Pills move at the pace of speech, smoothly
-
-> "mooving too fast imo, i want bars to somewhat match the pace of speach"
->
-> "the pills movement is very jerky because we essentialy keep pills static and just resize to advance... lets make it so that the pill stripe visually moves at the speech pace from right to left, on right and left we should have a fadeout effect of maybe 25px... make this is implemented efficiently, dont make an image 100000px wide and move it"
-
-- One pill stands for 0.2 s (`PILL_SECONDS`), about one syllable: conversational English runs at 4 to 5 syllables a second.
-- The strip moves by one linear Core Animation translation that lasts 24 hours and has no timing function, so the render server moves it at the display's rate and the app does nothing per frame. Even the linear `CAMediaTimingFunction` put the strip up to 28 pt off (see `findings.md` in the `overlay-visual-debugging` skill).
-- Only enough pill layers to cover the column and the way in exist. A layer that leaves on the left becomes the next pill on the right.
-- The column fades pills out over 25 pt on the left (`EXIT_FADE_WIDTH`) and in over 8 pt on the right (`ENTRY_FADE_WIDTH`), through a gradient mask. The right-hand fade was 25 pt too, but pills enter final (R2), so it only delayed them: crossing it took 0.74 s at the strip's 33.75 pt/s, and 8 pt takes 0.24 s. The user asked for this after the pills felt late ("the pills indicating speach feel delayed by noticable amount"; "8 pt and keep 25 pt -> sure").
-- With Reduce Motion on, the strip steps one pill spacing at a time instead of gliding.
-
-### R4. Only speech raises the pills
-
-> "i wonder if there's a cheap way to recognize speech for the sound vis?"
-
-- Apple's SoundAnalysis built-in classifier (`SNClassifySoundRequest`, `SNClassifierIdentifierVersion1`) runs on its own thread in `src/audio/speech.rs`, over 0.5 s windows at 50% overlap. The thread publishes each window's "speech" confidence, and the pills count a window as speech when it reaches `PillTuning::speech_confidence` (0.5). Digital silence scores 0.20.
-- A pill is speech if any speech window overlaps it, so the pills turn on as soon as a word starts. Pills that are not speech (typing, coughs, a door, the room) rest as dots.
-- The same thread records each audio block's mean square (`LevelBlock` in `src/state.rs`), and the pills take their loudness from those blocks, not from the audio callback's smoothed meter level. It keeps doing so when the classifier cannot start; then every pill counts as speech, and only the gate separates sound from the room.
-
-Evidence (the "Telling speech from other sound" section of `findings.md`):
-
-| Detector | Speech from `say` judged speech | Loud noise, typing-like clicks judged speech |
-| --- | --- | --- |
-| WebRTC VAD (`webrtc-vad`, very aggressive) | 98% | 100% and 60% |
-| SoundAnalysis | 30 of 30 windows | 0 of 15 each |
-
-SoundAnalysis cost about 0.7% of one core.
-
-### R5. Speech reads as a strong up-and-down texture
+### R4. Speech reads as a strong up-and-down texture
 
 > "i would like there to be a strong visual indication in the pill wave of speech (eg up/down segments close by together, not just a continuous highs in a single block), i dont specifically care about actual accuracy, this is visualisation only for the user, not wave form analysis if that makes sense"
 
-- A speech pill's height is `texture(index) × (0.5 + 0.5 × loudness)`. Loudness only scales the pattern; it does not set it.
+- A pill above the gate is drawn `texture(index) × (0.5 + 0.5 × loudness)` (`loudness_share`). Loudness only scales the pattern; it does not set it. The user chose to keep the texture over Codex's plain levels ("Keep the texture").
 - `texture` alternates by pill index between a tall band (0.75 to 1.0) and a short band (0.15 to 0.4), with a height within the band from a hash of the index. That way it is random-looking but the same every time the pill is drawn.
-- Pauses between words, and everything that is not speech, are dots, which breaks the zigzag into word-length runs.
+- Gaps between words are dots, which breaks the zigzag into word-length runs. Without a speech classifier, any sound above the gate zigzags too, not only speech.
 
-Evidence: before this change, a simulation of speech recorded with `say` put 85% of the speech pills at 95% of full height or more (the smoothed level's peak per pill, on a dB range whose top rose at once to the loudest speech). With per-pill RMS on the linear range above, 22% reached that height, and the spread held for speech 18 dB softer. On screen, the tuner's last probe showed `▆▃▆▃▅▃▆▃▆··▃▅▃▅▃▅▃▅▃▅··▄▆▃▆`: every pair of neighbouring speech pills differed by 2 pt or more.
+Evidence: on screen, the tuner's last probe showed `▇▃▆▃·▃▆▃▆▃·▃▆▄▆▃·▃▆▄···▄▇▃█▄▅▄▆▄█▃▅▃█▄▇▄▅▃█▄···`: 56 of 58 pairs of neighbouring raised pills differed by 2 pt or more, and 3 of 65 raised pills reached full height.
+
+### R5. Pills move smoothly, fading at the edges
+
+> "the pills movement is very jerky because we essentialy keep pills static and just resize to advance... lets make it so that the pill stripe visually moves at the speech pace from right to left, on right and left we should have a fadeout effect of maybe 25px... make this is implemented efficiently, dont make an image 100000px wide and move it"
+
+- The strip moves by one linear Core Animation translation that lasts 24 hours and has no timing function, so the render server moves it at the display's rate and the app does nothing per frame. Even the linear `CAMediaTimingFunction` put the strip up to 28 pt off (see `findings.md` in the `overlay-visual-debugging` skill).
+- Only enough pill layers to cover the column and the way in exist. A layer that leaves on the left becomes the next pill on the right.
+- The column fades pills out over 25 pt on the left (`EXIT_FADE_WIDTH`) and in over 8 pt on the right (`ENTRY_FADE_WIDTH`), through a gradient mask. The right-hand fade was 25 pt too, but pills enter final (R3), so it only delayed them. The user asked for 8 pt after the pills felt late ("8 pt and keep 25 pt -> sure"). At 67.5 pt/s, a pill is fully shown 0.19 s after it enters.
+- With Reduce Motion on, the strip steps one pill spacing at a time instead of gliding.
 
 ### R6. The values can be tuned against the real room
 
 > "it's showing ambient noise currently too , can we add controls for it to the debug window so i can tune?"
 
-- Every value above that decides what counts as speech or noise, and how the texture looks, is a field of `PillTuning` in `src/ui_meter/pill_tuning.rs`, and its `Default` holds the values in use: `speech_confidence`, `noise_gate_db`, `min_span_db`, `floor_seconds`, `top_quantile`, `top_seconds`, `loudness_share`, and the two bands (`tall_low`, `tall_high`, `short_low`, `short_high`).
-- Debug mode (`just debug-overlay`) has a slider for each, in its pills column. A new value applies to the pills painted from then on; pills already drawn keep their height (R2).
-- Its voice picker drives the meter from the synthetic voice or from the microphone. The microphone is the one in the user's `[mic]` config, captured through the app's own `AudioController`, so the room's noise and the real classifier drive the pills. An idle transcription worker takes the dictation audio and drops it, because no session starts.
-- A readout shows the noise floor, the gate and the top of the range in dBFS, and the latest speech confidence, so a noise that raises the pills can be traced to the gate or to the classifier.
+- Every value above that decides what counts as noise, and how the texture looks, is a field of `PillTuning` in `src/ui_meter/pill_tuning.rs`, and its `Default` holds the values in use: `noise_gate_db`, `min_span_db`, `floor_seconds`, `top_quantile`, `top_seconds`, `loudness_share`, and the two bands (`tall_low`, `tall_high`, `short_low`, `short_high`).
+- Debug mode (`just debug-overlay`) has a slider for each, in its pills column. A new value applies to the pills painted from then on; pills already drawn keep their height (R3).
+- Its voice picker drives the meter from the synthetic voice or from the microphone. The microphone is the one in the user's `[mic]` config, captured through the app's own `AudioController`, so the room's real noise drives the pills. An idle transcription worker takes the dictation audio and drops it, because no session starts.
+- A readout shows the noise floor, the gate, the top of the range, and the latest block's peak, in dBFS, so a sound that raises the pills can be compared with the gate. Its digits have one width and its width is fixed, so its changing numbers do not move the controls.
 - "Copy values" copies the pill values with the glass values. The values the user settles on become the `PillTuning` defaults.
 
 ## Where the parts live
@@ -93,16 +85,18 @@ Evidence: before this change, a simulation of speech recorded with `say` put 85%
 | Part | File |
 | --- | --- |
 | Heights, range, texture, paint deadline | `src/ui_meter/pill_levels.rs` |
-| Strip motion, entry delay, layer pool, fade | `src/ui_meter/pill_strip.rs` |
-| Converting the audio timeline to the strip's clock | `src/ui_meter.rs` (`push_pill`) |
-| Speech classification and block loudness | `src/audio/speech.rs` |
-| Kept speech results (20 s) and loudness (2 s) | `src/state.rs` (`AudioTimeline`) |
+| Strip motion, entry delay, layer pool, fades | `src/ui_meter/pill_strip.rs` |
 | The tunable values and their defaults | `src/ui_meter/pill_tuning.rs` (`PillTuning`) |
+| Converting the loudness to the strip's clock | `src/ui_meter.rs` (`push_pill`) |
+| Each block's peak, queued from the audio callback | `src/audio/stream.rs` |
+| The loudness queue, and the loudness kept (2 s) | `src/state.rs` (`level_sender`, `level_blocks`) |
 | Synthetic voice and live microphone for debug mode | `src/overlay/dev/tuner.rs` (`publish_voice`, `Microphone`) |
 
 ## Rejected approaches
 
+- **A speech classifier gating the pills.** Apple's SoundAnalysis classifier (`SNClassifySoundRequest`, 0.5 s windows at 50% overlap) told speech from other sound well: speech from `say` in 30 of 30 windows, and loud noise, quiet hiss, keyboard-like clicks and hum in 0 of 15 each, at about 0.7% of one core. But a pill had to wait for a window covering its end, up to about 0.45 s, so pills entered the column 0.7 s after their time began. The user found it "delayed by noticable amount" and chose Codex's approach instead.
+- **WebRTC VAD.** Run at 16 kHz on 20 ms frames, most aggressive, it judged speech from `say` 98% voiced, but also loud white noise 100% and keyboard-like clicks 60%.
 - **Growing pills in the right-hand fade.** An earlier version let pills get their height in the 25 pt fade, assuming the fade hid the change. It does not: the user saw pills grow from dots to full height.
-- **The smoothed meter level in dBFS, peak per pill, with a top that rises at once to the loudest speech.** Most speech pills pinned at full height (85% at 95% or more), so speech read as one solid block.
-- **Codex's meter (the peak sample of each interval, mapped linearly).** Its voice strip was the user's reference for the look. Taking each pill's peak sample on the adaptive linear range above left 35% of the pills from the same recording at 95% of full height or more. Codex's own scale is fixed (noise floor 512/65535 to full scale 8192/65535), which does not adapt to a soft voice.
-- **WebRTC VAD.** It called loud noise and keyboard clicks speech (see R4).
+- **The smoothed meter level in dBFS, peak per pill, with a top that rises at once to the loudest speech.** Most speech pills pinned at full height (85% at 95% or more in a simulation of speech from `say`), so speech read as one solid block.
+- **Codex's fixed scale.** A peak of 512 to 8192 in 65535 (-42 to -18 dBFS) reads a soft voice in a quiet office low, the first complaint (R2).
+- **Loudness alone, without the texture.** Taking each pill's peak on the adaptive range left 35% of the pills (0.2 s each) from the same recording at 95% of full height or more, so continuous speech read as a block again (R4).

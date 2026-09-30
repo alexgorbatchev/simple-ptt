@@ -1,6 +1,5 @@
 pub mod devices;
 mod input_choice;
-mod speech;
 pub mod stream;
 
 pub use devices::*;
