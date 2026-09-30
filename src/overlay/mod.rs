@@ -31,7 +31,7 @@ use crate::state::{
     AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
 };
-use crate::ui_meter::{self, UiMeterView};
+use crate::ui_meter::{self, PillRange, PillTuning, UiMeterView};
 use glass::{
     correction_resting_frame, plan_correction_motion, CorrectionEffect, CorrectionPhase,
     GlassTuning, OverlayGlass,
@@ -362,6 +362,19 @@ impl OverlayWindow {
 
     pub fn glass_tuning(&self) -> GlassTuning {
         self.glass.tuning()
+    }
+
+    pub fn pill_tuning(&self) -> PillTuning {
+        self.ui_meter_view.pill_tuning()
+    }
+
+    pub fn set_pill_tuning(&self, tuning: PillTuning) {
+        self.ui_meter_view.set_pill_tuning(tuning);
+    }
+
+    /// The range the next pill is drawn from.
+    pub fn pill_range_now(&self) -> PillRange {
+        self.ui_meter_view.pill_range_now()
     }
 
     pub fn halo_is_progressive(&self) -> bool {

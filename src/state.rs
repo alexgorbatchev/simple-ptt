@@ -57,13 +57,14 @@ const SPEECH_WINDOW_KEEP_SECONDS: f64 = 20.0;
 /// to be painted.
 const LEVEL_BLOCK_KEEP_SECONDS: f64 = 2.0;
 
-/// One speech analysis result: whether the captured audio from `start` to
-/// `end`, on the media clock (`CACurrentMediaTime`), was speech.
+/// One speech analysis result: how confident the classifier was, from 0 to
+/// 1, that the captured audio from `start` to `end`, on the media clock
+/// (`CACurrentMediaTime`), was speech.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpeechWindow {
     pub start: f64,
     pub end: f64,
-    pub speech: bool,
+    pub confidence: f64,
 }
 
 /// The loudness of one block of captured audio, from `start` to `end` on the
@@ -484,7 +485,7 @@ mod tests {
         use super::SpeechWindow;
 
         let state = AppState::new();
-        let window = |end: f64| SpeechWindow { start: end - 0.5, end, speech: true };
+        let window = |end: f64| SpeechWindow { start: end - 0.5, end, confidence: 0.9 };
         state.record_speech_window(window(10.0));
         state.record_speech_window(window(29.0));
         assert_eq!(state.audio_timeline().speech, None);

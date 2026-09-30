@@ -17,6 +17,10 @@ use crate::MainThreadMarker;
 
 mod pill_levels;
 mod pill_strip;
+mod pill_tuning;
+
+pub use pill_levels::PillRange;
+pub use pill_tuning::PillTuning;
 
 pub const CLIP_INDICATOR_BORDER_WIDTH: f64 = 1.0;
 pub const CLIP_INDICATOR_CORNER_RADIUS: f64 = 4.0;
@@ -121,6 +125,20 @@ impl UiMeterView {
 
     pub fn style(&self) -> UiMeterStyle {
         self.meter_style.get()
+    }
+
+    pub fn pill_tuning(&self) -> PillTuning {
+        self.pill_levels.borrow().tuning()
+    }
+
+    /// Draws the pills painted from now on with `tuning`.
+    pub fn set_pill_tuning(&self, tuning: PillTuning) {
+        self.pill_levels.borrow_mut().set_tuning(tuning);
+    }
+
+    /// The range the next pill is drawn from.
+    pub fn pill_range_now(&self) -> PillRange {
+        self.pill_levels.borrow().range_now()
     }
 
     /// Whether the meter spans the whole text column rather than a centred
@@ -277,7 +295,7 @@ impl UiMeterView {
                 .map(|window| SpeechSpan {
                     start: window.start - started_at,
                     end: window.end - started_at,
-                    speech: window.speech,
+                    confidence: window.confidence,
                 })
                 .collect()
         });

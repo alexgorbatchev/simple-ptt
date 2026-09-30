@@ -29,8 +29,6 @@ use crate::state::{AppState, LevelBlock, SpeechWindow};
 const WINDOW_SECONDS: f64 = 0.5;
 /// How much successive windows overlap: a result every 0.25 s.
 const WINDOW_OVERLAP: f64 = 0.5;
-/// A window whose "speech" confidence reaches this is speech.
-const SPEECH_CONFIDENCE: f64 = 0.5;
 /// Blocks the analysis thread may fall behind by before blocks are dropped:
 /// about two seconds of audio at the usual callback size.
 const QUEUED_BLOCKS: usize = 64;
@@ -97,8 +95,8 @@ struct ObserverIvars {
 }
 
 define_class!(
-    /// Receives the classifier's results and publishes whether each window
-    /// was speech.
+    /// Receives the classifier's results and publishes how confident it was
+    /// that each window was speech.
     #[unsafe(super(NSObject))]
     #[name = "SimplePttSpeechObserver"]
     #[ivars = ObserverIvars]
@@ -145,7 +143,7 @@ impl SpeechObserver {
         self.ivars().state.record_speech_window(SpeechWindow {
             start: clock.media_time(start),
             end: clock.media_time(start + duration),
-            speech: confidence >= SPEECH_CONFIDENCE,
+            confidence,
         });
     }
 }
@@ -287,7 +285,9 @@ mod tests {
         }
         let windows = state.speech_windows();
         assert!(windows.len() >= 3, "{windows:?}");
-        assert!(windows.iter().all(|window| !window.speech), "{windows:?}");
+        // Digital silence measured 0.20 on macOS 26.6: below the default
+        // threshold (`PillTuning::speech_confidence`, 0.5).
+        assert!(windows.iter().all(|window| window.confidence < 0.5), "{windows:?}");
         // The windows sit within the two seconds the audio arrived in, each
         // half a second long.
         for window in &windows {

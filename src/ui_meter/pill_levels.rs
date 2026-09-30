@@ -9,6 +9,8 @@
 
 use std::collections::VecDeque;
 
+use super::pill_tuning::PillTuning;
+
 /// How long each pill stands for: about one syllable, since conversational
 /// English runs at 4 to 5 syllables a second.
 pub(super) const PILL_SECONDS: f64 = 0.2;
@@ -26,39 +28,19 @@ pub(super) const ENTRY_DELAY_SECONDS: f64 = LATEST_PAINT_SECONDS + 0.1;
 /// as a pill heard at the start: it holds the floor below speech that begins
 /// before the room was heard, until it leaves the floor window.
 const INITIAL_FLOOR: f32 = 0.003_162_278;
-/// The noise floor is the quietest of the last this many pills that were not
-/// speech (10 s of them), so it stays at the room's noise however long
-/// someone talks, and follows the room within 10 s when it gets louder.
-/// Without speech analysis every pill counts, and speech pauses for breath
-/// well within it.
-const FLOOR_PILLS: usize = 50;
-/// Pills up to this far above the noise floor (6 dB) rest as dots.
-const NOISE_GATE_RATIO: f32 = 2.0;
-/// The least distance from the gate to the top of the range (12 dB), so
-/// background noise is never stretched to full height.
-const MIN_SPAN_RATIO: f32 = 4.0;
-/// The top of the range is this share of the recent speech pills, so one
-/// loud word does not shrink the speech around it.
-const TOP_QUANTILE: f64 = 0.9;
-/// Speech pills the top is taken over: the last 10 s of speech.
-const TOP_PILLS: usize = 50;
-/// How much of a speech pill's height its loudness decides; the rest is
-/// always drawn, so the softest speech still shows its texture.
-const LOUDNESS_SHARE: f32 = 0.5;
-/// The texture's two bands: pills alternate between a tall one and a short
-/// one, at a random height within each.
-const TALL_BAND: (f32, f32) = (0.75, 1.0);
-const SHORT_BAND: (f32, f32) = (0.15, 0.4);
 
 /// The span of loudness, in amplitude (RMS, 1 is full scale), that the pills
-/// map linearly from rest to full height: from `NOISE_GATE_RATIO` above the
-/// noise floor to `TOP_QUANTILE` of the recent speech.
+/// map linearly from rest to full height: from the noise gate above the noise
+/// floor to a quantile of the recent speech (`PillTuning`). The floor is the
+/// quietest of the recent pills that were not speech, so it stays at the
+/// room's noise however long someone talks, and follows the room when it
+/// gets louder. Without speech analysis every pill counts, and speech pauses
+/// for breath well within the floor's window.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct LoudnessRange {
-    /// The loudness of the last `FLOOR_PILLS` pills the floor learns from,
-    /// oldest first.
+    /// The loudness of the recent pills the floor learns from, oldest first.
     recent: VecDeque<f32>,
-    /// The last `TOP_PILLS` speech pills' loudness above the gate.
+    /// The recent speech pills' loudness above the gate, oldest first.
     speech: VecDeque<f32>,
 }
 
@@ -71,18 +53,18 @@ impl Default for LoudnessRange {
 impl LoudnessRange {
     /// Takes in the loudness of a pill of the room's sound: the noise floor
     /// follows it.
-    fn observe(&mut self, rms: f32) {
+    fn observe(&mut self, rms: f32, tuning: &PillTuning) {
         self.recent.push_back(rms);
-        while self.recent.len() > FLOOR_PILLS {
+        while self.recent.len() > tuning.floor_pills() {
             self.recent.pop_front();
         }
     }
 
     /// Takes in a speech pill's loudness: the top of the range follows it.
-    fn hear_speech(&mut self, rms: f32) {
-        if rms > self.gate() {
+    fn hear_speech(&mut self, rms: f32, tuning: &PillTuning) {
+        if rms > self.gate(tuning) {
             self.speech.push_back(rms);
-            while self.speech.len() > TOP_PILLS {
+            while self.speech.len() > tuning.top_pills() {
                 self.speech.pop_front();
             }
         }
@@ -90,33 +72,53 @@ impl LoudnessRange {
 
     /// Where `rms` falls in the range: 0 at or below the gate, 1 at or above
     /// the top, linear in amplitude between.
-    fn height(&self, rms: f32) -> f32 {
-        let gate = self.gate();
-        ((rms - gate) / (self.top() - gate)).clamp(0.0, 1.0)
+    fn height(&self, rms: f32, tuning: &PillTuning) -> f32 {
+        let gate = self.gate(tuning);
+        ((rms - gate) / (self.top(tuning) - gate)).clamp(0.0, 1.0)
     }
 
-    fn gate(&self) -> f32 {
-        self.recent.iter().copied().fold(f32::INFINITY, f32::min) * NOISE_GATE_RATIO
+    fn floor(&self) -> f32 {
+        self.recent.iter().copied().fold(f32::INFINITY, f32::min)
     }
 
-    fn top(&self) -> f32 {
-        let least = self.gate() * MIN_SPAN_RATIO;
+    fn gate(&self, tuning: &PillTuning) -> f32 {
+        self.floor() * tuning.gate_ratio()
+    }
+
+    fn top(&self, tuning: &PillTuning) -> f32 {
+        let least = self.gate(tuning) * tuning.min_span_ratio();
         let mut speech: Vec<f32> = self.speech.iter().copied().collect();
         if speech.is_empty() {
             return least;
         }
         speech.sort_by(f32::total_cmp);
-        let index = ((speech.len() - 1) as f64 * TOP_QUANTILE).round() as usize;
+        let index = ((speech.len() - 1) as f64 * tuning.top_quantile.clamp(0.0, 1.0)).round() as usize;
         speech[index].max(least)
     }
+}
+
+/// The range as it stands, in dBFS, for debug mode's readout.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PillRange {
+    pub floor_db: f32,
+    pub gate_db: f32,
+    pub top_db: f32,
+}
+
+fn decibels(amplitude: f32) -> f32 {
+    20.0 * amplitude.max(1e-9).log10()
 }
 
 /// Pill `index`'s place in the speech texture: even pills in the tall band,
 /// odd pills in the short one, at a height within it that is random but the
 /// same every time for the same pill.
-fn texture(index: u64) -> f32 {
-    let (low, high) = if index % 2 == 0 { TALL_BAND } else { SHORT_BAND };
-    low + ((high - low) * unit_hash(index))
+fn texture(index: u64, tuning: &PillTuning) -> f32 {
+    let (low, high) = if index % 2 == 0 {
+        (tuning.tall_low, tuning.tall_high)
+    } else {
+        (tuning.short_low, tuning.short_high)
+    };
+    (low + ((high - low) * f64::from(unit_hash(index)))) as f32
 }
 
 /// A number in [0, 1) that looks random but depends only on `value`
@@ -129,13 +131,13 @@ fn unit_hash(value: u64) -> f32 {
     (hash >> 40) as f32 / (1u64 << 24) as f32
 }
 
-/// One speech analysis result: whether the audio from `start` to `end`, on
-/// the strip's clock, was speech.
+/// One speech analysis result: how confident the classifier was that the
+/// audio from `start` to `end`, on the strip's clock, was speech.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct SpeechSpan {
     pub(super) start: f64,
     pub(super) end: f64,
-    pub(super) speech: bool,
+    pub(super) confidence: f64,
 }
 
 /// One block of captured audio, from `start` to `end` on the strip's clock,
@@ -162,12 +164,13 @@ pub(super) struct PillAudio<'a> {
 const EPSILON: f64 = 1e-6;
 
 /// Whether the pill from `start` to `end` was speech: undecided until a
-/// result reaches its end, then speech if any result overlapping it was.
-fn pill_speech((start, end): (f64, f64), windows: &[SpeechSpan]) -> Option<bool> {
+/// result reaches its end, then speech if any result overlapping it reached
+/// `threshold`.
+fn pill_speech((start, end): (f64, f64), windows: &[SpeechSpan], threshold: f64) -> Option<bool> {
     windows.iter().any(|window| window.end >= end - EPSILON).then(|| {
-        windows
-            .iter()
-            .any(|window| window.speech && window.start < end - EPSILON && window.end > start + EPSILON)
+        windows.iter().any(|window| {
+            window.confidence >= threshold && window.start < end - EPSILON && window.end > start + EPSILON
+        })
     })
 }
 
@@ -212,6 +215,7 @@ fn pill_loudness((start, end): (f64, f64), levels: &[LevelSpan]) -> PillLoudness
 #[derive(Debug)]
 pub(super) struct PillLevels {
     range: LoudnessRange,
+    tuning: PillTuning,
     /// Pills `open_index - len + 1` to `open_index`.
     history: Vec<f32>,
     open_index: u64,
@@ -223,6 +227,7 @@ impl PillLevels {
     pub(super) fn new(count: usize) -> Self {
         Self {
             range: LoudnessRange::default(),
+            tuning: PillTuning::default(),
             history: vec![0.0; count],
             open_index: 0,
             pending: VecDeque::new(),
@@ -255,7 +260,9 @@ impl PillLevels {
         while let Some(pill) = self.pending.front().copied() {
             let span = (pill as f64 * PILL_SECONDS, (pill + 1) as f64 * PILL_SECONDS);
             let loudness = pill_loudness(span, audio.levels);
-            let speech = audio.speech.map_or(Some(true), |windows| pill_speech(span, windows));
+            let speech = audio
+                .speech
+                .map_or(Some(true), |windows| pill_speech(span, windows, self.tuning.speech_confidence));
             let late = at >= span.0 + LATEST_PAINT_SECONDS;
             let height = match (loudness, speech) {
                 (PillLoudness::NoAudio, _) => 0.0,
@@ -280,17 +287,37 @@ impl PillLevels {
     /// or from every pill when speech was not `analysed`.
     fn hear(&mut self, index: u64, rms: f32, speech: bool, analysed: bool) -> f32 {
         if !speech || !analysed {
-            self.range.observe(rms);
+            self.range.observe(rms, &self.tuning);
         }
         if !speech {
             return 0.0;
         }
-        self.range.hear_speech(rms);
-        let loudness = self.range.height(rms);
+        self.range.hear_speech(rms, &self.tuning);
+        let loudness = self.range.height(rms, &self.tuning);
         if loudness <= 0.0 {
             return 0.0;
         }
-        texture(index) * ((1.0 - LOUDNESS_SHARE) + (LOUDNESS_SHARE * loudness))
+        let share = self.tuning.loudness_share.clamp(0.0, 1.0) as f32;
+        texture(index, &self.tuning) * ((1.0 - share) + (share * loudness))
+    }
+
+    /// Draws the pills painted from now on with `tuning`; those painted keep
+    /// their height.
+    pub(super) fn set_tuning(&mut self, tuning: PillTuning) {
+        self.tuning = tuning;
+    }
+
+    pub(super) fn tuning(&self) -> PillTuning {
+        self.tuning
+    }
+
+    /// The range the next pill is drawn from.
+    pub(super) fn range_now(&self) -> PillRange {
+        PillRange {
+            floor_db: decibels(self.range.floor()),
+            gate_db: decibels(self.range.gate(&self.tuning)),
+            top_db: decibels(self.range.top(&self.tuning)),
+        }
     }
 
     /// The index of the open pill.
@@ -370,7 +397,7 @@ mod tests {
             for pill in 0..pills {
                 let (start, end) = (self.pills as f64 * PILL_SECONDS, (self.pills + 1) as f64 * PILL_SECONDS);
                 self.levels.push(LevelSpan { start, end, mean_square: amplitude(db(pill)).powi(2) });
-                self.windows.push(SpeechSpan { start, end, speech });
+                self.windows.push(SpeechSpan { start, end, confidence: if speech { 1.0 } else { 0.0 } });
                 self.pills += 1;
             }
             self
@@ -380,7 +407,7 @@ mod tests {
         /// nothing, and the analysis heard no speech.
         fn pause(&mut self, pills: usize) -> &mut Self {
             let (start, end) = (self.pills as f64 * PILL_SECONDS, (self.pills + pills) as f64 * PILL_SECONDS);
-            self.windows.push(SpeechSpan { start, end, speech: false });
+            self.windows.push(SpeechSpan { start, end, confidence: 0.0 });
             self.pills += pills;
             self
         }
@@ -633,13 +660,129 @@ mod tests {
 
     #[test]
     fn a_pills_speech_is_decided_once_a_window_reaches_its_end() {
-        let window = |start: f64, end: f64, speech: bool| SpeechSpan { start, end, speech };
+        let window = |start: f64, end: f64, speech: bool| SpeechSpan { start, end, confidence: if speech { 0.9 } else { 0.1 } };
         let pill = (0.2, 0.4);
-        assert_eq!(pill_speech(pill, &[window(0.0, 0.3, true)]), None);
-        assert_eq!(pill_speech(pill, &[window(0.0, 0.3, true), window(0.25, 0.75, false)]), Some(true));
-        assert_eq!(pill_speech(pill, &[window(0.25, 0.75, false)]), Some(false));
+        assert_eq!(pill_speech(pill, &[window(0.0, 0.3, true)], 0.5), None);
+        assert_eq!(pill_speech(pill, &[window(0.0, 0.3, true), window(0.25, 0.75, false)], 0.5), Some(true));
+        assert_eq!(pill_speech(pill, &[window(0.25, 0.75, false)], 0.5), Some(false));
         // A window that ends before the pill starts says nothing about it.
-        assert_eq!(pill_speech(pill, &[window(-0.4, 0.1, true), window(0.3, 0.8, false)]), Some(false));
+        assert_eq!(pill_speech(pill, &[window(-0.4, 0.1, true), window(0.3, 0.8, false)], 0.5), Some(false));
+    }
+
+    #[test]
+    fn a_window_is_speech_from_the_tuned_confidence() {
+        let pill = (0.2, 0.4);
+        let window = [SpeechSpan { start: 0.0, end: 0.5, confidence: 0.6 }];
+        assert_eq!(pill_speech(pill, &window, 0.5), Some(true));
+        assert_eq!(pill_speech(pill, &window, 0.7), Some(false));
+    }
+
+    /// `count` pills painted from the whole voice, analysed, with `tuning`.
+    fn painted_with(voice: &Voice, tuning: PillTuning) -> PillLevels {
+        let mut levels = PillLevels::new(76);
+        levels.set_tuning(tuning);
+        voice.play(&mut levels, true);
+        levels
+    }
+
+    #[test]
+    fn a_higher_noise_gate_rests_more_of_the_quiet_speech_as_dots() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(40, soft_speech, true);
+        let raised = |levels: &PillLevels| newest(levels, 35).iter().filter(|height| **height > 0.0).count();
+        let default = painted_with(&voice, PillTuning::default());
+        // A gate 19.5 dB above the -58 dBFS room (-38.5 dBFS) leaves only the
+        // two loudest syllables, -37 and -38 dBFS: two in seven.
+        let strict = painted_with(&voice, PillTuning { noise_gate_db: 19.5, ..PillTuning::default() });
+        assert_eq!(raised(&default), 35);
+        assert_eq!(raised(&strict), 10);
+    }
+
+    fn mean(heights: &[f32]) -> f32 {
+        heights.iter().sum::<f32>() / heights.len() as f32
+    }
+
+    #[test]
+    fn the_tuned_speech_confidence_decides_what_is_speech() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(10, soft_speech, true);
+        // The classifier was only 60% sure of the speech.
+        for window in voice.windows.iter_mut().filter(|window| window.confidence > 0.5) {
+            window.confidence = 0.6;
+        }
+        let strict = painted_with(&voice, PillTuning { speech_confidence: 0.7, ..PillTuning::default() });
+        assert!(max_of(painted_with(&voice, PillTuning::default()).heights()) > 0.0);
+        assert_eq!(max_of(strict.heights()), 0.0);
+    }
+
+    #[test]
+    fn a_shorter_floor_window_follows_a_louder_room_sooner() {
+        // The room gets 13 dB louder for 2 s, then soft speech at -40 dBFS.
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(10, |_| -45.0, false).say(10, |_| -40.0, true);
+        let short = painted_with(&voice, PillTuning { floor_seconds: 1.0, ..PillTuning::default() });
+        // Over 10 s the floor is still the quiet room, so the speech shows;
+        // over 1 s it is the louder room, and the speech is within its gate.
+        assert!(max_of(&newest(&painted_with(&voice, PillTuning::default()), 10)) > 0.0);
+        assert_eq!(max_of(&newest(&short, 10)), 0.0);
+    }
+
+    #[test]
+    fn a_shorter_top_window_lets_soft_speech_fill_the_pills_sooner_after_loud() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(10, |_| -20.0, true).say(20, |_| -40.0, true);
+        let short = painted_with(&voice, PillTuning { top_seconds: 1.0, ..PillTuning::default() });
+        let long = painted_with(&voice, PillTuning::default());
+        assert!(mean(&newest(&short, 10)) > mean(&newest(&long, 10)) + 0.2, "{:?} {:?}", newest(&short, 10), newest(&long, 10));
+    }
+
+    #[test]
+    fn a_lower_top_quantile_draws_more_speech_at_full_loudness() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(40, soft_speech, true);
+        let low = painted_with(&voice, PillTuning { top_quantile: 0.5, ..PillTuning::default() });
+        let high = painted_with(&voice, PillTuning { top_quantile: 1.0, ..PillTuning::default() });
+        assert!(mean(&newest(&low, 20)) > mean(&newest(&high, 20)) + 0.05);
+    }
+
+    #[test]
+    fn a_wider_least_span_keeps_quiet_speech_low() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(20, |_| -45.0, true);
+        let wide = painted_with(&voice, PillTuning { min_span_db: 30.0, ..PillTuning::default() });
+        let default = painted_with(&voice, PillTuning::default());
+        assert!(mean(&newest(&wide, 10)) + 0.1 < mean(&newest(&default, 10)));
+    }
+
+    #[test]
+    fn the_texture_takes_the_tuned_bands_and_loudness_share() {
+        let mut voice = Voice::new();
+        voice.say(10, office_noise, false).say(20, soft_speech, true);
+        let tuning = PillTuning {
+            loudness_share: 0.0,
+            tall_low: 0.8,
+            tall_high: 0.8,
+            short_low: 0.3,
+            short_high: 0.3,
+            ..PillTuning::default()
+        };
+        let levels = painted_with(&voice, tuning);
+        // Pills 10 to 29; 29 is the newest painted one.
+        for pill in 10..30u64 {
+            let height = levels.heights()[levels.slot(pill).unwrap()];
+            let expected = if pill % 2 == 0 { 0.8 } else { 0.3 };
+            assert!((height - expected).abs() < 1e-6, "pill {pill}: {height}");
+        }
+    }
+
+    #[test]
+    fn the_range_reads_out_in_decibels() {
+        let mut voice = Voice::new();
+        voice.say(60, |_| -58.0, false).say(10, |_| -30.0, true);
+        let range = voice.painted(true, 76).range_now();
+        assert!((range.floor_db + 58.0).abs() < 0.01, "{range:?}");
+        assert!((range.gate_db + 52.0).abs() < 0.01, "{range:?}");
+        assert!((range.top_db + 30.0).abs() < 0.01, "{range:?}");
     }
 
     #[test]

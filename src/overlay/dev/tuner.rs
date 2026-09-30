@@ -20,8 +20,11 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer};
 
 use crate::app::overlay_style_from_config;
-use crate::audio::normalize_meter_amplitude;
+use crate::audio::{normalize_meter_amplitude, AudioController};
 use crate::config::Config;
+use crate::settings::LiveConfigStore;
+use crate::transcription::{spawn_transcription_thread, TranscriptionController};
+use crate::ui_meter::PillTuning;
 use crate::overlay::OverlayStyle;
 use crate::settings_window::form::METER_STYLE_TITLES;
 use crate::overlay::glass::{
@@ -51,7 +54,7 @@ use crate::overlay::OverlayWindow;
 use crate::state::{
     normalized_meter_value,
     AppState, MicMeterSnapshot, OverlayText,
-    STATE_BUFFER_READY, STATE_ERROR, STATE_RECORDING, STATE_TRANSFORMING,
+    STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 const SCENARIOS: [&str; 4] = ["Recording", "Transforming", "Buffer ready", "Error"];
@@ -115,13 +118,13 @@ struct SwitchField {
     set: fn(&mut GlassTuning, bool),
 }
 
-/// A numeric `GlassTuning` value shown as a slider.
-struct NumberField {
+/// A numeric tuning value (`GlassTuning` or `PillTuning`) shown as a slider.
+struct NumberField<T = GlassTuning> {
     name: &'static str,
     min: f64,
     max: f64,
-    get: fn(&GlassTuning) -> f64,
-    set: fn(&mut GlassTuning, f64),
+    get: fn(&T) -> f64,
+    set: fn(&mut T, f64),
 }
 
 macro_rules! number {
@@ -207,7 +210,52 @@ static INTERNALS: [NumberField; 12] = [
     number!("highlight_curvature", 0.0, 2.0, internals.highlight_curvature),
 ];
 
-type NumberControl = (&'static NumberField, Retained<NSSlider>, Retained<NSTextField>);
+/// The pills' values (`PillTuning`), each with the range worth trying.
+static PILLS: [NumberField<PillTuning>; 11] = [
+    number!("speech_confidence", 0.05, 0.95, speech_confidence),
+    number!("noise_gate_db", 0.0, 30.0, noise_gate_db),
+    number!("min_span_db", 3.0, 30.0, min_span_db),
+    number!("floor_seconds", 1.0, 30.0, floor_seconds),
+    number!("top_quantile", 0.5, 1.0, top_quantile),
+    number!("top_seconds", 1.0, 30.0, top_seconds),
+    number!("loudness_share", 0.0, 1.0, loudness_share),
+    number!("tall_low", 0.0, 1.0, tall_low),
+    number!("tall_high", 0.0, 1.0, tall_high),
+    number!("short_low", 0.0, 1.0, short_low),
+    number!("short_high", 0.0, 1.0, short_high),
+];
+
+/// What drives the meter: the synthetic voice, or the microphone through the
+/// app's own audio path.
+const VOICES: [&str; 2] = ["Synthetic", "Microphone"];
+
+type NumberControl<T = GlassTuning> = (&'static NumberField<T>, Retained<NSSlider>, Retained<NSTextField>);
+
+/// The microphone, captured as the app captures it while recording: the
+/// audio controller builds the stream, whose callback feeds the meter and
+/// the speech analysis thread, and an idle transcription worker takes the
+/// dictation audio and drops it, since no session starts. Dropping it stops
+/// the capture.
+struct Microphone {
+    _audio: AudioController,
+    _transcription: TranscriptionController,
+}
+
+impl Microphone {
+    /// Captures the microphone set in the user's config (`[mic]`: device,
+    /// gain, sample rate), publishing to `state`.
+    fn start(state: &std::sync::Arc<AppState>) -> Result<Self, String> {
+        let config = Config { mic: crate::config::load_config().mic, ..Config::default() };
+        let store = LiveConfigStore::new(config.clone(), config, crate::config::config_path()?);
+        let transcription = spawn_transcription_thread(state.clone(), store.clone());
+        let (audio, error) = AudioController::new(state.clone(), transcription.clone(), store);
+        if let Some(error) = error {
+            return Err(error);
+        }
+        state.set_state(STATE_RECORDING);
+        Ok(Self { _audio: audio, _transcription: transcription })
+    }
+}
 
 struct Controls {
     scenario: Retained<NSPopUpButton>,
@@ -221,6 +269,10 @@ struct Controls {
     curve_range_value: Retained<NSTextField>,
     curve_values: Retained<NSTextField>,
     curve_presets: Vec<Retained<NSButton>>,
+    pill_numbers: Vec<NumberControl<PillTuning>>,
+    /// The range the next pill is drawn from, and the latest speech
+    /// confidence.
+    pill_readout: Retained<NSTextField>,
 }
 
 /// Whether the control called `name` has any effect under `tuning`.
@@ -268,6 +320,10 @@ pub struct TunerState {
     /// correction; switching between the two starts over.
     narration_step: Cell<u64>,
     narrating_correction: Cell<bool>,
+    /// The microphone while the voice picker says so, or why it could not
+    /// start.
+    microphone: RefCell<Option<Microphone>>,
+    microphone_error: RefCell<Option<String>>,
 }
 
 /// Whether going from `before` to `after` shows only when the overlay pops
@@ -346,6 +402,71 @@ fn format_curve(curve: HaloCurve) -> String {
 }
 
 impl TunerState {
+    fn read_pill_tuning(&self) -> PillTuning {
+        let controls = self.controls.borrow();
+        let controls = controls.as_ref().expect("controls built");
+        let mut tuning = self.overlay.pill_tuning();
+        for (field, slider, label) in &controls.pill_numbers {
+            let value = (slider.doubleValue() * 100.0).round() / 100.0;
+            (field.set)(&mut tuning, value);
+            label.setStringValue(&NSString::from_str(&format_value(value)));
+        }
+        tuning
+    }
+
+    fn show_pill_tuning(&self, tuning: &PillTuning) {
+        let controls = self.controls.borrow();
+        let controls = controls.as_ref().expect("controls built");
+        for (field, slider, label) in &controls.pill_numbers {
+            let value = (field.get)(tuning);
+            slider.setDoubleValue(value);
+            label.setStringValue(&NSString::from_str(&format_value(value)));
+        }
+    }
+
+    /// Shows the range the next pill is drawn from and the latest speech
+    /// confidence, or why the microphone could not start.
+    fn show_pill_readout(&self) {
+        let controls = self.controls.borrow();
+        let Some(controls) = controls.as_ref() else { return };
+        let text = match self.microphone_error.borrow().as_deref() {
+            Some(error) => format!("microphone: {error}"),
+            None => {
+                let range = self.overlay.pill_range_now();
+                let speech = self
+                    .app_state
+                    .speech_windows()
+                    .last()
+                    .map_or_else(|| "–".to_owned(), |window| format!("{:.2}", window.confidence));
+                format!(
+                    "floor {:.1} · gate {:.1} · top {:.1} dBFS · speech {speech}",
+                    range.floor_db, range.gate_db, range.top_db
+                )
+            }
+        };
+        controls.pill_readout.setStringValue(&NSString::from_str(&text));
+    }
+
+    /// Drives the meter from the microphone, or from the synthetic voice.
+    fn use_microphone(&self, on: bool) {
+        self.microphone.replace(None);
+        self.microphone_error.replace(None);
+        self.app_state.set_state(STATE_IDLE);
+        if !on {
+            self.app_state.set_speech_analysis_available(true);
+            return;
+        }
+        match Microphone::start(&self.app_state) {
+            Ok(microphone) => {
+                self.microphone.replace(Some(microphone));
+            }
+            Err(error) => {
+                log::error!("the tuner could not capture the microphone: {}", error);
+                self.microphone_error.replace(Some(error));
+            }
+        }
+    }
+
     fn read_tuning(&self) -> GlassTuning {
         let controls = self.controls.borrow();
         let controls = controls.as_ref().expect("controls built");
@@ -459,7 +580,7 @@ impl TunerState {
         self.app_state.record_speech_window(crate::state::SpeechWindow {
             start: now - SPEECH_WINDOW_SECONDS,
             end: now,
-            speech: voice_is_speaking(tick),
+            confidence: if voice_is_speaking(tick) { 1.0 } else { 0.0 },
         });
     }
 
@@ -498,14 +619,21 @@ impl TunerState {
         texts.set_overlay_text(format!("{final_text}{interim}").replace("Thursday", "Friday"));
         let preview_text = texts.overlay_text_snapshot();
 
-        let level_db = voice_level_db(tick);
-        self.publish_voice(tick, level_db);
-        let meter = MicMeterSnapshot {
-            clip_event_counter: 0,
-            level: normalized_meter_value(normalize_meter_amplitude(level_db)),
-            peak: normalized_meter_value(normalize_meter_amplitude(level_db + VOICE_CREST_DB)),
-            mic_active: true,
+        let meter = if self.microphone.borrow().is_some() {
+            // The audio thread publishes the meter and the speech analysis
+            // thread the loudness and speech results.
+            self.app_state.mic_meter_snapshot()
+        } else {
+            let level_db = voice_level_db(tick);
+            self.publish_voice(tick, level_db);
+            MicMeterSnapshot {
+                clip_event_counter: 0,
+                level: normalized_meter_value(normalize_meter_amplitude(level_db)),
+                peak: normalized_meter_value(normalize_meter_amplitude(level_db + VOICE_CREST_DB)),
+                mic_active: true,
+            }
         };
+        self.show_pill_readout();
         let quiet = MicMeterSnapshot::default();
         let (state, main, error, scenario_correction, mic) = match scenario {
             0 => (STATE_RECORDING, &main_text, "", &live, meter),
@@ -574,6 +702,20 @@ define_class!(
         #[unsafe(method(scenarioChanged:))]
         fn scenario_changed(&self, _sender: Option<&AnyObject>) {}
 
+        #[unsafe(method(pillChanged:))]
+        fn pill_changed(&self, _sender: Option<&AnyObject>) {
+            let state = &self.ivars().state;
+            let tuning = state.read_pill_tuning();
+            state.overlay.set_pill_tuning(tuning);
+        }
+
+        #[unsafe(method(voiceChanged:))]
+        fn voice_changed(&self, sender: Option<&AnyObject>) {
+            let Some(sender) = sender else { return };
+            let index: isize = unsafe { msg_send![sender, indexOfSelectedItem] };
+            self.ivars().state.use_microphone(index == 1);
+        }
+
         #[unsafe(method(meterChanged:))]
         fn meter_changed(&self, sender: Option<&AnyObject>) {
             let Some(sender) = sender else { return };
@@ -613,8 +755,8 @@ define_class!(
 
         #[unsafe(method(copyValues:))]
         fn copy_values(&self, _sender: Option<&AnyObject>) {
-            let tuning = self.ivars().state.overlay.glass_tuning();
-            let text = format!("{tuning:#?}");
+            let overlay = &self.ivars().state.overlay;
+            let text = format!("{:#?}\n{:#?}", overlay.glass_tuning(), overlay.pill_tuning());
             let pasteboard = NSPasteboard::generalPasteboard();
             pasteboard.clearContents();
             pasteboard.setString_forType(&NSString::from_str(&text), unsafe { NSPasteboardTypeString });
@@ -655,6 +797,8 @@ define_class!(
             if needs_repop(&before, &GlassTuning::default()) {
                 state.repop_after.set(Some(Instant::now()));
             }
+            state.show_pill_tuning(&PillTuning::default());
+            state.overlay.set_pill_tuning(PillTuning::default());
         }
 
         #[unsafe(method(quit:))]
@@ -705,12 +849,13 @@ fn popup(mtm: MainThreadMarker, titles: &[&str], target: &AnyObject, action: obj
     popup
 }
 
-fn slider_rows(
+fn slider_rows<T: 'static>(
     mtm: MainThreadMarker,
-    fields: &'static [NumberField],
+    fields: &'static [NumberField<T>],
     target: &AnyObject,
+    action: objc2::runtime::Sel,
     rows: &mut Vec<Retained<NSArray<NSView>>>,
-    numbers: &mut Vec<NumberControl>,
+    numbers: &mut Vec<NumberControl<T>>,
     names: &mut Vec<(&'static str, Retained<NSTextField>)>,
 ) {
     for field in fields {
@@ -720,7 +865,7 @@ fn slider_rows(
                 field.min,
                 field.max,
                 Some(target),
-                Some(sel!(controlChanged:)),
+                Some(action),
                 mtm,
             )
         };
@@ -777,6 +922,8 @@ pub fn run() {
         narrating: Cell::new(false),
         narration_step: Cell::new(0),
         narrating_correction: Cell::new(false),
+        microphone: RefCell::new(None),
+        microphone_error: RefCell::new(None),
     });
     let tuner = OverlayTuner::alloc(mtm).set_ivars(TunerIvars { state: state.clone() });
     let tuner: Retained<OverlayTuner> = unsafe { msg_send![super(tuner), init] };
@@ -813,10 +960,10 @@ pub fn run() {
     left_rows.push(NSArray::from_retained_slice(&[label(mtm, ""), view(&switches[0]), label(mtm, "")]));
     left_rows.push(NSArray::from_retained_slice(&[label(mtm, ""), view(&switches[1]), label(mtm, "")]));
     let mut numbers = Vec::new();
-    slider_rows(mtm, &GENERAL, target, &mut left_rows, &mut numbers, &mut names);
+    slider_rows(mtm, &GENERAL, target, sel!(controlChanged:), &mut left_rows, &mut numbers, &mut names);
 
     let mut right_rows = vec![NSArray::from_retained_slice(&[label(mtm, "glass internals"), view(&switches[2]), label(mtm, "")])];
-    slider_rows(mtm, &INTERNALS, target, &mut right_rows, &mut numbers, &mut names);
+    slider_rows(mtm, &INTERNALS, target, sel!(controlChanged:), &mut right_rows, &mut numbers, &mut names);
 
     let weak_state = Rc::downgrade(&state);
     let curve_editor = CurveEditor::new(mtm, move |_curve| {
@@ -886,8 +1033,19 @@ pub fn run() {
             .rowAtIndex(row)
             .mergeCellsInRange(objc2_foundation::NSRange::new(1, 2));
     }
+    let voice = popup(mtm, &VOICES, target, sel!(voiceChanged:));
+    let pill_readout = name_label(mtm, "");
+    let mut pill_rows = vec![NSArray::from_retained_slice(&[label(mtm, "pills voice"), view(&voice), label(mtm, "")])];
+    let mut pill_numbers = Vec::new();
+    slider_rows(mtm, &PILLS, target, sel!(pillChanged:), &mut pill_rows, &mut pill_numbers, &mut names);
+    pill_rows.push(NSArray::from_retained_slice(&[label(mtm, "pills range"), view(&pill_readout), label(mtm, "")]));
+    let pill_grid = grid(mtm, &pill_rows);
+    // The readout spans the slider and value columns.
+    pill_grid
+        .rowAtIndex(pill_grid.numberOfRows() - 1)
+        .mergeCellsInRange(objc2_foundation::NSRange::new(1, 2));
     let columns = NSStackView::stackViewWithViews(
-        &NSArray::from_retained_slice(&[view(&grid(mtm, &left_rows)), view(&right_grid)]),
+        &NSArray::from_retained_slice(&[view(&grid(mtm, &left_rows)), view(&right_grid), view(&pill_grid)]),
         mtm,
     );
     columns.setSpacing(24.0);
@@ -955,8 +1113,11 @@ pub fn run() {
         curve_range_value,
         curve_values,
         curve_presets,
+        pill_numbers,
+        pill_readout,
     }));
     state.show_tuning(&GlassTuning::default());
+    state.show_pill_tuning(&PillTuning::default());
 
     let size = container.fittingSize();
     let screen = NSScreen::mainScreen(mtm).expect("screen").visibleFrame();

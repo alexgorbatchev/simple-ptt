@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-30 11:51
-last_modified: 2026-09-30 11:51
+last_modified: 2026-09-30 12:03
 status: current
 ---
 
@@ -21,7 +21,7 @@ Each requirement is quoted from the user and followed by what implements it.
 `LoudnessRange` in `src/ui_meter/pill_levels.rs` adapts to the room and the speaker instead of using a fixed dBFS scale:
 
 - **Noise floor:** the quietest of the last 50 pills that were not speech (10 s), starting from a -50 dBFS prior. It learns only from pills that were not speech, so a long monologue never becomes its own floor: the voice's softest syllables would otherwise become the "floor" after 10 s of talking, turning half the speech into dots.
-- **Gate:** pills up to 6 dB above the floor (amplitude × 2) rest as dots.
+- **Gate:** pills up to 6 dB above the floor (about twice its amplitude) rest as dots.
 - **Top of the range:** the 90th percentile of the last 50 speech pills, at least 12 dB above the gate. Pills map linearly in amplitude from the gate to the top.
 - **No audio:** a stretch in which the microphone delivered no audio (`PillLoudness::NoAudio`) teaches the range nothing. Counted as silence it would drop the floor to 0, and every sound would then clear the gate.
 
@@ -55,7 +55,7 @@ Evidence: a probe of the debug tuner sampled every pill layer every 4 ms. In eac
 
 > "i wonder if there's a cheap way to recognize speech for the sound vis?"
 
-- Apple's SoundAnalysis built-in classifier (`SNClassifySoundRequest`, `SNClassifierIdentifierVersion1`) runs on its own thread in `src/audio/speech.rs`, over 0.5 s windows at 50% overlap. A window counts as speech when its "speech" confidence is at least 0.5.
+- Apple's SoundAnalysis built-in classifier (`SNClassifySoundRequest`, `SNClassifierIdentifierVersion1`) runs on its own thread in `src/audio/speech.rs`, over 0.5 s windows at 50% overlap. The thread publishes each window's "speech" confidence, and the pills count a window as speech when it reaches `PillTuning::speech_confidence` (0.5). Digital silence scores 0.20.
 - A pill is speech if any speech window overlaps it, so the pills turn on as soon as a word starts. Pills that are not speech (typing, coughs, a door, the room) rest as dots.
 - The same thread records each audio block's mean square (`LevelBlock` in `src/state.rs`), and the pills take their loudness from those blocks, not from the audio callback's smoothed meter level. It keeps doing so when the classifier cannot start; then every pill counts as speech, and only the gate separates sound from the room.
 
@@ -78,6 +78,16 @@ SoundAnalysis cost about 0.7% of one core.
 
 Evidence: before this change, a simulation of speech recorded with `say` put 85% of the speech pills at 95% of full height or more (the smoothed level's peak per pill, on a dB range whose top rose at once to the loudest speech). With per-pill RMS on the linear range above, 22% reached that height, and the spread held for speech 18 dB softer. On screen, the tuner's last probe showed `▆▃▆▃▅▃▆▃▆··▃▅▃▅▃▅▃▅▃▅··▄▆▃▆`: every pair of neighbouring speech pills differed by 2 pt or more.
 
+### R6. The values can be tuned against the real room
+
+> "it's showing ambient noise currently too , can we add controls for it to the debug window so i can tune?"
+
+- Every value above that decides what counts as speech or noise, and how the texture looks, is a field of `PillTuning` in `src/ui_meter/pill_tuning.rs`, and its `Default` holds the values in use: `speech_confidence`, `noise_gate_db`, `min_span_db`, `floor_seconds`, `top_quantile`, `top_seconds`, `loudness_share`, and the two bands (`tall_low`, `tall_high`, `short_low`, `short_high`).
+- Debug mode (`just debug-overlay`) has a slider for each, in its pills column. A new value applies to the pills painted from then on; pills already drawn keep their height (R2).
+- Its voice picker drives the meter from the synthetic voice or from the microphone. The microphone is the one in the user's `[mic]` config, captured through the app's own `AudioController`, so the room's noise and the real classifier drive the pills. An idle transcription worker takes the dictation audio and drops it, because no session starts.
+- A readout shows the noise floor, the gate and the top of the range in dBFS, and the latest speech confidence, so a noise that raises the pills can be traced to the gate or to the classifier.
+- "Copy values" copies the pill values with the glass values. The values the user settles on become the `PillTuning` defaults.
+
 ## Where the parts live
 
 | Part | File |
@@ -87,7 +97,8 @@ Evidence: before this change, a simulation of speech recorded with `say` put 85%
 | Converting the audio timeline to the strip's clock | `src/ui_meter.rs` (`push_pill`) |
 | Speech classification and block loudness | `src/audio/speech.rs` |
 | Kept speech results (20 s) and loudness (2 s) | `src/state.rs` (`AudioTimeline`) |
-| Synthetic voice for debug mode | `src/overlay/dev/tuner.rs` (`publish_voice`) |
+| The tunable values and their defaults | `src/ui_meter/pill_tuning.rs` (`PillTuning`) |
+| Synthetic voice and live microphone for debug mode | `src/overlay/dev/tuner.rs` (`publish_voice`, `Microphone`) |
 
 ## Rejected approaches
 
