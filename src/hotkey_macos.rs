@@ -1,16 +1,28 @@
-use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr::NonNull;
 
 use objc2_core_foundation::{kCFRunLoopCommonModes, CFMachPort, CFRunLoop};
 use objc2_core_graphics::{
-    CGEvent, CGEventField, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventTapProxy, CGEventType,
+    CGEvent, CGEventField, CGEventFlags, CGEventMask, CGEventTapLocation, CGEventTapOptions,
+    CGEventTapPlacement, CGEventTapProxy, CGEventType,
 };
 
 use super::HotkeyEvent;
+use crate::hotkey_binding::HotkeyModifiers;
 use crate::key::Key;
+
+/// The side bits of the modifier flags, one per modifier key
+/// (`NX_DEVICE*KEYMASK` in IOKit's `hidsystem/IOLLEvent.h`). Hardware
+/// keyboards set them alongside the device-independent masks.
+const LEFT_CONTROL_BIT: u64 = 0x0000_0001;
+const LEFT_SHIFT_BIT: u64 = 0x0000_0002;
+const RIGHT_SHIFT_BIT: u64 = 0x0000_0004;
+const LEFT_COMMAND_BIT: u64 = 0x0000_0008;
+const RIGHT_COMMAND_BIT: u64 = 0x0000_0010;
+const LEFT_OPTION_BIT: u64 = 0x0000_0020;
+const RIGHT_OPTION_BIT: u64 = 0x0000_0040;
+const RIGHT_CONTROL_BIT: u64 = 0x0000_2000;
 
 const BACKSPACE: u16 = 51;
 const CAPS_LOCK: u16 = 57;
@@ -86,7 +98,6 @@ const KEY_M: u16 = 46;
 
 struct HotkeyTapState {
     callback: Box<dyn FnMut(HotkeyEvent) -> bool>,
-    modifier_down_codes: RefCell<HashSet<u16>>,
     tap_port: Cell<*const CFMachPort>,
 }
 
@@ -94,7 +105,6 @@ impl HotkeyTapState {
     fn new(callback: Box<dyn FnMut(HotkeyEvent) -> bool>) -> Self {
         Self {
             callback,
-            modifier_down_codes: RefCell::new(HashSet::new()),
             tap_port: Cell::new(std::ptr::null()),
         }
     }
@@ -167,7 +177,7 @@ unsafe extern "C-unwind" fn raw_event_callback(
         return cg_event.as_ptr();
     }
 
-    if let Some(event) = hotkey_event_from_cg_event(event_type, cg_event_ref, state) {
+    if let Some(event) = hotkey_event_from_cg_event(event_type, cg_event_ref) {
         if (state.callback)(event) {
             CGEvent::set_type(Some(cg_event_ref), CGEventType::Null);
         }
@@ -176,42 +186,76 @@ unsafe extern "C-unwind" fn raw_event_callback(
     cg_event.as_ptr()
 }
 
-fn hotkey_event_from_cg_event(
-    event_type: CGEventType,
-    cg_event: &CGEvent,
-    state: &HotkeyTapState,
-) -> Option<HotkeyEvent> {
+fn hotkey_event_from_cg_event(event_type: CGEventType, cg_event: &CGEvent) -> Option<HotkeyEvent> {
+    hotkey_event(event_type, event_keycode(cg_event)?, CGEvent::flags(Some(cg_event)))
+}
+
+/// The hotkey event for a keyboard event of `event_type` for key `code`,
+/// whose modifier flags are `flags`. Modifiers are read from the flags every
+/// event carries, never counted from earlier events, so an event the tap
+/// missed (a keyboard unplugged while a modifier was held) cannot leave a
+/// modifier held.
+fn hotkey_event(event_type: CGEventType, code: u16, flags: CGEventFlags) -> Option<HotkeyEvent> {
+    let key = key_from_code(code)?;
     match event_type {
-        CGEventType::KeyDown => {
-            let code = event_keycode(cg_event)?;
-            key_from_code(code).map(HotkeyEvent::KeyPress)
-        }
-        CGEventType::KeyUp => {
-            let code = event_keycode(cg_event)?;
-            key_from_code(code).map(HotkeyEvent::KeyRelease)
-        }
-        CGEventType::FlagsChanged => modifier_event_from_flags_changed(cg_event, state),
+        CGEventType::KeyDown => Some(HotkeyEvent::KeyPress(key, modifiers_held(flags, None))),
+        CGEventType::KeyUp => Some(HotkeyEvent::KeyRelease(key)),
+        CGEventType::FlagsChanged if is_modifier_key(key) => Some(if modifier_is_down(key, flags) {
+            HotkeyEvent::KeyPress(key, modifiers_held(flags, Some(key)))
+        } else {
+            HotkeyEvent::KeyRelease(key)
+        }),
         _ => None,
     }
 }
 
-fn modifier_event_from_flags_changed(
-    cg_event: &CGEvent,
-    state: &HotkeyTapState,
-) -> Option<HotkeyEvent> {
-    let code = event_keycode(cg_event)?;
-    let key = key_from_code(code)?;
-    if !is_modifier_key(key) {
-        return None;
+/// A modifier key's device-independent mask, its own side bit, and the other
+/// side's bit. Caps Lock has no sides.
+fn modifier_bits(key: Key) -> Option<(CGEventFlags, u64, u64)> {
+    match key {
+        Key::ShiftLeft => Some((CGEventFlags::MaskShift, LEFT_SHIFT_BIT, RIGHT_SHIFT_BIT)),
+        Key::ShiftRight => Some((CGEventFlags::MaskShift, RIGHT_SHIFT_BIT, LEFT_SHIFT_BIT)),
+        Key::ControlLeft => Some((CGEventFlags::MaskControl, LEFT_CONTROL_BIT, RIGHT_CONTROL_BIT)),
+        Key::ControlRight => Some((CGEventFlags::MaskControl, RIGHT_CONTROL_BIT, LEFT_CONTROL_BIT)),
+        Key::AltLeft => Some((CGEventFlags::MaskAlternate, LEFT_OPTION_BIT, RIGHT_OPTION_BIT)),
+        Key::AltRight => Some((CGEventFlags::MaskAlternate, RIGHT_OPTION_BIT, LEFT_OPTION_BIT)),
+        Key::MetaLeft => Some((CGEventFlags::MaskCommand, LEFT_COMMAND_BIT, RIGHT_COMMAND_BIT)),
+        Key::MetaRight => Some((CGEventFlags::MaskCommand, RIGHT_COMMAND_BIT, LEFT_COMMAND_BIT)),
+        _ => None,
     }
+}
 
-    let mut modifier_down_codes = state.modifier_down_codes.borrow_mut();
-    if modifier_down_codes.remove(&code) {
-        return Some(HotkeyEvent::KeyRelease(key));
+/// Whether modifier `key` is down in `flags`: by its side bit, or, for an
+/// event that carries only the device-independent mask (some synthetic
+/// events do), by that mask.
+fn modifier_is_down(key: Key, flags: CGEventFlags) -> bool {
+    let Some((mask, own_side, other_side)) = modifier_bits(key) else {
+        return flags.contains(CGEventFlags::MaskAlphaShift);
+    };
+    let bits = flags.bits();
+    if bits & (own_side | other_side) != 0 {
+        bits & own_side != 0
+    } else {
+        flags.contains(mask)
     }
+}
 
-    modifier_down_codes.insert(code);
-    Some(HotkeyEvent::KeyPress(key))
+/// The modifiers held in `flags`. For the press of modifier `except`, its own
+/// side is left out, so the press reports the modifiers held before it, as a
+/// binding like "Shift+Cmd" or a modifier-only binding expects.
+fn modifiers_held(flags: CGEventFlags, except: Option<Key>) -> HotkeyModifiers {
+    let held = |mask: CGEventFlags| {
+        match except.and_then(modifier_bits).filter(|(except_mask, _, _)| *except_mask == mask) {
+            Some((_, _, other_side)) => flags.bits() & other_side != 0,
+            None => flags.contains(mask),
+        }
+    };
+    HotkeyModifiers {
+        shift: held(CGEventFlags::MaskShift),
+        control: held(CGEventFlags::MaskControl),
+        alt: held(CGEventFlags::MaskAlternate),
+        meta: held(CGEventFlags::MaskCommand),
+    }
 }
 
 fn event_keycode(cg_event: &CGEvent) -> Option<u16> {
@@ -336,6 +380,101 @@ mod tests {
 
     fn reported_keys() -> HashSet<Key> {
         (0..=u16::MAX).filter_map(key_from_code).collect()
+    }
+
+    use objc2_core_graphics::{CGEventFlags, CGEventType};
+
+    use super::{hotkey_event, META_LEFT, META_RIGHT, F5, SHIFT_LEFT};
+    use crate::hotkey::HotkeyEvent;
+
+    /// Left Command held, as a hardware keyboard reports it: the Command mask
+    /// and the left-Command device bit (`NX_DEVICELCMDKEYMASK`).
+    fn left_command() -> CGEventFlags {
+        CGEventFlags::MaskCommand | CGEventFlags::from_bits_retain(0x08)
+    }
+
+    fn right_command() -> CGEventFlags {
+        CGEventFlags::MaskCommand | CGEventFlags::from_bits_retain(0x10)
+    }
+
+    fn no_modifiers() -> HotkeyModifiers {
+        HotkeyModifiers::default()
+    }
+
+    #[test]
+    fn a_key_press_carries_the_modifiers_its_event_reports() {
+        assert_eq!(
+            hotkey_event(CGEventType::KeyDown, F5, CGEventFlags::empty()),
+            Some(HotkeyEvent::KeyPress(Key::F5, no_modifiers()))
+        );
+        assert_eq!(
+            hotkey_event(CGEventType::KeyDown, F5, left_command()),
+            Some(HotkeyEvent::KeyPress(Key::F5, HotkeyModifiers { meta: true, ..no_modifiers() }))
+        );
+    }
+
+    #[test]
+    fn a_missed_modifier_release_does_not_leave_the_modifier_held() {
+        // Left Command goes down; its release is never seen (the keyboard
+        // was unplugged while it was held).
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, left_command()),
+            Some(HotkeyEvent::KeyPress(Key::MetaLeft, no_modifiers()))
+        );
+        // F5 on another keyboard reports no modifiers, so it is plain F5.
+        assert_eq!(
+            hotkey_event(CGEventType::KeyDown, F5, CGEventFlags::empty()),
+            Some(HotkeyEvent::KeyPress(Key::F5, no_modifiers()))
+        );
+    }
+
+    #[test]
+    fn a_modifier_is_pressed_or_released_by_its_own_flag() {
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, left_command()),
+            Some(HotkeyEvent::KeyPress(Key::MetaLeft, no_modifiers()))
+        );
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, CGEventFlags::empty()),
+            Some(HotkeyEvent::KeyRelease(Key::MetaLeft))
+        );
+        // Left Command let go while right Command stays held.
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, right_command()),
+            Some(HotkeyEvent::KeyRelease(Key::MetaLeft))
+        );
+        // Right Command pressed while left Command is held: the modifiers
+        // before it already include Command.
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_RIGHT, left_command() | right_command()),
+            Some(HotkeyEvent::KeyPress(Key::MetaRight, HotkeyModifiers { meta: true, ..no_modifiers() }))
+        );
+    }
+
+    #[test]
+    fn a_modifier_press_reports_the_other_modifiers_held() {
+        let shift_left = CGEventFlags::MaskShift | CGEventFlags::from_bits_retain(0x02);
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, left_command() | shift_left),
+            Some(HotkeyEvent::KeyPress(Key::MetaLeft, HotkeyModifiers { shift: true, ..no_modifiers() }))
+        );
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, SHIFT_LEFT, shift_left),
+            Some(HotkeyEvent::KeyPress(Key::ShiftLeft, no_modifiers()))
+        );
+    }
+
+    #[test]
+    fn a_synthetic_event_without_side_bits_still_reads_its_modifier() {
+        // Some synthetic events set only the device-independent mask.
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, META_LEFT, CGEventFlags::MaskCommand),
+            Some(HotkeyEvent::KeyPress(Key::MetaLeft, no_modifiers()))
+        );
+        assert_eq!(
+            hotkey_event(CGEventType::KeyDown, F5, CGEventFlags::MaskCommand),
+            Some(HotkeyEvent::KeyPress(Key::F5, HotkeyModifiers { meta: true, ..no_modifiers() }))
+        );
     }
 
     #[test]

@@ -27,7 +27,9 @@ enum RecordHotkeyAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HotkeyEvent {
-    KeyPress(Key),
+    /// A key went down, with the modifiers held as it did (for a modifier
+    /// key, the others), read from the event itself.
+    KeyPress(Key, HotkeyModifiers),
     KeyRelease(Key),
 }
 
@@ -50,8 +52,6 @@ pub fn spawn_hotkey_thread(
         .name("hotkey".into())
         .spawn(move || {
             log::info!("hotkey thread started");
-
-            let active_modifiers: Cell<HotkeyModifiers> = Cell::new(HotkeyModifiers::default());
             let press_time: Cell<Option<Instant>> = Cell::new(None);
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
             let correction_key_is_down: Cell<bool> = Cell::new(false);
@@ -59,10 +59,9 @@ pub fn spawn_hotkey_thread(
             let clipboard_insert_is_down: Cell<bool> = Cell::new(false);
 
             if let Err(error) = run_hotkey_event_loop(move |event| {
-                let current_modifiers = active_modifiers.get();
                 let settings_window_visible = hotkey_capture_controller.settings_window_visible();
-                let handled = match event {
-                    HotkeyEvent::KeyPress(key) => {
+                match event {
+                    HotkeyEvent::KeyPress(key, current_modifiers) => {
                         if hotkey_capture_controller.handle_key_press(key, current_modifiers) {
                             true
                         } else if settings_window_visible {
@@ -101,19 +100,7 @@ pub fn spawn_hotkey_thread(
                             )
                         }
                     }
-                };
-
-                match event {
-                    HotkeyEvent::KeyPress(key) if is_modifier_key(key) => {
-                        active_modifiers.set(current_modifiers.with_key_pressed(key));
-                    }
-                    HotkeyEvent::KeyRelease(key) if is_modifier_key(key) => {
-                        active_modifiers.set(current_modifiers.with_key_released(key));
-                    }
-                    _ => {}
                 }
-
-                handled
             }) {
                 log::error!("global hotkey tap failed: {}", error);
             }
