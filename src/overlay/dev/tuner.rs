@@ -24,7 +24,7 @@ use crate::audio::{normalize_meter_amplitude, AudioController};
 use crate::config::Config;
 use crate::settings::LiveConfigStore;
 use crate::transcription::{spawn_transcription_thread, TranscriptionController};
-use crate::ui_meter::PillTuning;
+use crate::ui_meter::{PillRange, PillTuning};
 use crate::overlay::OverlayStyle;
 use crate::settings_window::form::METER_STYLE_TITLES;
 use crate::overlay::glass::{
@@ -438,13 +438,12 @@ impl TunerState {
                     .speech_windows()
                     .last()
                     .map_or_else(|| "–".to_owned(), |window| format!("{:.2}", window.confidence));
-                format!(
-                    "floor {:.1} · gate {:.1} · top {:.1} dBFS · speech {speech}",
-                    range.floor_db, range.gate_db, range.top_db
-                )
+                pill_readout_text(range, &speech)
             }
         };
-        controls.pill_readout.setStringValue(&NSString::from_str(&text));
+        let text = NSString::from_str(&text);
+        controls.pill_readout.setStringValue(&text);
+        controls.pill_readout.setToolTip(Some(&text));
     }
 
     /// Drives the meter from the microphone, or from the synthetic voice.
@@ -824,6 +823,30 @@ fn name_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
     label
 }
 
+/// The pills' readout: as wide as its widest reading, in digits of one width,
+/// so its changing numbers never resize the grid and move the controls.
+/// Longer text (a microphone error) is cut short, and whole in its tooltip.
+fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
+    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "0.00"));
+    label.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
+        objc2_app_kit::NSFont::smallSystemFontSize(),
+        unsafe { objc2_app_kit::NSFontWeightRegular },
+    )));
+    label.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
+    label.widthAnchor().constraintEqualToConstant(label.fittingSize().width).setActive(true);
+    label.setStringValue(&NSString::from_str(""));
+    label
+}
+
+/// The readout for the range the next pill is drawn from and the latest
+/// speech confidence.
+fn pill_readout_text(range: PillRange, speech: &str) -> String {
+    format!(
+        "floor {:.1} · gate {:.1} · top {:.1} dBFS · speech {speech}",
+        range.floor_db, range.gate_db, range.top_db
+    )
+}
+
 /// Small control size and font, to keep the tuner window compact.
 fn small(control: &objc2_app_kit::NSControl) {
     control.setControlSize(objc2_app_kit::NSControlSize::Small);
@@ -1034,7 +1057,7 @@ pub fn run() {
             .mergeCellsInRange(objc2_foundation::NSRange::new(1, 2));
     }
     let voice = popup(mtm, &VOICES, target, sel!(voiceChanged:));
-    let pill_readout = name_label(mtm, "");
+    let pill_readout = readout_label(mtm);
     let mut pill_rows = vec![NSArray::from_retained_slice(&[label(mtm, "pills voice"), view(&voice), label(mtm, "")])];
     let mut pill_numbers = Vec::new();
     slider_rows(mtm, &PILLS, target, sel!(pillChanged:), &mut pill_rows, &mut pill_numbers, &mut names);
