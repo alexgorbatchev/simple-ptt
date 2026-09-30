@@ -91,6 +91,9 @@ pub struct AppState {
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
     mic_active: AtomicBool,
+    /// Whether the audio stream found a microphone to use the last time it
+    /// looked.
+    microphone_available: AtomicBool,
     /// Dictation resumes once the background work running now (a
     /// transformation or a correction) finishes, so audio capture and the
     /// meter carry on through it.
@@ -117,6 +120,7 @@ impl AppState {
             state: AtomicU8::new(STATE_IDLE),
             mic_active: AtomicBool::new(false),
             dictation_resuming: AtomicBool::new(false),
+            microphone_available: AtomicBool::new(true),
         })
     }
 
@@ -128,6 +132,14 @@ impl AppState {
     /// while a dictation that resumes afterwards is transformed or corrected.
     pub fn is_capturing_audio(&self) -> bool {
         self.is_recording() || self.is_dictation_resuming()
+    }
+
+    pub fn set_microphone_available(&self, available: bool) {
+        self.microphone_available.store(available, Ordering::Relaxed);
+    }
+
+    pub fn is_microphone_available(&self) -> bool {
+        self.microphone_available.load(Ordering::Relaxed)
     }
 
     pub fn set_dictation_resuming(&self, resuming: bool) {
@@ -392,6 +404,14 @@ mod tests {
 
         state.set_dictation_resuming(false);
         assert!(!state.is_capturing_audio());
+    }
+
+    #[test]
+    fn a_microphone_counts_as_available_until_the_audio_stream_finds_none() {
+        let state = AppState::new();
+        assert!(state.is_microphone_available());
+        state.set_microphone_available(false);
+        assert!(!state.is_microphone_available());
     }
 
     #[test]
