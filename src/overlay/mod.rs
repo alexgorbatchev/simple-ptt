@@ -36,9 +36,10 @@ use glass::{
     correction_resting_frame, plan_correction_motion, CorrectionEffect, CorrectionPhase,
     GlassTuning, OverlayGlass,
 };
+pub(crate) use text_effects::reduce_motion;
 use text_effects::{
-    attributed_text, crossfade_next_change, provisional_utf16_range, reduce_motion,
-    restyle_provisional, text_attributes, Shimmer,
+    attributed_text, crossfade_next_change, provisional_utf16_range, restyle_provisional,
+    text_attributes, Shimmer,
 };
 
 const CORRECTION_OVERLAY_MIN_HEIGHT: f64 = 92.0;
