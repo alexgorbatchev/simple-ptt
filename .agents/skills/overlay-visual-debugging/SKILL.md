@@ -1,10 +1,10 @@
 ---
 name: overlay-visual-debugging
-description: ALWAYS USE when debugging, tuning, or fixing how the simple-ptt overlay looks or moves — Liquid Glass (`NSGlassEffectView`), halo blur, pop and correction animations (Emerge, Unfold, Pop, Slide, Expand), text that shifts, jumps, jitters, reflows, or stutters, or `GlassTuning` values — in `src/overlay/` (`glass.rs`, `mod.rs`, `private_effects.rs`, `text_effects.rs`, `dev/`), or when using `simple-ptt --debug` or `--overlay-snapshot`. macOS 26 glass and AppKit animation behave differently from what training data says; MUST READ before changing overlay code. Do NOT use for the settings window (`src/settings_window/`).
+description: ALWAYS USE when debugging, tuning, or fixing how the simple-ptt overlay looks or moves — Liquid Glass (`NSGlassEffectView`), halo blur, pop and correction animations (Emerge, Unfold, Pop, Slide, Expand), text that shifts, jumps, jitters, reflows, or stutters, or `GlassTuning` values — in `src/overlay/` (`glass.rs`, `mod.rs`, `private_effects.rs`, `text_effects.rs`, `dev/`) or the meter (`src/ui_meter.rs`, `src/ui_meter/`, including the scrolling pill strip), or when using `simple-ptt --debug` or `--overlay-snapshot`. macOS 26 glass and AppKit animation behave differently from what training data says; MUST READ before changing overlay code. Do NOT use for the settings window (`src/settings_window/`).
 author: alexgorbatchev
 metadata:
   created_on: 2026-09-27 11:30
-  last_modified: 2026-09-29 16:47
+  last_modified: 2026-09-29 17:23
   status: current
 ---
 
