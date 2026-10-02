@@ -81,10 +81,11 @@ impl SettingsWindow {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
                 NSRect::ZERO,
+                // Not resizable: the window takes the size that fits its
+                // largest pane (below), and the prompt editors scroll.
                 NSWindowStyleMask::Titled
                     | NSWindowStyleMask::Closable
-                    | NSWindowStyleMask::Miniaturizable
-                    | NSWindowStyleMask::Resizable,
+                    | NSWindowStyleMask::Miniaturizable,
                 NSBackingStoreType::Buffered,
                 false,
             )
