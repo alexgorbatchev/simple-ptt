@@ -64,22 +64,20 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 - **Drawing the progressive-blur mask ring by ring at full size takes 14–22ms** (release, 1280×520–724px), longer than a display frame. `blur_mask_image` stretches a small `blur_mask_cap` in about 1.7ms, and a test proves the result is byte-identical. The first image draw in a process costs about 100ms of one-time warm-up.
 - **`NSImageResizingModeStretch` is 0 on macOS** (1 is the iOS value; see `NSImage.h`). objc2-app-kit declares the type without its constants.
 
-## The pill strip (Core Animation)
+## The pills (Core Animation)
 
-- **A timing function wrecks a long linear animation, even `kCAMediaTimingFunctionLinear`.** The pill strip (`ui_meter/pill_strip.rs`) moves by one `transform.translation.x` animation lasting 24 hours, so a few seconds in its progress is about 1e-5.
+- **Implicit animations within each update glide the spectrum pills between updates.** `PillCluster::render` (`ui_meter/pill_cluster.rs`) sets every pill's frame and opacity in a `CATransaction` whose duration is the time since the last update (the overlay updates every 75 ms) with linear timing. Sampling the presentation layers every 20 ms over the tuner's synthetic voice, each band took 30 to 72 distinct heights in 2.4 s of speech (32 updates), and no pill showed in 50 samples of its silence. The requirements behind the pills are in `docs/internal/references/pill-meter.md`.
+
+The scrolling pill strip that came before the spectrum measured these; no code relies on them now, but they hold for any long Core Animation motion:
+
+- **A timing function wrecks a long linear animation, even `kCAMediaTimingFunctionLinear`.** A `transform.translation.x` animation lasting 24 hours is at about 1e-5 of its progress a few seconds in.
   - With the linear `CAMediaTimingFunction`, the presentation layer's translation crawled at 0.4 pt/s, then jumped 42 and 21 pt, then ran 13% slow. It sat 13–28 pt off the expected line in the first 5 seconds.
   - A timing function is a cubic Bézier that Core Animation solves numerically; near 0 the linear one is x ≈ 3t², so the solver's tolerance shows as tens of points over a 2.9 million-point travel.
   - With no timing function (`nil` is linear pacing), the translation stayed within one display frame of the expected line (0–0.56 pt at 33.75 pt/s) in all 875 samples. Leave `timingFunction` unset on long animations.
-- **The presentation layer advances once per display frame,** so a sample of it lags the ideal value by up to one frame of motion. Judge smoothness by the step between frames, not by an exact match with `CACurrentMediaTime`.
-- **A layer's new model position shows only after the transaction commits.** A recycled pill sampled a few milliseconds after its model moved was still drawn at its old position (off the column on the left, so invisible). Compare model and presentation only after the run loop has turned.
-- Measured with a probe sampling the strip's presentation layer every 4 ms: every pill layer only slid left with the strip or was recycled from beyond the left edge to the right edge (17 recycles in 3.5 s), and painted pills kept their height in all 66,424 checks.
-
-## When a pill may change height, and when the strip moves
-
-- **The fade does not hide a pill growing.** When pills took their height while inside the right-hand 25 pt fade, the user saw them grow from dots. Slot `s` enters the column when the strip's clock reaches `s × PILL_SECONDS + ENTRY_DELAY_SECONDS` (0.255 s), a pill is decided by `LATEST_PAINT_SECONDS` (0.225 s), and a pill is never put in a slot already in view (`push_slot`). A probe of the tuner, sampling every pill layer every 4 ms for 6.5 s, found all height changes (44 and 47) right of the column and none inside it, fade included, in each of two runs. With the strip anchored at the column's right edge instead, all 47 were inside it.
-- **Pausing the strip's layer timing stops and resumes its long animation in place** (Apple's Technical Q&A QA1673: `speed` 0 with the paused local time in `timeOffset`, then `speed` 1 with `beginTime` taking up the pause; `PillStrip::set_moving`). Over the tuner's 1.5 s silence the presentation layer's translation held still from 4.96 to 6.00 s, and the strip moved at 53.22 and 53.25 pt/s (53.25 expected) before and after the pause, with no jump.
-- **Sampling the presentation layer every 4 ms doubles a per-sample speed.** It advances once per display frame, so sample pairs that show motion carry a whole frame's travel over 4 ms. Measure speed over a stretch of a second or more.
-- The requirements behind the pills are in `docs/internal/references/pill-meter.md`.
+- **Pausing a layer's timing stops and resumes its animations in place** (Apple's Technical Q&A QA1673: `speed` 0 with the paused local time in `timeOffset`, then `speed` 1 with `beginTime` taking up the pause). Over a 1.5 s pause the translation held still, and moved at 53.22 and 53.25 pt/s (53.25 expected) before and after it, with no jump.
+- **The presentation layer advances once per display frame,** so a sample of it lags the ideal value by up to one frame of motion. Judge smoothness by the step between frames, not by an exact match with `CACurrentMediaTime`. Sampled every 4 ms, a per-sample speed comes out about double, since the pairs that show motion carry a whole frame's travel; measure speed over a second or more.
+- **A layer's new model position shows only after the transaction commits.** A layer sampled a few milliseconds after its model moved was still drawn at its old position. Compare model and presentation only after the run loop has turned.
+- **A fade does not hide a layer changing size.** When strip pills took their height while inside a 25 pt fade mask, the user saw them grow from dots.
 
 ## Private Core Animation (halo)
 

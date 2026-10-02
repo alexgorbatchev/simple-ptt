@@ -24,6 +24,7 @@ use crate::audio::{normalize_meter_amplitude, AudioController};
 use crate::config::Config;
 use crate::settings::LiveConfigStore;
 use crate::transcription::{spawn_transcription_thread, TranscriptionController};
+use crate::state::SPECTRUM_BANDS;
 use crate::ui_meter::{PillRange, PillTuning};
 use crate::overlay::OverlayStyle;
 use crate::settings_window::form::METER_STYLE_TITLES;
@@ -79,6 +80,27 @@ fn voice_level_db(tick: u64) -> f32 {
     let louder = if (tick / VOICE_PHASE_TICKS) % 2 == 1 { VOICE_LOUDER_DB } else { 0.0 };
     let syllable = if tick % 8 == 7 { -50.0 } else { -44.0 + (7.0 * ((tick as f32) * 0.9).sin().abs()) };
     syllable + louder
+}
+
+/// The room's level in each spectrum band, in dB.
+const VOICE_ROOM_SPECTRUM_DB: f32 = -80.0;
+
+/// The synthetic voice's level, in dB, in the band centred at `centre_hz`
+/// at `tick`, when its overall level is `level_db`: a slope falling 6 dB per
+/// octave above 300 Hz, with two formants that drift (around 500 Hz and
+/// 1.5 kHz), so the pills move like a voice's spectrum. At the room's level it
+/// is the room's flat noise.
+fn voice_spectrum_db(tick: u64, level_db: f32, centre_hz: f32) -> f32 {
+    let wobble = (((tick as f32) * 1.7) + (centre_hz * 0.01)).sin();
+    if level_db <= VOICE_ROOM_DB {
+        return VOICE_ROOM_SPECTRUM_DB + wobble;
+    }
+    let time = tick as f32 * 0.075;
+    let formant = |hz: f32, height: f32| height * (-(centre_hz / hz).log2().powi(2) / (2.0 * 0.3 * 0.3)).exp();
+    let first = formant(500.0 + (250.0 * (time * 2.1).sin()), 14.0);
+    let second = formant(1_500.0 + (700.0 * ((time * 1.3) + 1.0).sin()), 10.0);
+    let slope = -6.0 * (centre_hz / 300.0).log2().max(0.0);
+    level_db + slope + first + second + wobble
 }
 
 /// What the narration loop speaks: the transcript, and the correction
@@ -200,18 +222,15 @@ static INTERNALS: [NumberField; 12] = [
 ];
 
 /// The pills' values (`PillTuning`), each with the range worth trying.
-static PILLS: [NumberField<PillTuning>; 11] = [
+static PILLS: [NumberField<PillTuning>; 8] = [
     number!("noise_gate_db", 0.0, 30.0, noise_gate_db),
-    number!("min_span_db", 3.0, 30.0, min_span_db),
+    number!("min_span_db", 6.0, 60.0, min_span_db),
+    number!("range_db", 10.0, 60.0, range_db),
     number!("floor_seconds", 1.0, 30.0, floor_seconds),
     number!("top_quantile", 0.5, 1.0, top_quantile),
     number!("top_seconds", 1.0, 30.0, top_seconds),
-    number!("loudness_share", 0.0, 1.0, loudness_share),
-    number!("pause_after_seconds", 0.0, 2.0, pause_after_seconds),
-    number!("tall_low", 0.0, 1.0, tall_low),
-    number!("tall_high", 0.0, 1.0, tall_high),
-    number!("short_low", 0.0, 1.0, short_low),
-    number!("short_high", 0.0, 1.0, short_high),
+    number!("tilt_db_per_octave", 0.0, 9.0, tilt_db_per_octave),
+    number!("fall_per_second", 0.5, 10.0, fall_per_second),
 ];
 
 /// What drives the meter: the synthetic voice, or the microphone through the
@@ -283,11 +302,11 @@ fn applies(name: &str, tuning: &GlassTuning, progressive: bool, reduce_motion: b
 
 pub struct TunerState {
     overlay: OverlayWindow,
-    /// The overlay's app state, where the tuner publishes the loudness of
+    /// The overlay's app state, where the tuner publishes the spectrum of
     /// its synthetic voice (`publish_voice`).
     app_state: std::sync::Arc<AppState>,
-    /// When the last synthetic block of audio ended, on the media clock.
-    last_level_block_end: Cell<Option<f64>>,
+    /// The spectrum bands' centres at 16 kHz, the synthetic voice's.
+    spectrum_centres_hz: [f32; SPECTRUM_BANDS],
     /// The overlay's style, whose meter style the meter picker changes.
     overlay_style: RefCell<OverlayStyle>,
     controls: RefCell<Option<Controls>>,
@@ -410,21 +429,15 @@ impl TunerState {
         }
     }
 
-    /// Shows the range the next pill is drawn from and the latest peak, or
-    /// why the microphone could not start.
+    /// Shows the range the pills are drawn from and the latest loudest band,
+    /// or why the microphone could not start.
     fn show_pill_readout(&self) {
         let controls = self.controls.borrow();
         let Some(controls) = controls.as_ref() else { return };
         let text = match self.microphone_error.borrow().as_deref() {
             Some(error) => format!("microphone: {error}"),
             None => {
-                let range = self.overlay.pill_range_now();
-                let level = self
-                    .app_state
-                    .level_blocks()
-                    .last()
-                    .map_or_else(|| "–".to_owned(), |block| format!("{:.1}", 10.0 * block.mean_square.max(1e-18).log10()));
-                pill_readout_text(range, &level)
+                pill_readout_text(self.overlay.pill_range_now())
             }
         };
         let text = NSString::from_str(&text);
@@ -545,14 +558,15 @@ impl TunerState {
     }
 
     /// Publishes the synthetic voice as the audio callback does for the
-    /// microphone: the loudness of the audio since the last tick, at an RMS
-    /// level of `level_db`.
-    fn publish_voice(&self, level_db: f32) {
-        let now = objc2_quartz_core::CACurrentMediaTime();
-        if let Some(start) = self.last_level_block_end.replace(Some(now)) {
-            let mean_square = 10f32.powf(level_db / 10.0);
-            let _ = self.app_state.level_sender().try_send(crate::state::LevelBlock { start, end: now, mean_square });
-        }
+    /// microphone: the spectrum of the audio now, at `tick`, whose level is
+    /// `level_db` (`voice_spectrum_db`).
+    fn publish_voice(&self, tick: u64, level_db: f32) {
+        let frame = crate::state::SpectrumFrame {
+            at: objc2_quartz_core::CACurrentMediaTime(),
+            levels_db: std::array::from_fn(|band| voice_spectrum_db(tick, level_db, self.spectrum_centres_hz[band])),
+            centres_hz: self.spectrum_centres_hz,
+        };
+        let _ = self.app_state.spectrum_sender().try_send(frame);
     }
 
     fn tick(&self) {
@@ -595,7 +609,7 @@ impl TunerState {
             self.app_state.mic_meter_snapshot()
         } else {
             let level_db = voice_level_db(tick);
-            self.publish_voice(level_db);
+            self.publish_voice(tick, level_db);
             MicMeterSnapshot {
                 clip_event_counter: 0,
                 level: normalized_meter_value(normalize_meter_amplitude(level_db)),
@@ -798,7 +812,7 @@ fn name_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 /// so its changing numbers never resize the grid and move the controls.
 /// Longer text (a microphone error) is cut short, and whole in its tooltip.
 fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "-180.0"));
+    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0, loudest_db: -100.0, loudest_hz: 10_000.0 }));
     label.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
         objc2_app_kit::NSFont::smallSystemFontSize(),
         unsafe { objc2_app_kit::NSFontWeightRegular },
@@ -809,12 +823,12 @@ fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
     label
 }
 
-/// The readout for the range the next pill is drawn from and the latest
-/// block's level, in dBFS.
-fn pill_readout_text(range: PillRange, level: &str) -> String {
+/// The readout for the range the pills are drawn from, and the latest
+/// loudest band.
+fn pill_readout_text(range: PillRange) -> String {
     format!(
-        "floor {:.1} · gate {:.1} · top {:.1} · level {level} dBFS",
-        range.floor_db, range.gate_db, range.top_db
+        "floor {:.1} · gate {:.1} · top {:.1} · loudest {:.1} dB at {:.0} Hz",
+        range.floor_db, range.gate_db, range.top_db, range.loudest_db, range.loudest_hz
     )
 }
 
@@ -904,7 +918,7 @@ pub fn run() {
     let state = Rc::new(TunerState {
         overlay,
         app_state,
-        last_level_block_end: Cell::new(None),
+        spectrum_centres_hz: crate::audio::SpectrumAnalyzer::new(16_000).centres_hz(),
         overlay_style,
         controls: RefCell::new(None),
         hidden_until: Cell::new(None),

@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::settings::LiveConfigStore;
-use crate::state::{AppState, LevelBlock};
+use crate::state::{AppState, SpectrumFrame};
 use crate::transcription::TranscriptionController;
 
+use super::spectrum::SpectrumAnalyzer;
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
     smooth_meter_value,
@@ -178,8 +179,11 @@ where
 {
     let stream_config = config.config();
     let channels = usize::from(stream_config.channels);
-    let sample_rate = f64::from(stream_config.sample_rate);
-    let levels = state.level_sender();
+    // The pill meter's spectrum, analysed here on every block: its buffers
+    // are made now, so the callback allocates nothing for it.
+    let mut spectrum = SpectrumAnalyzer::new(stream_config.sample_rate);
+    let centres_hz = spectrum.centres_hz();
+    let spectrum_frames = state.spectrum_sender();
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
@@ -206,6 +210,7 @@ where
                         smoothed_peak = 0.0;
                         was_capturing = false;
                         pcm_buffer.clear();
+                        spectrum.reset();
                     }
                     meter_state.clear_mic_meter();
                     meter_state.set_mic_active(false);
@@ -236,11 +241,12 @@ where
 
                 if route == AudioRoute::MeterAndDictation {
                     was_capturing = true;
-                    // The block's loudness for the pills, queued without waiting:
-                    // it ends as it arrives.
-                    let end = CACurrentMediaTime();
-                    let seconds = (data.len() / channels.max(1)) as f64 / sample_rate;
-                    let _ = levels.try_send(LevelBlock { start: end - seconds, end, mean_square: 10f32.powf(level_db / 10.0) });
+                    // The spectrum of the latest audio for the pills, queued
+                    // without waiting.
+                    spectrum.push_pcm16(&pcm_chunk);
+                    if let Some(levels_db) = spectrum.analyze() {
+                        let _ = spectrum_frames.try_send(SpectrumFrame { at: CACurrentMediaTime(), levels_db, centres_hz });
+                    }
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {
                         let chunk = pcm_buffer.split_to(640).freeze();

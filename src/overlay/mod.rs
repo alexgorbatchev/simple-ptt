@@ -318,8 +318,8 @@ impl OverlayWindow {
         self.set_working_text_opacity(overlay_text_opacity);
 
         if meter_is_visible {
-            let blocks = self.state.level_blocks();
-            self.ui_meter_view.update(mic_meter, self.meter_span(), &blocks);
+            let frames = self.state.take_spectrum_frames();
+            self.ui_meter_view.update(mic_meter, self.meter_span(), &frames);
         } else {
             self.ui_meter_view.clear(self.meter_span());
         }
@@ -389,18 +389,9 @@ impl OverlayWindow {
 
     /// Distance from the overlay's side to where its text starts: the text
     /// inset plus the text container's line fragment padding.
-    fn text_inset(&self) -> f64 {
-        TEXT_HORIZONTAL_PADDING + line_fragment_padding(&self.working_text_view)
-    }
-
-    /// Width the meter's bars share: the text column for a meter that spans
-    /// it, else the centred cluster.
+    /// Width the meter's bars share: the centred cluster.
     fn meter_span(&self) -> f64 {
-        if self.ui_meter_view.spans_text_width() {
-            pill_span(self.text_inset())
-        } else {
-            meter_cluster_width()
-        }
+        meter_cluster_width()
     }
 
     /// Keeps the overlay `distance` below the top of the screen instead of
@@ -561,11 +552,7 @@ impl OverlayWindow {
             main_is_clamped,
         );
         self.separator_view.setFrame(separator_frame(main_height));
-        self.ui_meter_view.set_frame(if self.ui_meter_view.spans_text_width() {
-            pill_meter_frame(footer_is_visible, self.text_inset())
-        } else {
-            meter_container_frame(footer_is_visible, self.ui_meter_view.style())
-        });
+        self.ui_meter_view.set_frame(meter_container_frame(footer_is_visible, self.ui_meter_view.style()));
         let meter_alpha = self.meter_alpha.get();
         self.ui_meter_view.set_hidden(meter_alpha == 0.0);
         self.ui_meter_view.view().setAlphaValue(meter_alpha);
@@ -1119,23 +1106,6 @@ fn line_fragment_padding(text_view: &NSTextView) -> f64 {
     unsafe { msg_send![&*text_container, lineFragmentPadding] }
 }
 
-/// Width the pills share: the text column, `text_inset` in from each side.
-fn pill_span(text_inset: f64) -> f64 {
-    OVERLAY_WIDTH - (2.0 * text_inset)
-}
-
-/// The meter's frame when it spans the text column: its bars start at the
-/// text's left edge and end at its right edge.
-fn pill_meter_frame(footer_is_visible: bool, text_inset: f64) -> NSRect {
-    NSRect::new(
-        NSPoint::new(text_inset - ui_meter::METER_BORDER_PADDING, meter_origin_y(footer_is_visible)),
-        NSSize::new(
-            pill_span(text_inset) + (ui_meter::METER_BORDER_PADDING * 2.0),
-            ui_meter::meter_container_height(UiMeterStyle::Pills),
-        ),
-    )
-}
-
 fn meter_origin_y(footer_is_visible: bool) -> f64 {
     if footer_is_visible {
         footer_total_height() + METER_SECTION_BOTTOM_PADDING
@@ -1231,10 +1201,9 @@ fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        footer_hint_frame, pill_meter_frame, pill_span, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
+        footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
         FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
     };
-    use crate::ui_meter::METER_BORDER_PADDING;
 
     #[test]
     fn the_meter_runs_while_audio_is_captured() {
@@ -1250,19 +1219,6 @@ mod tests {
     fn footer_holds_one_line_with_even_padding() {
         assert_eq!(FOOTER_HEIGHT, FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING));
         assert_eq!(FOOTER_HEIGHT, 28.0);
-    }
-
-    #[test]
-    fn pill_meter_spans_the_text_column_edge_to_edge() {
-        // 18 pt of text inset plus the default 5 pt line fragment padding.
-        let text_inset = 23.0;
-        let frame = pill_meter_frame(true, text_inset);
-        assert_eq!(frame.origin.x + METER_BORDER_PADDING, text_inset);
-        assert_eq!(
-            frame.origin.x + frame.size.width - METER_BORDER_PADDING,
-            OVERLAY_WIDTH - text_inset
-        );
-        assert_eq!(pill_span(text_inset), OVERLAY_WIDTH - (2.0 * text_inset));
     }
 
     #[test]

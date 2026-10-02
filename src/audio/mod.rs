@@ -1,5 +1,7 @@
 pub mod devices;
 mod input_choice;
+mod spectrum;
+pub use spectrum::SpectrumAnalyzer;
 pub mod stream;
 
 pub use devices::*;

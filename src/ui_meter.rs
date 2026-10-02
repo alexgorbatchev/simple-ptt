@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::time::Instant;
 
 use objc2_quartz_core::CACurrentMediaTime;
-use pill_levels::{LevelSpan, PillLevels};
-use pill_strip::PillStrip;
+use pill_cluster::PillCluster;
+use pill_levels::PillLevels;
 
 use block2::StackBlock;
 use objc2::{rc::Retained, MainThreadOnly};
@@ -12,11 +12,11 @@ use objc2_core_graphics::CGColor;
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 use crate::config::UiMeterStyle;
-use crate::state::{LevelBlock, MicMeterSnapshot};
+use crate::state::{MicMeterSnapshot, SpectrumFrame};
 use crate::MainThreadMarker;
 
+mod pill_cluster;
 mod pill_levels;
-mod pill_strip;
 mod pill_tuning;
 
 pub use pill_levels::PillRange;
@@ -34,9 +34,9 @@ pub const METER_BAR_SPACING: f64 = 3.0;
 pub const METER_COLOR_ONLY_BAR_HEIGHT: f64 = 4.0;
 pub const METER_MIN_BAR_HEIGHT: f64 = 0.0;
 pub const METER_VIEW_HEIGHT: f64 = 19.6;
-/// Slots the pills may fill ahead of the strip's open one: after a pause, the
-/// first pill with sound takes the slot past it.
-const SLOTS_FILLED_AHEAD: usize = 4;
+/// The longest a pill takes to move to its new height: an update or two;
+/// after a longer gap it moves at once.
+const PILL_MOTION_MAX_SECONDS: f64 = 0.15;
 
 #[derive(Debug, Default)]
 struct ClipIndicatorState {
@@ -53,13 +53,13 @@ pub struct UiMeterView {
     meter_bar_levels: RefCell<Vec<f32>>,
     clip_indicator_state: RefCell<ClipIndicatorState>,
     meter_style: Cell<UiMeterStyle>,
-    /// The pills' heights and the loudness range they are painted from.
+    /// The pills' heights and the range they are drawn from.
     pill_levels: RefCell<PillLevels>,
     /// The pills on screen (`UiMeterStyle::Pills`).
-    pill_strip: PillStrip,
-    /// When the recording the pills show began, in media time: the clock
-    /// they are decided by.
-    pills_started_at: Cell<Option<f64>>,
+    pill_cluster: PillCluster,
+    /// When the pills last moved, in media time: they move to each new
+    /// height over the time since.
+    pills_moved_at: Cell<Option<f64>>,
 }
 
 impl UiMeterView {
@@ -98,7 +98,7 @@ impl UiMeterView {
             meter_bar_views.push(bar_view);
         }
 
-        let pill_strip = PillStrip::new(
+        let pill_cluster = PillCluster::new(
             &container_view.layer().expect("the meter's view is layer-backed (setWantsLayer)"),
         );
 
@@ -108,9 +108,9 @@ impl UiMeterView {
             meter_bar_levels: RefCell::new(vec![0.0; METER_BAR_COUNT]),
             clip_indicator_state: RefCell::new(ClipIndicatorState::default()),
             meter_style: Cell::new(style),
-            pill_levels: RefCell::new(PillLevels::new(METER_BAR_COUNT)),
-            pill_strip,
-            pills_started_at: Cell::new(None),
+            pill_levels: RefCell::new(PillLevels::new()),
+            pill_cluster,
+            pills_moved_at: Cell::new(None),
         }
     }
 
@@ -148,15 +148,9 @@ impl UiMeterView {
         self.pill_levels.borrow().range_now()
     }
 
-    /// Whether the meter spans the whole text column rather than a centred
-    /// cluster.
-    pub fn spans_text_width(&self) -> bool {
-        self.meter_style.get() == UiMeterStyle::Pills
-    }
-
-    /// Takes in the microphone's level and, for the pills, the loudness of
-    /// the recent captured audio on the media clock.
-    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, blocks: &[LevelBlock]) {
+    /// Takes in the microphone's level and, for the pills, the spectrum
+    /// frames captured since the last update.
+    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, frames: &[SpectrumFrame]) {
         self.container_view.setHidden(false);
 
         let level = mic_meter.level as f32 / u8::MAX as f32;
@@ -166,7 +160,7 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.push_pill(blocks),
+            UiMeterStyle::Pills => self.pill_levels.borrow_mut().update(frames, CACurrentMediaTime()),
         }
 
         self.render_meter_bars(cluster_width);
@@ -179,8 +173,7 @@ impl UiMeterView {
         meter_bar_levels.fill(0.0);
         drop(meter_bar_levels);
         self.pill_levels.borrow_mut().clear();
-        self.pills_started_at.set(None);
-        self.pill_strip.stop();
+        self.pills_moved_at.set(None);
         self.render_meter_bars(cluster_width);
 
         self.clear_clip_indicator();
@@ -258,12 +251,12 @@ impl UiMeterView {
     }
 
     fn render_meter_bars(&self, cluster_width: f64) {
-        // The pills draw with their own strip, the other styles with the bars.
+        // The pills draw with their own layers, the other styles with the bars.
         let pills = self.meter_style.get() == UiMeterStyle::Pills;
         for meter_bar_view in &self.meter_bar_views {
             meter_bar_view.setHidden(pills);
         }
-        self.pill_strip.set_hidden(!pills);
+        self.pill_cluster.set_hidden(!pills);
         match self.meter_style.get() {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.render_meter_bars_animated_height(cluster_width),
@@ -286,39 +279,6 @@ impl UiMeterView {
             };
             *current_level += (target_level - *current_level) * smoothing;
         }
-    }
-
-    /// Moves the pills to now and paints the ones whose audio is in. While
-    /// the microphone delivers nothing, no audio comes in and they rest.
-    /// Decides the pills whose audio is in, and moves the strip while there
-    /// is sound.
-    fn push_pill(&self, blocks: &[LevelBlock]) {
-        let now = CACurrentMediaTime();
-        let started_at = match self.pills_started_at.get() {
-            Some(started_at) => started_at,
-            None => {
-                self.pills_started_at.set(Some(now));
-                now
-            }
-        };
-        // The recording's clock, which the pills are decided by; the audio
-        // onto it.
-        let at = now - started_at;
-        let levels: Vec<LevelSpan> = blocks
-            .iter()
-            .map(|block| LevelSpan {
-                start: block.start - started_at,
-                end: block.end - started_at,
-                mean_square: block.mean_square,
-            })
-            .collect();
-        // The strip's clock, which runs only while it moves: the pills take
-        // its slots.
-        let strip_at = self.pill_strip.clock(now);
-        let mut pill_levels = self.pill_levels.borrow_mut();
-        pill_levels.advance(at);
-        pill_levels.paint(&levels, at, strip_at);
-        self.pill_strip.set_moving(pill_levels.moving(), now);
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {
@@ -359,17 +319,18 @@ impl UiMeterView {
         }
     }
 
-    /// The pills across `span` (the text column), newest (still open) at
-    /// the right.
-    fn render_pills(&self, span: f64) {
-        let pool = pill_strip::pool_size(span);
-        let open_slot = self.pill_strip.open_slot(CACurrentMediaTime());
-        let mut pill_levels = self.pill_levels.borrow_mut();
-        // Every slot the strip holds, and the few filled ahead of the open one.
-        pill_levels.fit(pool + SLOTS_FILLED_AHEAD);
-        // Every slot the strip holds but the next, which is not open yet.
-        let heights = pill_levels.slot_heights(open_slot, pool.saturating_sub(1));
-        self.pill_strip.render(&self.container_view, span, &heights, open_slot);
+    /// The pills centred in `cluster_width`, each moving to its band's
+    /// height over the time since they last moved, so they glide between
+    /// updates; at once with Reduce Motion, or after a long gap.
+    fn render_pills(&self, cluster_width: f64) {
+        let now = CACurrentMediaTime();
+        let seconds = match self.pills_moved_at.replace(Some(now)) {
+            Some(moved_at) if !crate::overlay::reduce_motion() && now - moved_at < PILL_MOTION_MAX_SECONDS => {
+                (now - moved_at).max(0.0)
+            }
+            _ => 0.0,
+        };
+        self.pill_cluster.render(&self.container_view, cluster_width, self.pill_levels.borrow().heights(), seconds);
     }
 
     fn render_meter_bars_animated_color(&self, cluster_width: f64) {

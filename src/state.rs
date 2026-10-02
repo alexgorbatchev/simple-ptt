@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
@@ -52,22 +51,21 @@ impl DeepgramApiKeyFingerprint {
     }
 }
 
-/// How long the loudness of captured audio is kept: longer than a pill waits
-/// to be painted.
-const LEVEL_BLOCK_KEEP_SECONDS: f64 = 2.0;
-/// Blocks the audio callback may queue before the overlay takes them in:
-/// several seconds of audio at the usual callback size, while the overlay
-/// takes them in every 75 ms. Blocks beyond it are dropped.
-const QUEUED_LEVEL_BLOCKS: usize = 256;
+/// How many bands the pill meter's spectrum has: one pill each.
+pub const SPECTRUM_BANDS: usize = 40;
+/// Spectrum frames the audio callback may queue before the overlay takes them
+/// in: several seconds at the usual callback rate, while the overlay takes
+/// them in every 75 ms. Frames beyond it are dropped.
+const QUEUED_SPECTRUM_FRAMES: usize = 256;
 
-/// The loudness of one block of captured audio, from `start` to `end` on the
-/// media clock (`CACurrentMediaTime`): its mean square (its RMS squared, 1 at
-/// full scale).
+/// The spectrum of the captured audio as one block of it arrived, `at` on the
+/// media clock (`CACurrentMediaTime`): each band's level in dB (0 is about a
+/// full-scale sine) and its centre frequency, low pitches first.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LevelBlock {
-    pub start: f64,
-    pub end: f64,
-    pub mean_square: f32,
+pub struct SpectrumFrame {
+    pub at: f64,
+    pub levels_db: [f32; SPECTRUM_BANDS],
+    pub centres_hz: [f32; SPECTRUM_BANDS],
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -100,12 +98,10 @@ pub struct AppState {
     /// Whether the audio stream found a microphone to use the last time it
     /// looked.
     microphone_available: AtomicBool,
-    /// Where the audio callback queues the loudness of each block it
+    /// Where the audio callback queues the spectrum of each block it
     /// captures: a bounded channel, so the real-time thread never waits.
-    level_sender: SyncSender<LevelBlock>,
-    level_receiver: Mutex<Receiver<LevelBlock>>,
-    /// The loudness of the recent captured audio, oldest first.
-    level_blocks: Mutex<VecDeque<LevelBlock>>,
+    spectrum_sender: SyncSender<SpectrumFrame>,
+    spectrum_receiver: Mutex<Receiver<SpectrumFrame>>,
     /// Dictation resumes once the background work running now (a
     /// transformation or a correction) finishes, so audio capture and the
     /// meter carry on through it.
@@ -114,7 +110,7 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Arc<Self> {
-        let (level_sender, level_receiver) = sync_channel(QUEUED_LEVEL_BLOCKS);
+        let (spectrum_sender, spectrum_receiver) = sync_channel(QUEUED_SPECTRUM_FRAMES);
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
@@ -133,9 +129,8 @@ impl AppState {
             mic_active: AtomicBool::new(false),
             dictation_resuming: AtomicBool::new(false),
             microphone_available: AtomicBool::new(true),
-            level_sender,
-            level_receiver: Mutex::new(level_receiver),
-            level_blocks: Mutex::new(VecDeque::new()),
+            spectrum_sender,
+            spectrum_receiver: Mutex::new(spectrum_receiver),
         })
     }
 
@@ -149,27 +144,19 @@ impl AppState {
         self.is_recording() || self.is_dictation_resuming()
     }
 
-    /// Where to queue the loudness of each captured block. `try_send` on it
+    /// Where to queue the spectrum of each captured block. `try_send` on it
     /// never waits, so the audio callback can use it: when the queue is full,
-    /// the block is dropped.
-    pub fn level_sender(&self) -> SyncSender<LevelBlock> {
-        self.level_sender.clone()
+    /// the frame is dropped.
+    pub fn spectrum_sender(&self) -> SyncSender<SpectrumFrame> {
+        self.spectrum_sender.clone()
     }
 
-    /// The loudness of the recent captured audio, oldest first: the blocks
-    /// kept and those queued since, dropping blocks older than
-    /// `LEVEL_BLOCK_KEEP_SECONDS` before the newest.
-    pub fn level_blocks(&self) -> Vec<LevelBlock> {
-        let (Ok(receiver), Ok(mut blocks)) = (self.level_receiver.lock(), self.level_blocks.lock()) else {
-            return Vec::new();
-        };
-        blocks.extend(receiver.try_iter());
-        if let Some(newest) = blocks.back().map(|block| block.end) {
-            while blocks.front().is_some_and(|oldest| oldest.end < newest - LEVEL_BLOCK_KEEP_SECONDS) {
-                blocks.pop_front();
-            }
-        }
-        blocks.iter().copied().collect()
+    /// The spectrum frames queued since the last call, oldest first.
+    pub fn take_spectrum_frames(&self) -> Vec<SpectrumFrame> {
+        self.spectrum_receiver
+            .lock()
+            .map(|receiver| receiver.try_iter().collect())
+            .unwrap_or_default()
     }
 
     pub fn set_microphone_available(&self, available: bool) {
@@ -442,18 +429,16 @@ mod tests {
     }
 
     #[test]
-    fn queued_loudness_is_kept_for_two_seconds() {
-        use super::LevelBlock;
+    fn queued_spectrum_frames_are_taken_once_in_order() {
+        use super::{SpectrumFrame, SPECTRUM_BANDS};
 
         let state = AppState::new();
-        let block = |end: f64| LevelBlock { start: end - 0.01, end, mean_square: 0.25 };
-        let sender = state.level_sender();
-        sender.try_send(block(10.0)).unwrap();
-        sender.try_send(block(11.5)).unwrap();
-        assert_eq!(state.level_blocks(), vec![block(10.0), block(11.5)]);
-        // Kept between reads; a block 2.5 s after the first drops it.
-        sender.try_send(block(12.5)).unwrap();
-        assert_eq!(state.level_blocks(), vec![block(11.5), block(12.5)]);
+        let frame = |at: f64| SpectrumFrame { at, levels_db: [-60.0; SPECTRUM_BANDS], centres_hz: [1_000.0; SPECTRUM_BANDS] };
+        let sender = state.spectrum_sender();
+        sender.try_send(frame(10.0)).unwrap();
+        sender.try_send(frame(10.03)).unwrap();
+        assert_eq!(state.take_spectrum_frames(), vec![frame(10.0), frame(10.03)]);
+        assert_eq!(state.take_spectrum_frames(), Vec::new());
     }
 
     #[test]
