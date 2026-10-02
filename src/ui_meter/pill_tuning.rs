@@ -21,6 +21,9 @@ pub struct PillTuning {
     /// How much of a pill's height its loudness decides; the rest is always
     /// drawn, so the softest speech still shows its texture.
     pub loudness_share: f64,
+    /// How long a quiet stretch scrolls by as dots before the strip stops;
+    /// it moves again at the next sound.
+    pub pause_after_seconds: f64,
     /// The texture's tall band, which even pills take a height in.
     pub tall_low: f64,
     pub tall_high: f64,
@@ -38,10 +41,11 @@ impl Default for PillTuning {
             top_quantile: 0.9,
             top_seconds: 10.0,
             loudness_share: 0.5,
-            tall_low: 0.75,
+            pause_after_seconds: 0.4,
+            tall_low: 0.6,
             tall_high: 1.0,
-            short_low: 0.15,
-            short_high: 0.4,
+            short_low: 0.2,
+            short_high: 0.6,
         }
     }
 }
@@ -65,6 +69,11 @@ impl PillTuning {
     /// How many pills above the gate the top is taken over.
     pub(super) fn top_pills(&self) -> usize {
         pills_in(self.top_seconds)
+    }
+
+    /// How many quiet pills scroll by as dots before the strip stops.
+    pub(super) fn pause_after_pills(&self) -> usize {
+        (self.pause_after_seconds / PILL_SECONDS).round() as usize
     }
 }
 

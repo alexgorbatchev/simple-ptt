@@ -34,6 +34,9 @@ pub const METER_BAR_SPACING: f64 = 3.0;
 pub const METER_COLOR_ONLY_BAR_HEIGHT: f64 = 4.0;
 pub const METER_MIN_BAR_HEIGHT: f64 = 0.0;
 pub const METER_VIEW_HEIGHT: f64 = 19.6;
+/// Slots the pills may fill ahead of the strip's open one: after a pause, the
+/// first pill with sound takes the slot past it.
+const SLOTS_FILLED_AHEAD: usize = 4;
 
 #[derive(Debug, Default)]
 struct ClipIndicatorState {
@@ -54,6 +57,9 @@ pub struct UiMeterView {
     pill_levels: RefCell<PillLevels>,
     /// The pills on screen (`UiMeterStyle::Pills`).
     pill_strip: PillStrip,
+    /// When the recording the pills show began, in media time: the clock
+    /// they are decided by.
+    pills_started_at: Cell<Option<f64>>,
 }
 
 impl UiMeterView {
@@ -104,6 +110,7 @@ impl UiMeterView {
             meter_style: Cell::new(style),
             pill_levels: RefCell::new(PillLevels::new(METER_BAR_COUNT)),
             pill_strip,
+            pills_started_at: Cell::new(None),
         }
     }
 
@@ -172,6 +179,7 @@ impl UiMeterView {
         meter_bar_levels.fill(0.0);
         drop(meter_bar_levels);
         self.pill_levels.borrow_mut().clear();
+        self.pills_started_at.set(None);
         self.pill_strip.stop();
         self.render_meter_bars(cluster_width);
 
@@ -282,20 +290,35 @@ impl UiMeterView {
 
     /// Moves the pills to now and paints the ones whose audio is in. While
     /// the microphone delivers nothing, no audio comes in and they rest.
+    /// Decides the pills whose audio is in, and moves the strip while there
+    /// is sound.
     fn push_pill(&self, blocks: &[LevelBlock]) {
-        // The strip's clock, the one its motion runs on, so each pill stands
-        // for the time it is moving through the column.
         let now = CACurrentMediaTime();
-        let at = self.pill_strip.clock(now);
-        // The audio onto the strip's clock: media time less its start.
-        let started_at = now - at;
+        let started_at = match self.pills_started_at.get() {
+            Some(started_at) => started_at,
+            None => {
+                self.pills_started_at.set(Some(now));
+                now
+            }
+        };
+        // The recording's clock, which the pills are decided by; the audio
+        // onto it.
+        let at = now - started_at;
         let levels: Vec<LevelSpan> = blocks
             .iter()
-            .map(|block| LevelSpan { start: block.start - started_at, end: block.end - started_at, peak: block.peak })
+            .map(|block| LevelSpan {
+                start: block.start - started_at,
+                end: block.end - started_at,
+                mean_square: block.mean_square,
+            })
             .collect();
+        // The strip's clock, which runs only while it moves: the pills take
+        // its slots.
+        let strip_at = self.pill_strip.clock(now);
         let mut pill_levels = self.pill_levels.borrow_mut();
         pill_levels.advance(at);
-        pill_levels.paint(&levels, at);
+        pill_levels.paint(&levels, at, strip_at);
+        self.pill_strip.set_moving(pill_levels.moving(), now);
     }
 
     fn update_meter_animated_color(&self, level: f32, peak: f32) {
@@ -340,10 +363,13 @@ impl UiMeterView {
     /// the right.
     fn render_pills(&self, span: f64) {
         let pool = pill_strip::pool_size(span);
+        let open_slot = self.pill_strip.open_slot(CACurrentMediaTime());
         let mut pill_levels = self.pill_levels.borrow_mut();
-        // Every pill the strip holds but the next, which is not open yet.
-        pill_levels.fit(pool.saturating_sub(1));
-        self.pill_strip.render(&self.container_view, span, pill_levels.heights(), pill_levels.open_index());
+        // Every slot the strip holds, and the few filled ahead of the open one.
+        pill_levels.fit(pool + SLOTS_FILLED_AHEAD);
+        // Every slot the strip holds but the next, which is not open yet.
+        let heights = pill_levels.slot_heights(open_slot, pool.saturating_sub(1));
+        self.pill_strip.render(&self.container_view, span, &heights, open_slot);
     }
 
     fn render_meter_bars_animated_color(&self, cluster_width: f64) {

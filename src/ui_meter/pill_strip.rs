@@ -2,17 +2,19 @@
 //! from right to left at one pill spacing per `PILL_SECONDS`, in a column
 //! that fades pills in quickly on the right and out slowly on the left.
 //!
-//! The strip carries one linear animation of its translation, started with
-//! the strip's clock, so the render server moves it at the display's rate
-//! and the app does nothing per frame. Pill `k` sits at `k × PILL_PITCH` in
-//! the strip and enters the column at its right edge `ENTRY_DELAY_SECONDS`
-//! after its time begins, so its height is final before it can be seen. Only
-//! enough layers to cover the column and the way in exist: the layer of a
-//! pill that has left the column on the left becomes the next pill on the
-//! right.
+//! The strip carries one linear animation of its translation, so the render
+//! server moves it at the display's rate and the app does nothing per frame.
+//! It moves only while there is sound: its layer's timing is paused and
+//! resumed (Apple's Technical Q&A QA1673), so the strip's clock, its local
+//! time since it started, runs only while it moves. Slot `s` sits at
+//! `s × PILL_PITCH` in the strip and enters the column at its right edge when
+//! the strip's clock reaches `s × PILL_SECONDS + ENTRY_DELAY_SECONDS`, after
+//! the pill it holds is final. Only enough layers to cover the column and the
+//! way in exist: the layer of a slot that has left the column on the left
+//! becomes the next slot on the right.
 //!
 //! With Reduce Motion on when the strip starts, it does not glide: it steps
-//! one pill spacing to the left as each pill opens.
+//! one slot spacing to the left as each slot opens on the strip's clock.
 
 use std::cell::{Cell, RefCell};
 
@@ -29,19 +31,20 @@ use super::pill_levels::{ENTRY_DELAY_SECONDS, PILL_SECONDS};
 use crate::overlay::reduce_motion;
 use super::{cg_color_in, centred_bar_frame};
 
-/// Width of each pill.
-pub(super) const PILL_WIDTH: f64 = 4.75;
+/// Width of each pill: 30% narrower than the first pills (4.75 pt).
+pub(super) const PILL_WIDTH: f64 = 3.325;
 /// Gap between pills.
 const PILL_SPACING: f64 = 2.0;
 /// Distance from one pill to the next.
 const PILL_PITCH: f64 = PILL_WIDTH + PILL_SPACING;
-const PILL_CORNER_RADIUS: f64 = 2.0;
+/// Scaled with the width (2 pt at 4.75 pt), so the pills keep their shape.
+const PILL_CORNER_RADIUS: f64 = 1.4;
 /// Every pill's opacity, in the label color: the level changes only heights.
 const PILL_OPACITY: f64 = 0.5;
 /// How far in from the column's right edge the pills fade in. Short, since
 /// pills enter final (`ENTRY_DELAY_SECONDS`) and the fade only delays them:
-/// at the strip's 67.5 pt/s, 8 pt takes 0.12 s to cross, and 25 pt took
-/// 0.37 s.
+/// at the strip's 53.25 pt/s, 8 pt takes 0.15 s to cross, and 25 pt took
+/// 0.47 s.
 const ENTRY_FADE_WIDTH: f64 = 8.0;
 /// How far in from the column's left edge the pills fade out.
 const EXIT_FADE_WIDTH: f64 = 25.0;
@@ -59,8 +62,11 @@ pub(super) struct PillStrip {
     /// Moves; holds the pills at their places.
     strip: Retained<CALayer>,
     pills: RefCell<Vec<Retained<CALayer>>>,
-    /// When the strip started moving, in media time (`CACurrentMediaTime`).
-    started_at: Cell<Option<f64>>,
+    /// The strip layer's local time when it started (`convertTime` of the
+    /// media time then); its clock is its local time since.
+    started_local: Cell<Option<f64>>,
+    /// Whether the strip moves: its layer's timing is paused while not.
+    moving: Cell<bool>,
     /// Whether the strip steps instead of gliding: Reduce Motion was on when
     /// it started.
     steps: Cell<bool>,
@@ -93,7 +99,8 @@ impl PillStrip {
             fade,
             strip,
             pills: RefCell::new(Vec::new()),
-            started_at: Cell::new(None),
+            started_local: Cell::new(None),
+            moving: Cell::new(false),
             steps: Cell::new(false),
         }
     }
@@ -102,30 +109,67 @@ impl PillStrip {
         without_actions(|| self.column.setHidden(hidden));
     }
 
-    /// The strip's clock at media time `now`: seconds since it started
-    /// moving, starting it now if it has not.
+    /// The strip's clock at media time `now`: the seconds it has moved,
+    /// which stand still while it does not. Starts the strip, still, if it
+    /// has not started.
     pub(super) fn clock(&self, now: f64) -> f64 {
-        let started_at = match self.started_at.get() {
-            Some(started_at) => started_at,
-            None => {
-                self.start(now);
-                now
-            }
+        let started_local = match self.started_local.get() {
+            Some(started_local) => started_local,
+            None => self.start(now),
         };
-        now - started_at
+        self.strip.convertTime_fromLayer(now, None) - started_local
+    }
+
+    /// The slot at the column's right edge at media time `now`: the one the
+    /// strip's clock is in, or 0 before it starts.
+    pub(super) fn open_slot(&self, now: f64) -> u64 {
+        match self.started_local.get() {
+            Some(started_local) => ((self.strip.convertTime_fromLayer(now, None) - started_local) / PILL_SECONDS).floor().max(0.0) as u64,
+            None => 0,
+        }
+    }
+
+    /// Moves the strip or holds it still from media time `now`, pausing and
+    /// resuming its layer's timing as Apple's Technical Q&A QA1673 does: the
+    /// paused local time is kept in `timeOffset`, and `beginTime` takes up
+    /// the time spent paused. Its one animation carries on where it stopped.
+    pub(super) fn set_moving(&self, moving: bool, now: f64) {
+        if self.started_local.get().is_none() || self.moving.replace(moving) == moving {
+            return;
+        }
+        without_actions(|| {
+            if moving {
+                let paused_local = self.strip.timeOffset();
+                self.strip.setSpeed(1.0);
+                self.strip.setTimeOffset(0.0);
+                self.strip.setBeginTime(0.0);
+                let since_pause = self.strip.convertTime_fromLayer(now, None) - paused_local;
+                self.strip.setBeginTime(since_pause);
+            } else {
+                let paused_local = self.strip.convertTime_fromLayer(now, None);
+                self.strip.setSpeed(0.0);
+                self.strip.setTimeOffset(paused_local);
+            }
+        });
     }
 
     /// Stops the strip and puts it back at its start.
     pub(super) fn stop(&self) {
         self.strip.removeAnimationForKey(&NSString::from_str(STRIP_ANIMATION_KEY));
-        without_actions(|| self.strip.setTransform(CATransform3D::new_translation(0.0, 0.0, 0.0)));
-        self.started_at.set(None);
+        without_actions(|| {
+            self.strip.setTransform(CATransform3D::new_translation(0.0, 0.0, 0.0));
+            self.strip.setSpeed(1.0);
+            self.strip.setTimeOffset(0.0);
+            self.strip.setBeginTime(0.0);
+        });
+        self.started_local.set(None);
+        self.moving.set(false);
     }
 
     /// Lays the column out `span` wide in `container` (the meter's view) and
-    /// gives every pill held its height: `heights` are the pills up to
-    /// `open_index`, the open one last.
-    pub(super) fn render(&self, container: &NSView, span: f64, heights: &[f32], open_index: u64) {
+    /// gives every pill held its height: `heights` are the slots up to
+    /// `open_index`, the open one last, and `None` shows no pill.
+    pub(super) fn render(&self, container: &NSView, span: f64, heights: &[Option<f32>], open_index: u64) {
         let pool = pool_size(span);
         let color = cg_color_in(container, &|| NSColor::labelColor().colorWithAlphaComponent(PILL_OPACITY));
         without_actions(|| {
@@ -147,22 +191,36 @@ impl PillStrip {
             let pills = self.pills.borrow();
             for pill in held_pills(open_index, pool) {
                 let layer = &pills[slot(pill, pool)];
-                let frame = centred_bar_frame(pill_x(pill), PILL_WIDTH, pill_height(pill, open_index, heights));
-                layer.setFrame(frame);
+                // A slot never filled shows no pill, not a dot.
+                let height = pill_height(pill, open_index, heights);
+                layer.setHidden(height.is_none());
+                layer.setFrame(centred_bar_frame(pill_x(pill), PILL_WIDTH, height.unwrap_or(0.0)));
                 layer.setBackgroundColor(Some(&color));
                 layer.setCornerRadius(PILL_CORNER_RADIUS);
             }
         });
     }
 
-    fn start(&self, now: f64) {
-        self.started_at.set(Some(now));
+    /// Starts the strip still at media time `now`, and returns its local
+    /// time then.
+    fn start(&self, now: f64) -> f64 {
+        let started_local = self.strip.convertTime_fromLayer(now, None);
+        self.started_local.set(Some(started_local));
+        // Still until the first sound.
+        self.moving.set(true);
+        self.set_moving(false, now);
         // Read as the motion starts, like the overlay's other motion, so a
         // change applies from the next recording.
         self.steps.set(reduce_motion());
-        if self.steps.get() {
-            return;
+        if !self.steps.get() {
+            self.add_motion(started_local);
         }
+        started_local
+    }
+
+    /// Adds the strip's one linear motion, from `started_local` on its
+    /// local time.
+    fn add_motion(&self, started_local: f64) {
         let animation = CABasicAnimation::animationWithKeyPath(Some(ns_string!("transform.translation.x")));
         // SAFETY: `transform.translation.x` animates between NSNumbers.
         unsafe {
@@ -173,7 +231,7 @@ impl PillStrip {
         // No timing function: nil is linear pacing, while even the linear
         // CAMediaTimingFunction is a Bezier solved to a tolerance that, over
         // this long an animation, put the strip up to 28 pt off (findings.md).
-        animation.setBeginTime(self.strip.convertTime_fromLayer(now, None));
+        animation.setBeginTime(started_local);
         animation.setRemovedOnCompletion(false);
         animation.setFillMode(unsafe { kCAFillModeForwards });
         self.strip.addAnimation_forKey(&animation, Some(&NSString::from_str(STRIP_ANIMATION_KEY)));
@@ -214,15 +272,15 @@ fn strip_offset(elapsed: f64) -> f64 {
     -elapsed * (PILL_PITCH / PILL_SECONDS)
 }
 
-/// How far the stepping strip (Reduce Motion) has moved while pill
-/// `open_index` is open: the open pill stands at the right edge for its time.
+/// How far the stepping strip (Reduce Motion) has moved while slot
+/// `open_index` is open on the strip's clock.
 fn stepped_offset(open_index: u64) -> f64 {
     strip_offset(open_index as f64 * PILL_SECONDS)
 }
 
-/// Where pill 0 sits at the strip's start in a column `span` wide: as far
+/// Where slot 0 sits at the strip's start in a column `span` wide: as far
 /// right of the column as the strip moves in `ENTRY_DELAY_SECONDS`, so each
-/// pill enters the column that long after its time begins.
+/// slot enters the column that long after its time on the strip's clock.
 fn right_anchor(span: f64) -> f64 {
     span - strip_offset(ENTRY_DELAY_SECONDS)
 }
@@ -246,12 +304,13 @@ fn slot(index: i64, pool: usize) -> usize {
     index.rem_euclid(pool as i64) as usize
 }
 
-/// Pill `index`'s height: from `heights` (the pills up to `open_index`, the
-/// open one last), or resting when it is older than them or not open yet.
-fn pill_height(index: i64, open_index: u64, heights: &[f32]) -> f32 {
+/// Slot `index`'s height: from `heights` (the slots up to `open_index`, the
+/// open one last), or `None`, no pill, when it is older than them, not open
+/// yet, or never filled.
+fn pill_height(index: i64, open_index: u64, heights: &[Option<f32>]) -> Option<f32> {
     let age = open_index as i64 - index;
     if age < 0 || age as usize >= heights.len() {
-        0.0
+        None
     } else {
         heights[heights.len() - 1 - age as usize]
     }
@@ -367,8 +426,8 @@ mod tests {
 
     #[test]
     fn a_pill_is_fully_shown_within_a_quarter_second_of_entering() {
-        // It crosses its own width and the 8 pt fade at 67.5 pt/s: 0.19 s.
-        // Across a 25 pt fade it took 0.44 s.
+        // It crosses its own width and the 8 pt fade at 53.25 pt/s: 0.21 s.
+        // Across a 25 pt fade it took 0.53 s.
         let entry = ENTRY_DELAY_SECONDS;
         let [_, _, right_opaque, _] = fade_locations(COLUMN);
         let fully_shown = (0..=1000)
@@ -380,12 +439,13 @@ mod tests {
 
     #[test]
     fn each_pill_takes_its_own_height() {
-        // Pills 5 to 8, pill 8 open.
-        let heights = [0.1, 0.2, 0.3, 0.4];
-        assert_eq!(pill_height(8, 8, &heights), 0.4);
-        assert_eq!(pill_height(5, 8, &heights), 0.1);
-        // Older than the history, and the next pill, rest.
-        assert_eq!(pill_height(4, 8, &heights), 0.0);
-        assert_eq!(pill_height(9, 8, &heights), 0.0);
+        // Slots 5 to 8, slot 8 open; slot 6 a dot, slot 5 never filled.
+        let heights = [None, Some(0.0), Some(0.3), Some(0.4)];
+        assert_eq!(pill_height(8, 8, &heights), Some(0.4));
+        assert_eq!(pill_height(6, 8, &heights), Some(0.0));
+        assert_eq!(pill_height(5, 8, &heights), None);
+        // Older than the history, and the next slot, have no pill.
+        assert_eq!(pill_height(4, 8, &heights), None);
+        assert_eq!(pill_height(9, 8, &heights), None);
     }
 }

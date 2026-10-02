@@ -14,7 +14,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Build the `.app` bundle: `just bundle-release`
 - Build the DMG: `just bundle-dmg`
 - Install to `~/Applications` and launch: `just install-app && just start`
-- Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` and `PillTuning` value, the meter style, the voice that drives the meter (a synthetic voice that alternates soft and loud, queuing its loudness as the audio callback does, or the microphone from the user's `[mic]` config through the app's own audio path), a readout of the pills' range and the latest block's peak, the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
+- Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` and `PillTuning` value, the meter style, the voice that drives the meter (a synthetic voice that alternates soft and loud with a 1.5 s silence every 6 s, queuing its loudness as the audio callback does, or the microphone from the user's `[mic]` config through the app's own audio path), a readout of the pills' range and the latest block's level, the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
 - Capture every overlay state over light and dark backdrops, then exit: `cargo run -- --overlay-snapshot .tmp/snapshots` (needs Screen Recording permission for the terminal).
 
 ## Setup

@@ -240,7 +240,7 @@ where
                     // it ends as it arrives.
                     let end = CACurrentMediaTime();
                     let seconds = (data.len() / channels.max(1)) as f64 / sample_rate;
-                    let _ = levels.try_send(LevelBlock { start: end - seconds, end, peak: 10f32.powf(peak_db / 20.0) });
+                    let _ = levels.try_send(LevelBlock { start: end - seconds, end, mean_square: 10f32.powf(level_db / 10.0) });
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {
                         let chunk = pcm_buffer.split_to(640).freeze();

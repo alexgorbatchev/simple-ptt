@@ -74,9 +74,12 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 - **A layer's new model position shows only after the transaction commits.** A recycled pill sampled a few milliseconds after its model moved was still drawn at its old position (off the column on the left, so invisible). Compare model and presentation only after the run loop has turned.
 - Measured with a probe sampling the strip's presentation layer every 4 ms: every pill layer only slid left with the strip or was recycled from beyond the left edge to the right edge (17 recycles in 3.5 s), and painted pills kept their height in all 66,424 checks.
 
-## When a pill may change height
+## When a pill may change height, and when the strip moves
 
-- **The fade does not hide a pill growing.** When pills took their height while inside the right-hand 25 pt fade, the user saw them grow from dots. The strip sits `ENTRY_DELAY_SECONDS` (0.255 s) right of the column, and a pill is final by `LATEST_PAINT_SECONDS` (0.225 s). A probe of the tuner (which queues loudness for its synthetic voice), sampling every pill layer every 4 ms for 6.5 s, found all 55 height changes right of the column and none inside it, fade included, in each of two runs. With the strip anchored at the column's right edge instead, all 55 were inside it. The requirements behind this are in `docs/internal/references/pill-meter.md`.
+- **The fade does not hide a pill growing.** When pills took their height while inside the right-hand 25 pt fade, the user saw them grow from dots. Slot `s` enters the column when the strip's clock reaches `s × PILL_SECONDS + ENTRY_DELAY_SECONDS` (0.255 s), a pill is decided by `LATEST_PAINT_SECONDS` (0.225 s), and a pill is never put in a slot already in view (`push_slot`). A probe of the tuner, sampling every pill layer every 4 ms for 6.5 s, found all height changes (44 and 47) right of the column and none inside it, fade included, in each of two runs. With the strip anchored at the column's right edge instead, all 47 were inside it.
+- **Pausing the strip's layer timing stops and resumes its long animation in place** (Apple's Technical Q&A QA1673: `speed` 0 with the paused local time in `timeOffset`, then `speed` 1 with `beginTime` taking up the pause; `PillStrip::set_moving`). Over the tuner's 1.5 s silence the presentation layer's translation held still from 4.96 to 6.00 s, and the strip moved at 53.22 and 53.25 pt/s (53.25 expected) before and after the pause, with no jump.
+- **Sampling the presentation layer every 4 ms doubles a per-sample speed.** It advances once per display frame, so sample pairs that show motion carry a whole frame's travel over 4 ms. Measure speed over a stretch of a second or more.
+- The requirements behind the pills are in `docs/internal/references/pill-meter.md`.
 
 ## Private Core Animation (halo)
 

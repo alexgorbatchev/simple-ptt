@@ -69,11 +69,11 @@ const VOICE_CREST_DB: f32 = 10.0;
 
 /// A voice for the meter, in dBFS: syllables
 /// between -44 and -37 dBFS with dips between words and a breath at the
-/// room's noise every 2.4 seconds, soft for about 8 seconds, then
-/// `VOICE_LOUDER_DB` louder for as long, so the pills can be watched adapting
-/// both ways.
+/// room's noise every 2.4 seconds, a 1.5 second silence every 6 seconds (the
+/// pill strip stops in it), soft for about 8 seconds, then `VOICE_LOUDER_DB`
+/// louder for as long, so the pills can be watched adapting both ways.
 fn voice_level_db(tick: u64) -> f32 {
-    if tick % 32 >= 28 {
+    if tick % 32 >= 28 || tick % 80 >= 60 {
         return VOICE_ROOM_DB;
     }
     let louder = if (tick / VOICE_PHASE_TICKS) % 2 == 1 { VOICE_LOUDER_DB } else { 0.0 };
@@ -200,13 +200,14 @@ static INTERNALS: [NumberField; 12] = [
 ];
 
 /// The pills' values (`PillTuning`), each with the range worth trying.
-static PILLS: [NumberField<PillTuning>; 10] = [
+static PILLS: [NumberField<PillTuning>; 11] = [
     number!("noise_gate_db", 0.0, 30.0, noise_gate_db),
     number!("min_span_db", 3.0, 30.0, min_span_db),
     number!("floor_seconds", 1.0, 30.0, floor_seconds),
     number!("top_quantile", 0.5, 1.0, top_quantile),
     number!("top_seconds", 1.0, 30.0, top_seconds),
     number!("loudness_share", 0.0, 1.0, loudness_share),
+    number!("pause_after_seconds", 0.0, 2.0, pause_after_seconds),
     number!("tall_low", 0.0, 1.0, tall_low),
     number!("tall_high", 0.0, 1.0, tall_high),
     number!("short_low", 0.0, 1.0, short_low),
@@ -418,12 +419,12 @@ impl TunerState {
             Some(error) => format!("microphone: {error}"),
             None => {
                 let range = self.overlay.pill_range_now();
-                let peak = self
+                let level = self
                     .app_state
                     .level_blocks()
                     .last()
-                    .map_or_else(|| "–".to_owned(), |block| format!("{:.1}", 20.0 * block.peak.max(1e-9).log10()));
-                pill_readout_text(range, &peak)
+                    .map_or_else(|| "–".to_owned(), |block| format!("{:.1}", 10.0 * block.mean_square.max(1e-18).log10()));
+                pill_readout_text(range, &level)
             }
         };
         let text = NSString::from_str(&text);
@@ -544,13 +545,13 @@ impl TunerState {
     }
 
     /// Publishes the synthetic voice as the audio callback does for the
-    /// microphone: the loudness of the audio since the last tick, whose peak
-    /// is `VOICE_CREST_DB` above its level `level_db`.
+    /// microphone: the loudness of the audio since the last tick, at an RMS
+    /// level of `level_db`.
     fn publish_voice(&self, level_db: f32) {
         let now = objc2_quartz_core::CACurrentMediaTime();
         if let Some(start) = self.last_level_block_end.replace(Some(now)) {
-            let peak = 10f32.powf((level_db + VOICE_CREST_DB) / 20.0);
-            let _ = self.app_state.level_sender().try_send(crate::state::LevelBlock { start, end: now, peak });
+            let mean_square = 10f32.powf(level_db / 10.0);
+            let _ = self.app_state.level_sender().try_send(crate::state::LevelBlock { start, end: now, mean_square });
         }
     }
 
@@ -797,7 +798,7 @@ fn name_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 /// so its changing numbers never resize the grid and move the controls.
 /// Longer text (a microphone error) is cut short, and whole in its tooltip.
 fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "-100.0"));
+    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0 }, "-180.0"));
     label.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
         objc2_app_kit::NSFont::smallSystemFontSize(),
         unsafe { objc2_app_kit::NSFontWeightRegular },
@@ -809,10 +810,10 @@ fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
 }
 
 /// The readout for the range the next pill is drawn from and the latest
-/// block's peak, in dBFS.
-fn pill_readout_text(range: PillRange, peak: &str) -> String {
+/// block's level, in dBFS.
+fn pill_readout_text(range: PillRange, level: &str) -> String {
     format!(
-        "floor {:.1} · gate {:.1} · top {:.1} · peak {peak} dBFS",
+        "floor {:.1} · gate {:.1} · top {:.1} · level {level} dBFS",
         range.floor_db, range.gate_db, range.top_db
     )
 }

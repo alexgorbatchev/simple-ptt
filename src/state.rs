@@ -61,12 +61,13 @@ const LEVEL_BLOCK_KEEP_SECONDS: f64 = 2.0;
 const QUEUED_LEVEL_BLOCKS: usize = 256;
 
 /// The loudness of one block of captured audio, from `start` to `end` on the
-/// media clock (`CACurrentMediaTime`): its loudest sample (1 is full scale).
+/// media clock (`CACurrentMediaTime`): its mean square (its RMS squared, 1 at
+/// full scale).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LevelBlock {
     pub start: f64,
     pub end: f64,
-    pub peak: f32,
+    pub mean_square: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -445,7 +446,7 @@ mod tests {
         use super::LevelBlock;
 
         let state = AppState::new();
-        let block = |end: f64| LevelBlock { start: end - 0.01, end, peak: 0.5 };
+        let block = |end: f64| LevelBlock { start: end - 0.01, end, mean_square: 0.25 };
         let sender = state.level_sender();
         sender.try_send(block(10.0)).unwrap();
         sender.try_send(block(11.5)).unwrap();
