@@ -23,7 +23,7 @@ hotkey = "F5"
 # Escape, or F7. The Settings window capture button is the easiest way to set it.
 correction_key = "LeftMeta"
 
-# Optional. Overlay font family.
+# Optional. Overlay font family. Omit to use the monospaced system font.
 # font_name = "Menlo"
 
 # Main transcript font size in the overlay.

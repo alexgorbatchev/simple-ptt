@@ -15,7 +15,9 @@ use crate::config::{
     UiConfig, UiMeterStyle,
 };
 
-pub const SYSTEM_DEFAULT_FONT_LABEL: &str = "System default";
+/// The font popup's title for an unset `ui.font_name`: the overlay then uses
+/// the monospaced system font (`default_overlay_font` in `src/overlay/mod.rs`).
+pub const SYSTEM_MONOSPACED_FONT_LABEL: &str = "System monospaced";
 pub const TRANSFORMATION_PROVIDER_DISABLED_LABEL: &str = "Disabled";
 
 /// Meter styles in popup order, with the popup title of each.
@@ -132,7 +134,7 @@ impl SettingsForm {
                         .ui
                         .font_name
                         .clone()
-                        .unwrap_or_else(|| SYSTEM_DEFAULT_FONT_LABEL.to_owned()),
+                        .unwrap_or_else(|| SYSTEM_MONOSPACED_FONT_LABEL.to_owned()),
                 ),
                 font_size: Some(config.ui.font_size),
                 footer_font_size: config.ui.footer_font_size,
@@ -190,7 +192,7 @@ impl SettingsForm {
                 correction_key: required_text(&general.correction_key, "Correction key")?,
                 font_name: optional_popup_value(
                     general.font_name_title.as_deref(),
-                    SYSTEM_DEFAULT_FONT_LABEL,
+                    SYSTEM_MONOSPACED_FONT_LABEL,
                 ),
                 font_size: required_number(general.font_size, "Font size")?,
                 footer_font_size: general.footer_font_size,
@@ -445,7 +447,7 @@ mod tests {
 
         assert_eq!(
             form.general.font_name_title.as_deref(),
-            Some("System default")
+            Some("System monospaced")
         );
         assert_eq!(
             form.transformation.provider_title.as_deref(),
@@ -458,7 +460,7 @@ mod tests {
 
     #[test]
     fn sentinel_and_blank_popup_titles_read_back_as_unset() {
-        for title in [None, Some(""), Some("  "), Some("System default")] {
+        for title in [None, Some(""), Some("  "), Some("System monospaced")] {
             let mut form = SettingsForm::from_config(&customized_config());
             form.general.font_name_title = title.map(str::to_owned);
 

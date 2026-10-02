@@ -5,7 +5,7 @@ use objc2_app_kit::{NSComboBox, NSFontManager, NSPopUpButton};
 use objc2_foundation::NSString;
 
 use super::form::{
-    METER_STYLE_TITLES, SYSTEM_DEFAULT_FONT_LABEL, TRANSFORMATION_PROVIDER_DISABLED_LABEL,
+    METER_STYLE_TITLES, SYSTEM_MONOSPACED_FONT_LABEL, TRANSFORMATION_PROVIDER_DISABLED_LABEL,
 };
 use super::helpers::DEEPGRAM_MODEL_OPTIONS;
 
@@ -26,7 +26,7 @@ pub fn populate_font_name_popup(
     selected_font_name: Option<&str>,
 ) {
     popup_button.removeAllItems();
-    popup_button.addItemWithTitle(&NSString::from_str(SYSTEM_DEFAULT_FONT_LABEL));
+    popup_button.addItemWithTitle(&NSString::from_str(SYSTEM_MONOSPACED_FONT_LABEL));
     for font_name in available_font_family_names {
         popup_button.addItemWithTitle(&NSString::from_str(font_name));
     }
