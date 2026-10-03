@@ -73,7 +73,7 @@ pub fn make_status_bar_active_icon(_mtm: MainThreadMarker) -> Retained<NSImage> 
 
     let size = image.size();
 
-    NSColor::labelColor().set();
+    NSColor::whiteColor().set();
     draw_microphone_symbol(size);
 
     let dot = NSBezierPath::bezierPathWithOvalInRect(scaled_svg_rect(size, 14.5, 0.5, 9.0, 9.0));
