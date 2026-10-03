@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-04 11:04
+last_modified: 2026-10-05 11:14
 status: current
 ---
 
@@ -32,6 +32,10 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 
 ## Scroll views and text
 
+- **Waiting feedback must update before the finishing layout hold** (macOS 26.6.2).
+  - Updating the footer after the finishing early return left the shortcut hint displayed at `t=5.605` with `waiting=true, finishing=true`. The footer now changes before that return, while the hold still retains text, meter, and layout.
+  - Two runs sampled every 12 ms and checked 542 samples each after selecting seven characters at `t=1.9`: transcript screen rect stayed `(584.0, 732.8, 560.0, 120.19999999999999)`, selection stayed `{ location: 0, length: 7 }`, glass height stayed `180.0`, and finishing scale stayed `0.8` after the transition. Both live and finishing notices appeared and cleared within the next UI update. Restoring the earlier return reproduced the missing finishing notice at `t=5.605` with the same geometry and selection.
+  - Light and dark captures show the waiting footer at full recording size and uniformly scaled with finishing narration. The footer keeps `secondaryLabelColor`; no private API is added.
 - **An unchanged overlay refresh must preserve text selection and scrolling** (macOS 26.6.2).
   - With seven error-text characters selected, the old `OverlayWindow::update` moved the selection from `{ location: 0, length: 7 }` to `{ location: 37, length: 0 }`. A subsequent native Command-C event left the pasteboard unchanged; the same event copied successfully before the refresh.
   - `set_working_text` already moves the caret and scrolls when replacing text. `update` leaves these alone. In two probe runs, selection remained `{ location: 0, length: 7 }` through the refresh and Command-C wrote the selected text. Restoring the unconditional caret move reproduced the failure.

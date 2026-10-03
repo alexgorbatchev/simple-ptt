@@ -25,7 +25,8 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 
 ## Conventions
 - Keep AppKit work on the main thread. Follow the `MainThreadMarker` and AppDelegate patterns in `src/main.rs` and `src/app/mod.rs`; do not move Cocoa/AppKit calls onto worker threads.
-- Each Deepgram session owns its Tokio runtime because the SDK detaches its transport tasks. Keep shutdown bounded and abortable in `src/transcription/session.rs`, and settle cancellation through `finish_session` in `src/transcription/mod.rs` before pasting, transforming, or resuming. Terminal metadata ends transcription without waiting for transport EOF; dropping the session runtime releases the SDK tasks and socket.
+- Each Deepgram session owns its Tokio runtime so all session tasks and sockets are released when it ends. Keep shutdown bounded and abortable in `src/transcription/session.rs`, and settle cancellation through `finish_session` in `src/transcription/mod.rs` before pasting, transforming, or resuming. Terminal metadata ends transcription without waiting for transport EOF.
+- Deepgram uses the user's SDK fork pinned to a reviewed commit. Read `docs/internal/references/deepgram-sessions.md` before changing its dependency, task ownership, cancellation, deadlines, or waiting indication; a dropped Tokio JoinHandle detaches its task, and a keep-alive receives no server reply.
 - The settings window is AppKit with Auto Layout through the `objc2-app-kit` crate (decision in #7): a toolbar-style `NSTabViewController` with one pane per area in `src/settings_window/panes/`, each pane an `NSGridView` form built with `FormGrid` in `src/settings_window/grid.rs`. The panes are General, Microphone, Deepgram, and Transformation; the Transformation pane also holds the dictation and correction prompt editors (`src/settings_window/panes/prompt_editors.rs`) below its form, because both prompts go only to the transformation LLM. Do not position settings views with frames or computed offsets, do not draw layer borders on native controls, use system font variants only (no monospaced or custom families; the monospaced-digit system font is fine for changing numbers), and do not add SwiftUI, another GUI toolkit, or new FFI for settings UI.
 - When adding or changing a setting, update all layers together: the pane in `src/settings_window/panes/` (control load/read), its field in `SettingsForm` in `src/settings_window/form.rs` (`from_config`/`to_config`, with round-trip tests there), `src/config/mod.rs` (defaults, resolution, persistence), and `validate_settings_config` in `src/app/mod.rs`. Numeric settings use `number_field` in `src/settings_window/controls.rs` so an `NSNumberFormatter` rejects invalid text at entry.
 - Settings window controls send target/action messages to `AppDelegate`. Define each action once as a row of the `settings_actions!` table in `src/settings_window/actions.rs`, and implement the matching `#[unsafe(method(...))]` on `AppDelegate` in `src/app/mod.rs`. Do not pass raw `sel!` selectors to settings controls; `app_delegate_implements_every_settings_window_action` fails when a selector is not implemented.
@@ -68,6 +69,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - `src/transcription/`
 - `src/permissions.rs`
 - `docs/internal/references/pill-meter.md`
+- `docs/internal/references/deepgram-sessions.md`
 - `.agents/skills/overlay-visual-debugging/`
 - `.agents/skills/readme-demo/`
 - `scripts/build-macos-app.sh`

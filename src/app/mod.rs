@@ -1690,6 +1690,14 @@ fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retai
     main_menu
 }
 
+fn deepgram_status_title(state: u8, waiting: bool) -> &'static str {
+    if waiting && matches!(state, STATE_RECORDING | STATE_PROCESSING) {
+        "Waiting…"
+    } else {
+        ""
+    }
+}
+
 fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) {
     if let Some(status_item) = delegate.ivars().status_item.get() {
         if let Some(button) = status_item.button(mtm) {
@@ -1704,6 +1712,10 @@ fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) 
             };
             button.setImage(Some(icon));
             button.setContentTintColor(None);
+            let title = deepgram_status_title(state, delegate.ivars().state.is_deepgram_waiting());
+            if button.title().to_string() != title {
+                button.setTitle(&NSString::from_str(title));
+            }
         }
     }
 }
@@ -1746,6 +1758,7 @@ const STATUS_POLL_BACKGROUND_REFRESH_TICKS: u64 = 20;
 #[derive(Clone)]
 struct UiSnapshot {
     state: u8,
+    deepgram_waiting: bool,
     mic_meter: MicMeterSnapshot,
     overlay_dismissed: bool,
     overlay_correction_active: bool,
@@ -1761,6 +1774,7 @@ impl UiSnapshot {
     fn initial() -> Self {
         Self {
             state: STATE_IDLE,
+            deepgram_waiting: false,
             mic_meter: MicMeterSnapshot::default(),
             overlay_dismissed: false,
             overlay_correction_active: false,
@@ -1775,6 +1789,7 @@ impl UiSnapshot {
     fn capture(state: &AppState) -> Self {
         Self {
             state: state.get_state(),
+            deepgram_waiting: state.is_deepgram_waiting(),
             mic_meter: state.mic_meter_snapshot(),
             overlay_dismissed: state.is_overlay_dismissed(),
             overlay_correction_active: state.is_overlay_correction_active(),
@@ -1790,6 +1805,7 @@ impl UiSnapshot {
     /// whenever the text is replaced.
     fn ui_differs_from(&self, other: &Self) -> bool {
         self.state != other.state
+            || self.deepgram_waiting != other.deepgram_waiting
             || self.overlay_dismissed != other.overlay_dismissed
             || self.overlay_correction_active != other.overlay_correction_active
             || !Arc::ptr_eq(
@@ -1880,7 +1896,7 @@ mod tests {
 
     use super::{
         audio_startup_failure_alert_text, config_file_is_missing,
-        missing_config_alert_text, overlay_style_from_config,
+        deepgram_status_title, missing_config_alert_text, overlay_style_from_config,
         settings_presentation_turn_selector, status_poll_selector, validate_settings_config,
         AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
@@ -1889,8 +1905,8 @@ mod tests {
     use crate::settings_window::actions::SettingsAction;
     use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{
-        AppState, MicMeterSnapshot, OverlayText, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING,
-        STATE_TRANSFORMING,
+        AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
+        STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
     };
 
     #[test]
@@ -1953,6 +1969,25 @@ mod tests {
             style.shortcut_hint.as_deref(),
             Some("<Hold Cmd> correction <F5> paste <Cmd+V> insert <ESC> cancel")
         );
+    }
+
+    #[test]
+    fn menu_bar_wait_notice_follows_transcription_progress() {
+        let state = AppState::new();
+        for phase in [STATE_RECORDING, STATE_PROCESSING] {
+            state.set_state(phase);
+            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+            state.set_deepgram_waiting(true);
+            state.dismiss_overlay();
+            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "Waiting…");
+            state.set_deepgram_waiting(false);
+            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+        }
+        state.set_deepgram_waiting(true);
+        for phase in [STATE_IDLE, STATE_ERROR, STATE_BUFFER_READY, STATE_TRANSFORMING] {
+            state.set_state(phase);
+            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+        }
     }
 
     #[test]
@@ -2056,6 +2091,17 @@ mod tests {
         state.set_state(STATE_TRANSFORMING);
 
         assert!(UiSnapshot::capture(&state).capturing_audio);
+    }
+
+    #[test]
+    fn a_deepgram_wait_refreshes_the_ui_when_it_starts_and_when_it_clears() {
+        let state = AppState::new();
+        let mut poll = StatusPollState::new();
+        poll.advance(&UiSnapshot::capture(&state), false);
+        state.set_deepgram_waiting(true);
+        assert_eq!(poll.advance(&UiSnapshot::capture(&state), false), StatusPollOutcome::Refresh { ui_changed: true });
+        state.set_deepgram_waiting(false);
+        assert_eq!(poll.advance(&UiSnapshot::capture(&state), false), StatusPollOutcome::Refresh { ui_changed: true });
     }
 
     #[test]

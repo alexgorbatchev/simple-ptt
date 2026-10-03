@@ -81,6 +81,8 @@ pub struct MicMeterSnapshot {
 #[derive(Debug)]
 pub struct AppState {
     abort_requested: AtomicBool,
+    abort_notification: tokio::sync::Notify,
+    deepgram_waiting: AtomicBool,
     clip_event_counter: AtomicU32,
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
@@ -115,6 +117,8 @@ impl AppState {
         let (spectrum_sender, spectrum_receiver) = sync_channel(QUEUED_SPECTRUM_FRAMES);
         Arc::new(Self {
             abort_requested: AtomicBool::new(false),
+            abort_notification: tokio::sync::Notify::new(),
+            deepgram_waiting: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
@@ -235,7 +239,8 @@ impl AppState {
     }
 
     pub fn request_abort(&self) {
-        self.abort_requested.store(true, Ordering::Relaxed);
+        self.abort_requested.store(true, Ordering::Release);
+        self.abort_notification.notify_waiters();
     }
 
     pub fn clear_abort_request(&self) {
@@ -243,7 +248,27 @@ impl AppState {
     }
 
     pub fn is_abort_requested(&self) -> bool {
-        self.abort_requested.load(Ordering::Relaxed)
+        self.abort_requested.load(Ordering::Acquire)
+    }
+
+    /// Waits without polling, including a request made before this wait.
+    /// Register before checking the latch so a concurrent request is not lost.
+    pub async fn wait_for_abort(&self) {
+        loop {
+            let notified = self.abort_notification.notified();
+            if self.is_abort_requested() {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn set_deepgram_waiting(&self, waiting: bool) {
+        self.deepgram_waiting.store(waiting, Ordering::Relaxed);
+    }
+
+    pub fn is_deepgram_waiting(&self) -> bool {
+        self.deepgram_waiting.load(Ordering::Relaxed)
     }
 
     pub fn consume_abort_request(&self) -> bool {

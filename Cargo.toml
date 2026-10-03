@@ -78,7 +78,8 @@ cpal = "0.18"
 
 # Deepgram streaming and management
 bytes = "1"
-deepgram = "0.11"
+# Nova shutdown/cancellation fixes on the user's fork, based on SDK 0.11.0.
+deepgram = { git = "https://github.com/alexgorbatchev/deepgram-rust-sdk.git", rev = "05dac8affb5ea68948da7b7fc989956e46f05907" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"

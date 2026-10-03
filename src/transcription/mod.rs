@@ -1,5 +1,6 @@
 pub mod clipboard;
 pub mod session;
+mod progress;
 pub mod text_builder;
 
 pub use clipboard::*;
@@ -217,6 +218,9 @@ pub fn spawn_transcription_thread(
                         Ok(session) => {
                             active_session = Some(session);
                         }
+                        Err(SessionError::Cancelled) => {
+                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                        }
                         Err(error) => {
                             log::error!("failed to start Deepgram session: {}", error);
                             recording_prefix.clear();
@@ -314,6 +318,9 @@ pub fn spawn_transcription_thread(
                         Ok(session) => {
                             active_session = Some(session);
                         }
+                        Err(SessionError::Cancelled) => {
+                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Correction);
+                        }
                         Err(error) => {
                             log::error!("failed to start correction Deepgram session: {}", error);
                             state.set_overlay_correction_active(false);
@@ -329,9 +336,16 @@ pub fn spawn_transcription_thread(
                                 log::warn!("audio queue full; dropping audio chunk");
                             }
                             PushAudioResult::Closed => {
-                                log::warn!("Deepgram session queue closed");
-                                active_session = None;
-                                state.report_error("Deepgram session queue closed unexpectedly");
+                                let session = active_session.take().expect("the closed queue belongs to the active session");
+                                match finish_session(session, &state) {
+                                    Ok(None) => {
+                                        buffered_text.clear();
+                                        recording_prefix.clear();
+                                        resume_after_correction = false;
+                                    }
+                                    Err(error) => state.report_error(error),
+                                    Ok(Some(_)) => state.report_error("Deepgram session queue closed unexpectedly"),
+                                }
                             }
                         }
                     }
@@ -439,6 +453,9 @@ pub fn spawn_transcription_thread(
                         ) {
                             Ok(session) => {
                                 active_session = Some(session);
+                            }
+                            Err(SessionError::Cancelled) => {
+                                complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
                             }
                             Err(error) => {
                                 log::error!(
@@ -579,6 +596,9 @@ pub fn spawn_transcription_thread(
                                         Ok(session) => {
                                             state.set_state(STATE_RECORDING);
                                             active_session = Some(session);
+                                        }
+                                        Err(SessionError::Cancelled) => {
+                                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
                                         }
                                         Err(error) => {
                                             log::error!(
@@ -785,6 +805,9 @@ pub fn spawn_transcription_thread(
                                         state.set_state(STATE_RECORDING);
                                         active_session = Some(session);
                                     }
+                                    Err(SessionError::Cancelled) => {
+                                        complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                                    }
                                     Err(error) => {
                                         log::error!("failed to resume session: {}", error);
                                         state.report_error(error.to_string());
@@ -875,11 +898,12 @@ fn finish_session(session: ActiveSession, state: &AppState) -> Result<Option<Str
 }
 
 fn settle_session_finish(
-    result: Result<String, SessionFinishError>,
+    result: Result<String, SessionError>,
     state: &AppState,
 ) -> Result<Option<String>, String> {
     // Also catch an abort that raced a normal completion or timeout.
-    if state.consume_abort_request() || matches!(result, Err(SessionFinishError::Aborted)) {
+    if state.consume_abort_request() || matches!(result, Err(SessionError::Cancelled)) {
+        state.set_deepgram_waiting(false);
         state.set_dictation_resuming(false);
         state.set_overlay_correction_active(false);
         state.clear_overlay_correction_text();
@@ -891,8 +915,29 @@ fn settle_session_finish(
     }
     match result {
         Ok(text) => Ok(Some(text)),
-        Err(SessionFinishError::Failed(error)) => Err(error),
-        Err(SessionFinishError::Aborted) => unreachable!("aborted sessions are settled above"),
+        Err(SessionError::Failed(error)) => Err(error),
+        Err(SessionError::Cancelled) => unreachable!("aborted sessions are settled above"),
+    }
+}
+
+fn complete_session_cancellation(state: &AppState, buffered_text: &mut String, kind: SessionKind) {
+    state.consume_abort_request();
+    state.set_dictation_resuming(false);
+    state.set_deepgram_waiting(false);
+    state.clear_overlay_error_text();
+    state.clear_overlay_correction_text();
+    state.set_overlay_correction_active(false);
+    state.set_overlay_text_opacity(1.0);
+    match kind {
+        SessionKind::Dictation => {
+            buffered_text.clear();
+            state.clear_overlay_text();
+            state.set_state(STATE_IDLE);
+        }
+        SessionKind::Correction => {
+            state.set_overlay_text(buffered_text.clone());
+            state.set_state(STATE_BUFFER_READY);
+        }
     }
 }
 
@@ -940,6 +985,42 @@ impl Drop for ResumingDictation<'_> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn cancelling_a_dictation_connection_returns_to_idle_without_reopening_the_overlay() {
+        use crate::state::{AppState, STATE_IDLE, STATE_PROCESSING};
+        let state = AppState::new();
+        state.set_state(STATE_PROCESSING);
+        state.set_dictation_resuming(true);
+        state.set_deepgram_waiting(true);
+        state.request_abort();
+        state.dismiss_overlay();
+        let mut buffered_text = "must not be pasted".to_owned();
+        super::complete_session_cancellation(&state, &mut buffered_text, super::SessionKind::Dictation);
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(state.is_overlay_dismissed());
+        assert!(!state.is_abort_requested());
+        assert!(!state.is_capturing_audio());
+        assert!(!state.is_deepgram_waiting());
+        assert!(buffered_text.is_empty());
+    }
+
+    #[test]
+    fn cancelling_a_correction_connection_preserves_the_annotation_without_pasting_it() {
+        use crate::state::{AppState, STATE_BUFFER_READY};
+        let state = AppState::new();
+        state.request_abort();
+        state.dismiss_overlay();
+        state.set_overlay_correction_active(true);
+        state.set_overlay_correction_text("unfinished correction");
+        let mut buffered_text = "the annotation".to_owned();
+        super::complete_session_cancellation(&state, &mut buffered_text, super::SessionKind::Correction);
+        assert_eq!(state.get_state(), STATE_BUFFER_READY);
+        assert_eq!(&*state.overlay_text(), "the annotation");
+        assert!(!state.is_overlay_correction_active());
+        assert!(!state.is_abort_requested());
+        assert!(state.is_overlay_dismissed());
+    }
+
+    #[test]
     fn aborted_session_finish_clears_capture_and_abort_state() {
         use crate::state::{AppState, STATE_IDLE, STATE_PROCESSING};
         let state = AppState::new();
@@ -947,15 +1028,17 @@ mod tests {
         state.set_overlay_correction_text("discard correction");
         state.set_overlay_correction_active(true);
         state.set_dictation_resuming(true);
+        state.set_deepgram_waiting(true);
         state.set_state(STATE_PROCESSING);
         state.dismiss_overlay();
         state.request_abort();
 
-        let result = super::settle_session_finish(Err(super::SessionFinishError::Aborted), &state);
+        let result = super::settle_session_finish(Err(super::SessionError::Cancelled), &state);
 
         assert_eq!(result, Ok(None));
         assert_eq!(state.get_state(), STATE_IDLE);
         assert!(!state.is_abort_requested());
+        assert!(!state.is_deepgram_waiting());
         assert!(!state.is_capturing_audio());
         assert!(!state.is_overlay_correction_active());
         assert!(state.overlay_text().is_empty());
@@ -979,7 +1062,7 @@ mod tests {
         let state = crate::state::AppState::new();
         state.set_overlay_text("incomplete words");
         let result = super::settle_session_finish(
-            Err(super::SessionFinishError::Failed("shutdown timed out".to_owned())), &state,
+            Err(super::SessionError::Failed("shutdown timed out".to_owned())), &state,
         );
         assert_eq!(result, Err("shutdown timed out".to_owned()));
     }

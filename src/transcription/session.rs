@@ -7,11 +7,12 @@ use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self as tokio_mpsc, Sender as TokioSender};
 use tokio_stream::wrappers::ReceiverStream;
-use tokio_stream::StreamExt;
 
+pub use super::progress::SessionError;
+use super::progress::{self, SessionLimits, SessionProgress, WaitingIndicator};
+use super::text_builder::{build_overlay_text, join_transcript_parts};
 use crate::config::DeepgramConfig;
 use crate::state::AppState;
-use super::text_builder::{build_overlay_text, join_transcript_parts};
 
 pub const AUDIO_QUEUE_CAPACITY: usize = 512;
 /// How long a chunk waits for room in a full audio queue before it is
@@ -21,15 +22,6 @@ pub const AUDIO_QUEUE_CAPACITY: usize = 512;
 /// keeps it, and the audio thread never waits because it hands audio over
 /// through an unbounded channel.
 const AUDIO_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
-/// Allow the server to drain queued audio and return its final transcript.
-const SESSION_FINISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-const ABORT_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-
-#[derive(Debug, Eq, PartialEq)]
-pub enum SessionFinishError {
-    Aborted,
-    Failed(String),
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushAudioResult {
@@ -45,11 +37,12 @@ pub enum SessionKind {
 }
 
 pub struct ActiveSession {
-    audio_tx: TokioSender<Result<Bytes, std::io::Error>>,
+    audio_tx: Option<TokioSender<Result<Bytes, std::io::Error>>>,
     kind: SessionKind,
-    task: tokio::task::JoinHandle<Result<String, String>>,
-    // The SDK spawns detached transport tasks. Owning their runtime ensures
-    // they and their sockets are dropped even if the SDK never ends its stream.
+    task: tokio::task::JoinHandle<Result<String, SessionError>>,
+    progress: Arc<SessionProgress>,
+    // Keep all transport work within the session's lifetime, including tasks
+    // spawned independently of the transcription reader.
     runtime: Runtime,
     /// The queue stayed full through a whole wait: chunks are dropped
     /// without waiting until it has room again.
@@ -72,18 +65,32 @@ impl ActiveSession {
     /// until the queue takes one again, so a stall holds the worker (and the
     /// commands queued behind the audio) up for one wait, not one per chunk.
     fn push_audio_within(&self, pcm_data: Bytes, wait: std::time::Duration) -> PushAudioResult {
-        let pcm_data = match self.audio_tx.try_send(Ok(pcm_data)) {
+        let audio_tx = self
+            .audio_tx
+            .as_ref()
+            .expect("a recording session owns its audio sender");
+        let queued_pcm = pcm_data.clone();
+        let pcm_data = match audio_tx.try_send(Ok(pcm_data)) {
             Ok(()) => {
                 self.stalled.set(false);
+                self.progress.audio_queued(&queued_pcm);
                 return PushAudioResult::Ok;
             }
             Err(tokio_mpsc::error::TrySendError::Closed(_)) => return PushAudioResult::Closed,
-            Err(tokio_mpsc::error::TrySendError::Full(_)) if self.stalled.get() => return PushAudioResult::Full,
+            Err(tokio_mpsc::error::TrySendError::Full(_)) if self.stalled.get() => {
+                return PushAudioResult::Full
+            }
             Err(tokio_mpsc::error::TrySendError::Full(pcm_data)) => pcm_data,
         };
         // Built inside the runtime: the timeout needs its timer.
-        match self.runtime.block_on(async { tokio::time::timeout(wait, self.audio_tx.send(pcm_data)).await }) {
-            Ok(Ok(())) => PushAudioResult::Ok,
+        match self
+            .runtime
+            .block_on(async { tokio::time::timeout(wait, audio_tx.send(pcm_data)).await })
+        {
+            Ok(Ok(())) => {
+                self.progress.audio_queued(&queued_pcm);
+                PushAudioResult::Ok
+            }
             Ok(Err(_)) => PushAudioResult::Closed,
             Err(_) => {
                 self.stalled.set(true);
@@ -92,40 +99,37 @@ impl ActiveSession {
         }
     }
 
-    pub fn finish(self, state: &AppState) -> Result<String, SessionFinishError> {
-        self.finish_within(state, SESSION_FINISH_TIMEOUT)
+    pub fn finish(self, state: &AppState) -> Result<String, SessionError> {
+        let wait = self.progress.limits.finish;
+        self.finish_within(state, wait)
     }
 
-    fn finish_within(self, state: &AppState, wait: std::time::Duration) -> Result<String, SessionFinishError> {
-        drop(self.audio_tx);
-        let mut task = self.task;
+    fn finish_within(
+        mut self,
+        state: &AppState,
+        wait: std::time::Duration,
+    ) -> Result<String, SessionError> {
+        self.progress.finish();
+        drop(self.audio_tx.take());
         self.runtime.block_on(async {
-            let deadline = tokio::time::sleep(wait);
-            tokio::pin!(deadline);
-            let mut abort_checks = tokio::time::interval(ABORT_CHECK_INTERVAL);
-            loop {
-                if state.is_abort_requested() {
-                    task.abort();
-                    let _ = task.await;
-                    return Err(SessionFinishError::Aborted);
-                }
-                tokio::select! {
-                    result = &mut task => {
-                        return result
-                            .map_err(|error| SessionFinishError::Failed(format!("transcription task join error: {error}")))?
-                            .map_err(SessionFinishError::Failed);
-                    }
-                    _ = &mut deadline => {
-                        task.abort();
-                        let _ = task.await;
-                        return Err(SessionFinishError::Failed(
-                            "Timed out waiting for Deepgram to finish transcription. Try recording again.".to_owned(),
-                        ));
-                    }
-                    _ = abort_checks.tick() => {}
-                }
-            }
+            let result = tokio::select! {
+                biased;
+                _ = state.wait_for_abort() => Err(SessionError::Cancelled),
+                _ = tokio::time::sleep(wait) => Err(SessionError::Failed("Deepgram timed out while finishing transcription. Please try recording again.".to_owned())),
+                result = &mut self.task => return result.map_err(|error| SessionError::Failed(format!("transcription task join error: {error}")))?,
+            };
+            // Await after abort: dropping a JoinHandle alone detaches its task.
+            self.task.abort();
+            let _ = (&mut self.task).await;
+            state.set_deepgram_waiting(false);
+            result
         })
+    }
+}
+
+impl Drop for ActiveSession {
+    fn drop(&mut self) {
+        self.task.abort();
     }
 }
 
@@ -144,29 +148,35 @@ pub fn start_session(
     sample_rate: u32,
     session_kind: SessionKind,
     recording_prefix: String,
-) -> Result<ActiveSession, String> {
+) -> Result<ActiveSession, SessionError> {
     if let Ok(simulated_error) = std::env::var("SIMPLE_PTT_SIMULATE_ERROR") {
-        return Err(format!("simulated error: {}", simulated_error));
+        return Err(SessionError::Failed(format!(
+            "simulated error: {}",
+            simulated_error
+        )));
     }
 
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
     let deepgram_config = config.clone();
-    let runtime = session_runtime()?;
+    let runtime = session_runtime().map_err(SessionError::Failed)?;
+    let limits = SessionLimits::default();
+    let progress = SessionProgress::new(sample_rate, limits);
 
-    let transcription_stream = runtime.block_on(async move {
-        let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
-            .map_err(format_deepgram_error)?;
-        let transcription = client.transcription();
+    let transcription_stream =
+        runtime.block_on(progress::connect(state.clone(), limits, async move {
+            let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
+                .map_err(format_deepgram_error)?;
+            let transcription = client.transcription();
 
-        configure_stream_request(
-            transcription.stream_request_with_options(stream_options(&deepgram_config)),
-            &deepgram_config,
-            sample_rate,
-        )
-        .stream(ReceiverStream::new(audio_rx))
-        .await
-        .map_err(format_deepgram_error)
-    })?;
+            configure_stream_request(
+                transcription.stream_request_with_options(stream_options(&deepgram_config)),
+                &deepgram_config,
+                sample_rate,
+            )
+            .stream(ReceiverStream::new(audio_rx))
+            .await
+            .map_err(format_deepgram_error)
+        }))?;
 
     log::info!(
         "Deepgram session started (request_id={}, sample_rate={}Hz, model={}, language={}, kind={:?})",
@@ -177,15 +187,30 @@ pub fn start_session(
         session_kind
     );
 
+    let task_progress = progress.clone();
     let task = runtime.spawn(async move {
         let mut stream = transcription_stream;
-        run_transcription_stream(&mut stream, state, session_kind, recording_prefix).await
+        let result = run_transcription_stream(
+            &mut stream,
+            state.clone(),
+            session_kind,
+            recording_prefix,
+            task_progress,
+        )
+        .await;
+        if let Err(SessionError::Failed(error)) = &result {
+            if !state.is_abort_requested() {
+                state.report_error(error.clone());
+            }
+        }
+        result
     });
 
     Ok(ActiveSession {
-        audio_tx,
+        audio_tx: Some(audio_tx),
         kind: session_kind,
         task,
+        progress,
         runtime,
         stalled: std::cell::Cell::new(false),
     })
@@ -232,24 +257,31 @@ pub async fn run_transcription_stream<S>(
     state: Arc<AppState>,
     session_kind: SessionKind,
     mut recording_prefix: String,
-) -> Result<String, String>
+    progress: Arc<SessionProgress>,
+) -> Result<String, SessionError>
 where
     S: tokio_stream::Stream<Item = Result<StreamResponse, deepgram::DeepgramError>> + Unpin,
 {
+    let _indicator = WaitingIndicator(state.clone());
     log::debug!("running transcription stream for {:?}", session_kind);
     let mut interim_transcript = String::new();
     let mut transcript_parts: Vec<String> = Vec::new();
     let mut last_final_transcript = String::new();
     let mut last_pushed_text = session_overlay_text(&state, session_kind);
 
-    while let Some(message) = stream.next().await {
+    loop {
+        let message = progress.next(stream, &state).await?
+            .ok_or_else(|| SessionError::Failed("Deepgram disconnected before completing transcription. Please try recording again.".to_owned()))?;
         match message {
             Ok(StreamResponse::TranscriptResponse {
                 is_final,
                 channel,
                 from_finalize,
+                start,
+                duration,
                 ..
             }) => {
+                progress.transcript_received(start + duration);
                 let transcript = extract_transcript(&channel);
                 if transcript.is_empty() {
                     continue;
@@ -319,8 +351,12 @@ where
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
                 log::info!("Deepgram stream closed after {:.2}s", duration);
-                // Metadata is the server's terminal response after all final
-                // transcripts. Do not wait for the SDK's transport to end.
+                if !progress.is_finishing() {
+                    return Err(SessionError::Failed(
+                        "Deepgram closed the recording unexpectedly. Please try recording again."
+                            .to_owned(),
+                    ));
+                }
                 break;
             }
             Ok(StreamResponse::SpeechStartedResponse { .. }) => {
@@ -333,7 +369,7 @@ where
                 log::debug!("ignoring unhandled Deepgram message: {:?}", other_message);
             }
             Err(error) => {
-                return Err(format_deepgram_error(error));
+                return Err(SessionError::Failed(format_deepgram_error(error)));
             }
         }
     }
@@ -366,9 +402,7 @@ pub fn set_session_overlay_text(
 ) {
     match session_kind {
         SessionKind::Dictation => state.set_live_overlay_text(text, provisional_start),
-        SessionKind::Correction => {
-            state.set_live_overlay_correction_text(text, provisional_start)
-        }
+        SessionKind::Correction => state.set_live_overlay_correction_text(text, provisional_start),
     }
 }
 
@@ -394,76 +428,24 @@ mod tests {
     }
 
     /// A session whose audio queue holds one chunk, and its receiving end.
-    fn one_chunk_session() -> (ActiveSession, tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>) {
+    fn one_chunk_session() -> (
+        ActiveSession,
+        tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    ) {
         let runtime = session_runtime().unwrap();
         let (audio_tx, audio_rx) = tokio_mpsc::channel(1);
         let task = runtime.spawn(async { Ok(String::new()) });
-        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task, runtime, stalled: std::cell::Cell::new(false) }, audio_rx)
-    }
-
-    #[test]
-    fn a_full_audio_queue_waits_for_room_instead_of_dropping() {
-        let runtime = Runtime::new().unwrap();
-        let (session, mut audio_rx) = one_chunk_session();
-        assert_eq!(session.push_audio(Bytes::from_static(b"first")), PushAudioResult::Ok);
-        // The queue is full until the receiver takes a chunk 50 ms later.
-        let received = runtime.spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            let first = audio_rx.recv().await;
-            let second = audio_rx.recv().await;
-            (first, second)
-        });
-
-        assert_eq!(session.push_audio(Bytes::from_static(b"second")), PushAudioResult::Ok);
-        drop(session);
-        let (first, second) = runtime.block_on(received).unwrap();
-        assert_eq!(first.unwrap().unwrap(), Bytes::from_static(b"first"));
-        assert_eq!(second.unwrap().unwrap(), Bytes::from_static(b"second"));
-    }
-
-    #[test]
-    fn a_queue_that_stays_full_drops_the_chunk_after_waiting() {
-        let (session, _audio_rx) = one_chunk_session();
-        assert_eq!(session.push_audio(Bytes::from_static(b"first")), PushAudioResult::Ok);
-        let started = std::time::Instant::now();
-        assert_eq!(
-            session.push_audio_within(Bytes::from_static(b"second"), std::time::Duration::from_millis(30)),
-            PushAudioResult::Full
-        );
-        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
-    }
-
-    #[test]
-    fn a_stalled_queue_drops_at_once_until_it_has_room_again() {
-        let (session, mut audio_rx) = one_chunk_session();
-        let wait = std::time::Duration::from_millis(40);
-        assert_eq!(session.push_audio_within(Bytes::from_static(b"1"), wait), PushAudioResult::Ok);
-
-        // The first chunk to meet the full queue waits, then is dropped.
-        let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(Bytes::from_static(b"2"), wait), PushAudioResult::Full);
-        assert!(started.elapsed() >= wait);
-
-        // The session is stalled: the next chunks are dropped without waiting,
-        // so commands behind them are not held up a wait each.
-        let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(Bytes::from_static(b"3"), wait), PushAudioResult::Full);
-        assert!(started.elapsed() < wait / 2, "{:?}", started.elapsed());
-
-        // Once the queue has room, chunks go in and a full queue is waited on
-        // again.
-        assert!(audio_rx.try_recv().is_ok());
-        assert_eq!(session.push_audio_within(Bytes::from_static(b"4"), wait), PushAudioResult::Ok);
-        let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(Bytes::from_static(b"5"), wait), PushAudioResult::Full);
-        assert!(started.elapsed() >= wait);
-    }
-
-    #[test]
-    fn a_closed_audio_queue_reports_closed() {
-        let (session, audio_rx) = one_chunk_session();
-        drop(audio_rx);
-        assert_eq!(session.push_audio(Bytes::from_static(b"chunk")), PushAudioResult::Closed);
+        (
+            ActiveSession {
+                audio_tx: Some(audio_tx),
+                kind: SessionKind::Dictation,
+                task,
+                progress: SessionProgress::new(16000, SessionLimits::default()),
+                runtime,
+                stalled: std::cell::Cell::new(false),
+            },
+            audio_rx,
+        )
     }
 
     #[test]
@@ -479,13 +461,13 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
             abort_state.request_abort();
         });
-
         let started = std::time::Instant::now();
-        let result = session.finish(&state);
-
-        assert_eq!(result, Err(SessionFinishError::Aborted));
+        assert_eq!(session.finish(&state), Err(SessionError::Cancelled));
         assert!(started.elapsed() < std::time::Duration::from_millis(150));
-        assert!(state.is_abort_requested(), "the worker must consume the abort");
+        assert!(
+            state.is_abort_requested(),
+            "the worker must consume the abort"
+        );
     }
 
     #[test]
@@ -495,7 +477,6 @@ mod tests {
             let _audio_rx = audio_rx;
             std::future::pending().await
         });
-        // Like the SDK's transport, this task is detached from the app task.
         let (transport_tx, transport_rx) = std::sync::mpsc::channel::<()>();
         session.runtime.spawn(async move {
             let _transport_tx = transport_tx;
@@ -508,27 +489,40 @@ mod tests {
             let result = session.finish_within(&state, std::time::Duration::from_millis(30));
             result_tx.send(result).unwrap();
         });
-        let result = result_rx.recv_timeout(std::time::Duration::from_secs(1))
+        let result = result_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
             .expect("stalled session shutdown never returned");
         finishing.join().unwrap();
-
-        assert!(matches!(result, Err(SessionFinishError::Failed(message)) if message.contains("Timed out")));
+        assert!(
+            matches!(result, Err(SessionError::Failed(message)) if message.contains("timed out"))
+        );
         assert!(task_abort.is_finished());
-        assert_eq!(transport_rx.recv_timeout(std::time::Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+        assert_eq!(
+            transport_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 
     #[test]
     fn finishing_a_session_drains_audio_and_preserves_the_final_transcript() {
         let (mut session, mut audio_rx) = one_chunk_session();
         session.task = session.runtime.spawn(async move {
-            assert_eq!(audio_rx.recv().await.unwrap().unwrap(), Bytes::from_static(b"last audio"));
+            assert_eq!(
+                audio_rx.recv().await.unwrap().unwrap(),
+                Bytes::from_static(b"last audio")
+            );
             assert!(audio_rx.recv().await.is_none());
             tokio::time::sleep(std::time::Duration::from_millis(30)).await;
             Ok("final words".to_owned())
         });
-        assert_eq!(session.push_audio(Bytes::from_static(b"last audio")), PushAudioResult::Ok);
-
-        assert_eq!(session.finish(&AppState::new()), Ok("final words".to_owned()));
+        assert_eq!(
+            session.push_audio(Bytes::from_static(b"last audio")),
+            PushAudioResult::Ok
+        );
+        assert_eq!(
+            session.finish(&AppState::new()),
+            Ok("final words".to_owned())
+        );
     }
 
     #[test]
@@ -545,13 +539,16 @@ mod tests {
         });
         let state = AppState::new();
         state.request_abort();
-
-        assert_eq!(session.finish(&state), Err(SessionFinishError::Aborted));
-        assert_eq!(transport_rx.recv_timeout(std::time::Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+        assert_eq!(session.finish(&state), Err(SessionError::Cancelled));
+        assert_eq!(
+            transport_rx.recv_timeout(std::time::Duration::from_millis(50)),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+        );
     }
 
     #[test]
     fn terminal_metadata_finishes_without_waiting_for_transport_eof() {
+        use tokio_stream::StreamExt;
         let runtime = session_runtime().unwrap();
         for kind in [SessionKind::Dictation, SessionKind::Correction] {
             let state = AppState::new();
@@ -563,21 +560,300 @@ mod tests {
                 "metadata": {"request_id": "test-request", "model_uuid": "test-model", "model_info": {"name": "test", "version": "test", "arch": "test"}}
             })).unwrap();
             let terminal = StreamResponse::TerminalResponse {
-                request_id: "test-request".to_owned(), created: String::new(), duration: 1.0, channels: 1,
+                request_id: "test-request".to_owned(),
+                created: String::new(),
+                duration: 1.0,
+                channels: 1,
             };
             let mut stream = tokio_stream::iter([Ok(final_message), Ok(terminal)])
                 .chain(tokio_stream::pending());
-
+            let progress = SessionProgress::new(16000, SessionLimits::default());
+            progress.finish();
             let result = runtime.block_on(async {
                 tokio::time::timeout(
                     std::time::Duration::from_millis(200),
-                    run_transcription_stream(&mut stream, state.clone(), kind, "prefix ".to_owned()),
-                ).await
+                    run_transcription_stream(
+                        &mut stream,
+                        state.clone(),
+                        kind,
+                        "prefix ".to_owned(),
+                        progress,
+                    ),
+                )
+                .await
             });
-
             assert_eq!(result.unwrap().unwrap(), "prefix final words ");
             assert_eq!(session_overlay_text(&state, kind), "prefix final words ");
         }
+    }
+
+    #[test]
+    fn escape_interrupts_finishing_without_waiting_for_another_response() {
+        let runtime = session_runtime().unwrap();
+        let (audio_tx, _audio_rx) = tokio_mpsc::channel(1);
+        let task = runtime.spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok("must not be pasted".to_owned())
+        });
+        let session = ActiveSession {
+            audio_tx: Some(audio_tx),
+            kind: SessionKind::Dictation,
+            task,
+            progress: SessionProgress::new(16000, SessionLimits::default()),
+            runtime,
+            stalled: std::cell::Cell::new(false),
+        };
+        let state = AppState::new();
+        let abort_state = state.clone();
+        session.runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            abort_state.request_abort();
+        });
+
+        let started = std::time::Instant::now();
+        assert!(
+            session.finish(&state).is_err(),
+            "Escape must cancel the finishing session"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(
+            state.is_abort_requested(),
+            "the worker must consume the cancellation before starting another recording"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_metadata_completes_finishing_without_waiting_for_socket_eof() {
+        use deepgram::common::stream_response::{Alternatives, Metadata, ModelInfo};
+        let state = AppState::new();
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.finish();
+        let (tx, rx) = tokio_mpsc::channel(2);
+        tx.send(Ok(StreamResponse::TranscriptResponse {
+            type_field: "Results".to_owned(),
+            start: 0.0,
+            duration: 1.0,
+            is_final: true,
+            speech_final: true,
+            from_finalize: true,
+            channel: Channel {
+                alternatives: vec![Alternatives {
+                    transcript: "hello world".to_owned(),
+                    words: vec![],
+                    confidence: 1.0,
+                    languages: vec![],
+                }],
+            },
+            metadata: Metadata {
+                request_id: "test".to_owned(),
+                model_info: ModelInfo {
+                    name: "test-model".to_owned(),
+                    version: "test".to_owned(),
+                    arch: "test".to_owned(),
+                },
+                model_uuid: "test".to_owned(),
+            },
+            channel_index: vec![0, 1],
+        }))
+        .await
+        .unwrap();
+        tx.send(Ok(StreamResponse::TerminalResponse {
+            request_id: "test".to_owned(),
+            created: "test".to_owned(),
+            duration: 1.0,
+            channels: 1,
+        }))
+        .await
+        .unwrap();
+        // Keep the sender alive: EOF has not arrived and may never arrive.
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            run_transcription_stream(
+                &mut ReceiverStream::new(rx),
+                state.clone(),
+                SessionKind::Dictation,
+                String::new(),
+                progress,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(result, "hello world ");
+        assert_eq!(&*state.overlay_text(), "hello world ");
+        assert!(!state.is_deepgram_waiting());
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_without_terminal_metadata_is_an_error() {
+        let state = AppState::new();
+        state.set_overlay_text("partial transcript");
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.finish();
+        let mut stream = tokio_stream::empty::<Result<StreamResponse, deepgram::DeepgramError>>();
+        assert!(
+            matches!(run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await, Err(SessionError::Failed(message)) if message.contains("disconnected"))
+        );
+        assert_eq!(&*state.overlay_text(), "partial transcript");
+    }
+
+    struct TaskResource(Option<tokio::sync::oneshot::Sender<()>>);
+
+    impl Drop for TaskResource {
+        fn drop(&mut self) {
+            let _ = self.0.take().unwrap().send(());
+        }
+    }
+
+    fn pending_session() -> (ActiveSession, tokio::sync::oneshot::Receiver<()>) {
+        let runtime = session_runtime().unwrap();
+        let (audio_tx, _audio_rx) = tokio_mpsc::channel(1);
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel();
+        let task = runtime.spawn(async move {
+            let _resource = TaskResource(Some(dropped_tx));
+            started_tx.send(()).unwrap();
+            std::future::pending().await
+        });
+        runtime.block_on(started_rx).unwrap();
+        let progress = SessionProgress::new(
+            16000,
+            SessionLimits {
+                finish: std::time::Duration::from_millis(30),
+                ..SessionLimits::default()
+            },
+        );
+        (
+            ActiveSession {
+                audio_tx: Some(audio_tx),
+                kind: SessionKind::Dictation,
+                task,
+                progress,
+                runtime,
+                stalled: std::cell::Cell::new(false),
+            },
+            dropped_rx,
+        )
+    }
+
+    #[test]
+    fn a_finishing_deadline_cancels_and_joins_the_transcription_task() {
+        let (session, mut dropped) = pending_session();
+        assert!(
+            matches!(session.finish(&AppState::new()), Err(SessionError::Failed(message)) if message.contains("timed out"))
+        );
+        assert!(
+            dropped.try_recv().is_ok(),
+            "the task's resources must be released before finish returns"
+        );
+    }
+
+    #[test]
+    fn dropping_a_session_cancels_its_quiet_transcription_task() {
+        let runtime = Runtime::new().unwrap();
+        let (session, dropped) = pending_session();
+        drop(session);
+        runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), dropped)
+                .await
+                .unwrap()
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn a_full_audio_queue_waits_for_room_instead_of_dropping() {
+        let runtime = Runtime::new().unwrap();
+        let (session, mut audio_rx) = one_chunk_session();
+        assert_eq!(
+            session.push_audio(Bytes::from_static(b"first")),
+            PushAudioResult::Ok
+        );
+        // The queue is full until the receiver takes a chunk 50 ms later.
+        let received = runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let first = audio_rx.recv().await;
+            let second = audio_rx.recv().await;
+            (first, second)
+        });
+
+        assert_eq!(
+            session.push_audio(Bytes::from_static(b"second")),
+            PushAudioResult::Ok
+        );
+        drop(session);
+        let (first, second) = runtime.block_on(received).unwrap();
+        assert_eq!(first.unwrap().unwrap(), Bytes::from_static(b"first"));
+        assert_eq!(second.unwrap().unwrap(), Bytes::from_static(b"second"));
+    }
+
+    #[test]
+    fn a_queue_that_stays_full_drops_the_chunk_after_waiting() {
+        let (session, _audio_rx) = one_chunk_session();
+        assert_eq!(
+            session.push_audio(Bytes::from_static(b"first")),
+            PushAudioResult::Ok
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            session.push_audio_within(
+                Bytes::from_static(b"second"),
+                std::time::Duration::from_millis(30)
+            ),
+            PushAudioResult::Full
+        );
+        assert!(started.elapsed() >= std::time::Duration::from_millis(30));
+    }
+
+    #[test]
+    fn a_stalled_queue_drops_at_once_until_it_has_room_again() {
+        let (session, mut audio_rx) = one_chunk_session();
+        let wait = std::time::Duration::from_millis(40);
+        assert_eq!(
+            session.push_audio_within(Bytes::from_static(b"1"), wait),
+            PushAudioResult::Ok
+        );
+
+        // The first chunk to meet the full queue waits, then is dropped.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            session.push_audio_within(Bytes::from_static(b"2"), wait),
+            PushAudioResult::Full
+        );
+        assert!(started.elapsed() >= wait);
+
+        // The session is stalled: the next chunks are dropped without waiting,
+        // so commands behind them are not held up a wait each.
+        let started = std::time::Instant::now();
+        assert_eq!(
+            session.push_audio_within(Bytes::from_static(b"3"), wait),
+            PushAudioResult::Full
+        );
+        assert!(started.elapsed() < wait / 2, "{:?}", started.elapsed());
+
+        // Once the queue has room, chunks go in and a full queue is waited on
+        // again.
+        assert!(audio_rx.try_recv().is_ok());
+        assert_eq!(
+            session.push_audio_within(Bytes::from_static(b"4"), wait),
+            PushAudioResult::Ok
+        );
+        let started = std::time::Instant::now();
+        assert_eq!(
+            session.push_audio_within(Bytes::from_static(b"5"), wait),
+            PushAudioResult::Full
+        );
+        assert!(started.elapsed() >= wait);
+    }
+
+    #[test]
+    fn a_closed_audio_queue_reports_closed() {
+        let (session, audio_rx) = one_chunk_session();
+        drop(audio_rx);
+        assert_eq!(
+            session.push_audio(Bytes::from_static(b"chunk")),
+            PushAudioResult::Closed
+        );
     }
 
     #[test]

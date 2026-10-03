@@ -239,6 +239,18 @@ impl OverlayWindow {
             return;
         }
 
+        // Finishing retains the text and layout below, but its status must
+        // still change when the transcription takes longer than usual.
+        let footer_is_visible = {
+            let hint = self.footer_hint.borrow();
+            let footer = footer_text(hint.as_deref(), state, self.state.is_deepgram_waiting());
+            let footer_value = footer.unwrap_or("");
+            if self.footer_hint_text_field.stringValue().to_string() != footer_value {
+                self.footer_hint_text_field.setStringValue(&NSString::from_str(footer_value));
+            }
+            footer.is_some()
+        };
+
         // F5 finishes interaction with this presentation. Retain its text,
         // meter, and layout while the result is prepared, so stopping audio
         // cannot reflow the overlay underneath the uniform scale animation.
@@ -266,7 +278,6 @@ impl OverlayWindow {
             (&*overlay_text.text, overlay_text.provisional_start)
         };
         let overlay_correction_text_value = &*overlay_correction_text.text;
-        let footer_is_visible = self.footer_hint.borrow().is_some();
         let correction_is_visible = overlay_correction_active;
         let meter_is_visible = meter_runs(capturing_audio, is_error, self.ui_meter_view.style());
 
@@ -1162,6 +1173,14 @@ fn usable_text_width() -> f64 {
     OVERLAY_WIDTH - (TEXT_HORIZONTAL_PADDING * 2.0)
 }
 
+fn footer_text(hint: Option<&str>, state: u8, waiting: bool) -> Option<&str> {
+    if waiting && matches!(state, STATE_RECORDING | STATE_PROCESSING) {
+        Some("Waiting for Deepgram…  <ESC> cancel")
+    } else {
+        hint
+    }
+}
+
 /// Semantic, so it follows the appearance the glass content takes for
 /// legibility on a tinted glass (see `legibility`).
 fn footer_text_color() -> Retained<NSColor> {
@@ -1227,6 +1246,22 @@ mod tests {
         footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
         FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
     };
+
+    #[test]
+    fn a_deepgram_wait_replaces_the_hint_and_restores_it_after_progress() {
+        use crate::state::{STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING};
+        let hint = Some("record and paste shortcuts");
+        assert_eq!(super::footer_text(hint, STATE_RECORDING, false), hint);
+        for state in [STATE_RECORDING, STATE_PROCESSING] {
+            let waiting = super::footer_text(hint, state, true).unwrap();
+            assert!(waiting.contains("Deepgram"));
+            assert!(waiting.contains("cancel"));
+            assert_ne!(Some(waiting), hint);
+            assert_eq!(super::footer_text(hint, state, false), hint);
+        }
+        assert_eq!(super::footer_text(hint, STATE_TRANSFORMING, true), hint);
+        assert!(super::footer_text(None, STATE_RECORDING, true).is_some());
+    }
 
     #[test]
     fn the_meter_runs_while_audio_is_captured() {

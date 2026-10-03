@@ -20,7 +20,7 @@ use crate::config::Config;
 use crate::overlay::OverlayWindow;
 use crate::state::{
     AppState, MicMeterSnapshot, OverlayText,
-    STATE_BUFFER_READY, STATE_ERROR, STATE_RECORDING, STATE_TRANSFORMING,
+    STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 fn pump(seconds: f64) {
@@ -203,10 +203,26 @@ pub fn run(dir: &str) {
         };
 
         let interim = text(&full, Some(interim_tail));
+        state.set_state(STATE_RECORDING);
         ticks("1-pop-in", 8, &|| update(STATE_RECORDING, &interim, "", &empty, false, meter));
         capture(mtm, dir, &format!("{theme}-2-recording-interim"));
 
         let final_text = text(&full, None);
+        state.set_deepgram_waiting(true);
+        update(STATE_RECORDING, &interim, "", &empty, false, meter);
+        pump(0.3);
+        capture(mtm, dir, &format!("{theme}-9-waiting-live"));
+        state.set_deepgram_waiting(false);
+        update(STATE_RECORDING, &final_text, "", &empty, false, meter);
+        state.set_overlay_text(full.clone());
+        state.begin_finishing_dictation();
+        state.set_deepgram_waiting(true);
+        update(STATE_PROCESSING, &final_text, "", &empty, false, MicMeterSnapshot::default());
+        pump(0.6);
+        capture(mtm, dir, &format!("{theme}-10-waiting-finish"));
+        state.set_deepgram_waiting(false);
+        state.set_state(STATE_RECORDING);
+
         let correction = text("make it Friday instead and ", Some("and "));
         ticks("3-correction-reveal", 8, &|| {
             update(STATE_RECORDING, &final_text, "", &correction, true, meter)
