@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-30 11:51
-last_modified: 2026-10-03 08:24
+last_modified: 2026-10-03 09:00
 status: current
 ---
 
@@ -20,20 +20,30 @@ Each requirement is quoted from the user and followed by what implements it.
 
 > "Center the pills. The pills should expand up and down dynamically and responsively. The height of the pills should change from left to right, creating a spectrograph-like movie effect that responds to the voice."
 
-The user chose a real frequency spectrum, low pitches on the left ("Frequency spectrum"), in a centred cluster ("Centered cluster"), replacing the scrolling strip ("Replace it"):
+The user chose a real frequency spectrum ("Frequency spectrum") in a centred cluster ("Centered cluster"), replacing the scrolling strip ("Replace it"). Its frequency bands now spread from the centre towards both edges, as requested in R1a:
 
 - `SpectrumAnalyzer` in `src/audio/spectrum.rs` runs on the real-time audio thread. On every captured block it takes a Hann-windowed FFT (`realfft`, added with the user's approval) of the last 64 ms: 1024 samples at 16 kHz. It sums the power into `SPECTRUM_BANDS` (40) bands evenly spaced in mel from 100 Hz to 8 kHz, or to half the sample rate if lower, each at least one FFT bin and none overlapping. A band's level is its summed power in dB, scaled so a full-scale sine reads about 0 dB (the Hann window's equivalent noise bandwidth is 1.5 bins). Every buffer is made when the stream is built, and `process_with_scratch` allocates nothing, so the callback stays real-time.
 - The callback queues each `SpectrumFrame` (the bands' levels and centre frequencies) through a bounded channel with `try_send`, which never waits; a full queue drops frames. The overlay takes the frames queued since its last update (`AppState::take_spectrum_frames`).
-- `PillCluster` in `src/ui_meter/pill_cluster.rs` draws one capsule per band, 3.325 pt wide and 2 pt apart (closing up if the meter is narrower than the 211 pt they need), centred in the meter's cluster, growing up and down from the middle line (`centred_bar_frame`).
+- `PillCluster` in `src/ui_meter/pill_cluster.rs` draws one capsule per band, 3.325 pt wide and 2 pt apart (closing up if the meter is narrower than the 211 pt they need), centred in the meter's cluster, growing up and down from the middle line (`centred_bar_frame`). `pill_x` places the lowest bands in the middle, with adjacent bands paired on opposite sides and higher bands spreading towards the edges.
 - Each update moves every pill to its new height with Core Animation's implicit animation over the time since the last update (linear timing), so the pills glide between the overlay's 75 ms updates. With Reduce Motion on, or after a gap of 0.15 s or more, they move at once.
 
-Evidence: a probe of the debug tuner's synthetic voice, sampling the pill layers every 20 ms, found the 40 pills centred (23.26 pt on each side of a 257.52 pt meter). Each band took 30 to 72 distinct heights in 2.4 s of speech, against 32 updates in that time, and the spectrum's shape followed the voice's drifting formants:
+Evidence: a probe of the debug tuner's synthetic voice, sampling the pill layers every 20 ms, found the 40 pills centred (23.26 pt on each side of a 257.52 pt meter). Each band took 30 to 72 distinct heights in 2.4 s of speech, against 32 updates in that time. In frequency order, the spectrum's shape followed the voice's drifting formants:
 
 ```
 3.20s ▄▄▄▅▅▅▇██▇▇▆▅▅▄▄▃▃▃▃▃▃▃▃▂▂▂▂▂▂▂▂▂▂▂▁▂▁▁▁
 4.40s ▅▅▅▆▆▆▇██▇▆▅▅▅▅▅▆▆▆▆▅▅▅▄▄▄▃▃▃▃▃▃▃▃▃▃▂▂▂▂
 7.60s ▅▅▅▅▆▇██▇▇▇▆▆▅▄▄▄▄▄▄▄▃▃▃▃▃▃▃▃▃▃▃▂▃▂▂▂▂▂▂
 ```
+
+### R1a. Speech has a centred, cinematic silhouette
+
+> "when spoken high bars are mostly in the middle"
+>
+> "movie vfx style"
+
+The frequency data and adaptive heights stay in ascending frequency order; `PillCluster::pill_x` gives each band a fixed place on screen. Bands 0 and 1 sit closest to the centre, 2 and 3 sit just outside them, and successive pairs spread towards the edges. Every band appears once. The fixed positions let the existing height animation follow the voice smoothly while its stronger low frequencies appear near the middle.
+
+Native presentation-layer probes at 12ms intervals measured the synthetic voice's 284.7 Hz peak at 87.8625 pt left of centre before this arrangement and 7.9875 pt right of centre after it. Across two runs, every sampled speech peak stayed in the middle half of the 211 pt cluster; its height-weighted centre stayed within 3.422 pt of the row's centre, and the pills' x positions never changed during the runs.
 
 ### R2. The pills respond at once
 

@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-03 08:24
+last_modified: 2026-10-03 09:04
 status: current
 ---
 
@@ -93,6 +93,10 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 
 ## The pills (Core Animation)
 
+- **Frequency bands spread from the centre for a balanced speech silhouette** (macOS 26.6.2).
+  - With ascending frequencies placed from left to right, the synthetic voice's 284.7 Hz peak appeared 87.8625 pt left of centre; its height-weighted centre moved as far as 68.701156 pt from the middle of the 211 pt cluster.
+  - `PillCluster::pill_x` now gives the lowest pair the two centre positions, and successive pairs alternate towards the edges. The peak above appeared 7.9875 pt right of centre. Two 12ms probe runs checked 342 and 448 samples without failure: every sampled peak was in the middle half, x positions stayed identical through the runs, and the height-weighted centre stayed within 3.421995 and 3.167551 pt respectively. This is a fixed visual arrangement of the bands; their input data remains in ascending frequency order.
+  - Disabling that column arrangement restored the left-hand peak, all 448 native checks failed, and the new frequency-placement unit test failed while both spacing tests still passed. No private API was added. The screenshot contained only wallpaper, so capture attempts stopped under the skill's rule; this change's screen appearance is not visually verified.
 - **Implicit animations within each update glide the spectrum pills between updates.** `PillCluster::render` (`ui_meter/pill_cluster.rs`) sets every pill's frame and opacity in a `CATransaction` whose duration is the time since the last update (the overlay updates every 75 ms) with linear timing. Sampling the presentation layers every 20 ms over the tuner's synthetic voice, each band took 30 to 72 distinct heights in 2.4 s of speech (32 updates), and no pill showed in 50 samples of its silence. The requirements behind the pills are in `docs/internal/references/pill-meter.md`.
 
 The scrolling pill strip that came before the spectrum measured these; no code relies on them now, but they hold for any long Core Animation motion:

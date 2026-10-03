@@ -1,5 +1,6 @@
 //! What the pills show: the live spectrum of the voice, one pill per band,
-//! low pitches on the left. Each band's level is drawn against a range that
+//! low pitches first in the height data. The renderer places them from the
+//! centre outwards. Each band's level is drawn against a range that
 //! adapts to the room and the speaker: its own noise floor, the quietest it
 //! has been lately, so the room's noise and hum stay quiet from the first
 //! frame, and a top shared by every band, so the voice's spectral shape
