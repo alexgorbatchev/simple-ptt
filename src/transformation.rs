@@ -48,15 +48,11 @@ pub async fn transform_text(
     }
 
     macro_rules! stream_with_client {
-        ($client:expr) => {
-            stream_with_client!($client, None)
-        };
-        ($client:expr, $additional_params:expr) => {{
+        ($client:expr) => {{
             let model = $client.completion_model(config.model.as_str());
             stream_completion_response(
                 model,
                 &config.system_prompt,
-                $additional_params,
                 input_text,
                 Arc::clone(&state),
                 preview_mode,
@@ -78,14 +74,7 @@ pub async fn transform_text(
                 .map_err(format_http_client_error)?)
         }
         "gemini" => stream_with_client!(
-            gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?,
-            Some(serde_json::json!({
-                "generationConfig": {
-                    "thinkingConfig": {
-                        "thinkingBudget": 0
-                    }
-                }
-            }))
+            gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
         ),
         "groq" => stream_with_client!(
             groq::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
@@ -143,7 +132,6 @@ fn unsupported_provider_error(provider: &str) -> String {
 async fn stream_completion_response<M>(
     model: M,
     system_prompt: &str,
-    additional_params: Option<serde_json::Value>,
     input_text: &str,
     state: Arc<AppState>,
     preview_mode: TransformationPreviewMode<'_>,
@@ -154,7 +142,6 @@ where
     let stream = model
         .completion_request(input_text.to_owned())
         .preamble(system_prompt.to_owned())
-        .additional_params_opt(additional_params)
         .stream()
         .await
         .map_err(|error| format!("transformation stream failed: {}", error))?;
@@ -679,6 +666,33 @@ mod tests {
                 )),
             );
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires GEMINI_API_KEY and calls the live Gemini API"]
+    async fn gemini_flash_lite_streams_with_model_defaults() {
+        let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
+        let state = AppState::new();
+        let config = TransformationRuntimeConfig {
+            provider: "gemini".to_owned(),
+            api_key: Some(api_key),
+            model: "gemini-3.5-flash-lite".to_owned(),
+            system_prompt: "Reply briefly.".to_owned(),
+            correction_system_prompt: String::new(),
+        };
+
+        let result = transform_text(
+            Arc::clone(&state),
+            &config,
+            "Reply with OK.",
+            TransformationPreviewMode::ReplaceOverlay,
+        )
+        .await
+        .expect("Gemini Flash-Lite must accept the transformation request");
+
+        assert!(!result.trim().is_empty());
+        assert_eq!(state.overlay_text().trim(), result);
+        assert_eq!(state.overlay_text_opacity(), 1.0);
     }
 
     #[tokio::test]
