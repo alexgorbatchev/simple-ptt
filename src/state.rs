@@ -85,6 +85,8 @@ pub struct AppState {
     mic_meter_level: AtomicU8,
     mic_meter_peak: AtomicU8,
     overlay_dismissed: AtomicBool,
+    /// Nonempty narration is held while the record hotkey finishes its paste.
+    overlay_finishing: AtomicBool,
     overlay_correction_active: AtomicBool,
     overlay_correction_text: Mutex<OverlayText>,
     overlay_window_visible: AtomicBool,
@@ -117,6 +119,7 @@ impl AppState {
             mic_meter_level: AtomicU8::new(0),
             mic_meter_peak: AtomicU8::new(0),
             overlay_dismissed: AtomicBool::new(false),
+            overlay_finishing: AtomicBool::new(false),
             overlay_correction_active: AtomicBool::new(false),
             overlay_correction_text: Mutex::new(OverlayText::default()),
             overlay_window_visible: AtomicBool::new(false),
@@ -190,6 +193,9 @@ impl AppState {
     }
 
     pub fn set_state(&self, state: u8) {
+        if !matches!(state, STATE_PROCESSING | STATE_TRANSFORMING | STATE_IDLE) {
+            self.overlay_finishing.store(false, Ordering::Relaxed);
+        }
         self.state.store(state, Ordering::Relaxed);
         // Transforming or correcting a dictation that resumes after it never
         // stops the microphone, so its meter and activity carry on; any other
@@ -206,6 +212,22 @@ impl AppState {
             self.clear_mic_meter();
             self.set_mic_active(false);
         }
+    }
+
+    pub fn begin_finishing_dictation(&self) {
+        let has_narration = !self.overlay_text().trim().is_empty();
+        self.overlay_finishing.store(has_narration, Ordering::Relaxed);
+        if !has_narration {
+            // Nothing is displayed to hold while final audio is transcribed.
+            // Dismiss now; the worker still finishes the session and pastes
+            // any final transcript, without reopening this presentation.
+            self.dismiss_overlay();
+        }
+        self.set_state(STATE_PROCESSING);
+    }
+
+    pub fn is_finishing_dictation(&self) -> bool {
+        self.overlay_finishing.load(Ordering::Relaxed)
     }
 
     pub fn get_state(&self) -> u8 {
@@ -250,6 +272,9 @@ impl AppState {
     }
 
     pub fn set_overlay_window_visible(&self, visible: bool) {
+        if !visible {
+            self.overlay_finishing.store(false, Ordering::Relaxed);
+        }
         self.overlay_window_visible
             .store(visible, Ordering::Relaxed);
     }
@@ -412,6 +437,19 @@ mod tests {
         AppState, normalized_meter_value, STATE_BUFFER_READY, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
         STATE_TRANSFORMING,
     };
+
+    #[test]
+    fn finishing_survives_a_fast_result_until_the_overlay_is_hidden() {
+        let state = AppState::new();
+        state.set_state(STATE_RECORDING);
+        state.set_overlay_text("Keep narration visible through the fade.");
+        state.set_overlay_window_visible(true);
+        state.begin_finishing_dictation();
+        state.set_state(STATE_IDLE);
+        assert!(state.is_finishing_dictation());
+        state.set_overlay_window_visible(false);
+        assert!(!state.is_finishing_dictation());
+    }
 
     #[test]
     fn audio_capture_carries_on_while_dictation_resumes_after_a_correction() {

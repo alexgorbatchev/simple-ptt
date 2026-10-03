@@ -34,7 +34,9 @@ use objc2_foundation::{
     MainThreadMarker, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect,
     NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
 };
-use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction};
+use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction, CATransform3D};
+
+use super::motion::OverlayMotionView;
 
 use super::legibility::{
     appearance_colors, named_appearance, srgb, text_appearance, text_appearance_of, TextAppearance,
@@ -207,7 +209,8 @@ pub struct GlassTuning {
     pub internals_enabled: bool,
     pub internals: GlassInternals,
     pub pop_seconds: f64,
-    /// How much of its size the main glass is missing when it pops.
+    /// How much smaller the overlay starts and ends its pop; correction
+    /// `Pop` also uses it for the correction glass's frame.
     pub pop_shrink: f64,
     /// Opacity the window pops in from and out to.
     pub pop_opacity: f64,
@@ -413,8 +416,7 @@ pub fn window_frame(main_frame: NSRect, correction_frame: Option<NSRect>, margin
 /// `CorrectionEffect::Expand` grows or shrinks the main glass: the window's
 /// width from its bottom, and its top a margin above the main glass's top as
 /// drawn now (`glass_top`), but never below a margin above the top of the
-/// glass's ungrown frame (`base_top`), so a pop, which shrinks the glass about
-/// its centre, leaves it. The window itself is already tall enough for the
+/// glass's ungrown frame (`base_top`). The window itself is already tall enough for the
 /// grown glass; the halo is a view inside it so that it can follow the glass
 /// to the half point, which a window frame cannot.
 pub fn expanding_halo_frame(window: NSSize, base_top: f64, glass_top: f64, margin: f64) -> NSRect {
@@ -452,6 +454,15 @@ pub fn popped_frame(frame: NSRect, shrink: f64) -> NSRect {
         NSPoint::new(frame.origin.x + inset_x, frame.origin.y + inset_y),
         NSSize::new(frame.size.width - (inset_x * 2.0), frame.size.height - (inset_y * 2.0)),
     )
+}
+
+/// Scale about the bounds' centre without changing layout. AppKit backing
+/// layers can use an origin anchor, while standalone layers default to 0.5.
+pub(super) fn centered_scale(bounds: NSRect, anchor: objc2_core_foundation::CGPoint, scale: f64) -> CATransform3D {
+    let dx = bounds.size.width * (0.5 - anchor.x) * (1.0 - scale);
+    let dy = bounds.size.height * (0.5 - anchor.y) * (1.0 - scale);
+    CATransform3D::new_scale(scale, scale, 1.0)
+        .concat(CATransform3D::new_translation(dx, dy, 0.0))
 }
 
 define_class!(
@@ -535,6 +546,7 @@ pub struct OverlayGlass {
     /// Lets timers and observers reach the glass without keeping it alive.
     weak_self: Weak<Self>,
     pub panel: Retained<NSPanel>,
+    motion_view: Retained<OverlayMotionView>,
     /// The progressive blur, when this macOS has the filter for it.
     variable_blur: Option<VariableBlur>,
     /// The effect view whose blur layer runs `variable_blur`.
@@ -571,7 +583,7 @@ pub struct OverlayGlass {
     /// How much the main glass is grown at its top for `Expand`.
     main_extension: Cell<f64>,
     /// Where the main glass rests, `Expand` growth included. While it moves
-    /// (a pop, an expansion) its own frame is somewhere in between, and
+    /// (an expansion) its own frame is somewhere in between, and
     /// setting a frame then cuts the motion short, so motions start from and
     /// frame changes compare with this instead.
     main_resting_frame: Rc<Cell<NSRect>>,
@@ -611,7 +623,7 @@ impl OverlayGlass {
         let fill = NSAutoresizingMaskOptions::ViewWidthSizable
             | NSAutoresizingMaskOptions::ViewHeightSizable;
 
-        let root_view = NSView::initWithFrame(NSView::alloc(mtm), window_rect);
+        let root_view = OverlayMotionView::new(mtm, window_rect);
         root_view.setAutoresizingMask(fill);
         let halo_view = NSView::initWithFrame(NSView::alloc(mtm), window_rect);
         // Sized by `layout_halo`, like the blur and dim views.
@@ -662,7 +674,7 @@ impl OverlayGlass {
         let main_glass_content = make_glass_content(mtm, &main_glass, main_frame);
         // The transcript, meter, and footer: sized by `set_frames` only, so
         // they stay still while the glass grows at its top (`Expand`) and
-        // keep their size, centred, while the window pops.
+        // keep their layout size while the whole overlay scales.
         let main_content_view = NSView::initWithFrame(
             NSView::alloc(mtm),
             NSRect::new(NSPoint::new(0.0, 0.0), main_frame.size),
@@ -726,6 +738,7 @@ impl OverlayGlass {
             Self {
             weak_self: weak_self.clone(),
             panel,
+            motion_view: root_view,
             variable_blur,
             blur_view,
             blur_mask: RefCell::new(None),
@@ -1034,53 +1047,49 @@ impl OverlayGlass {
         self.layout_halo();
     }
 
-    /// Pops the window in, or back in if it is popping out. Reduce Motion
-    /// fades it in without the pop.
+    /// Scales the whole overlay in with a 110% overshoot, or interrupts a
+    /// dismissal from its current presentation scale. Reduce Motion only fades.
     pub fn pop_in(&self, reduce_motion: bool) {
         let tuning = self.tuning.get();
         let was_popping_out = cancel_timer(&self.pop_out_timer);
-        let main_frame = self.main_resting_frame.get();
         if !was_popping_out {
             self.panel.setAlphaValue(pop_edge_opacity(&tuning, reduce_motion));
-            if !reduce_motion {
-                self.main_glass
-                    .setFrame(popped_frame(main_frame, tuning.pop_shrink));
-            }
+            self.motion_view.set_scale(if reduce_motion { 1.0 } else { 1.0 - tuning.pop_shrink }, 0.0);
             self.panel.orderFrontRegardless();
             self.refresh_internals();
         }
-        let panel = &self.panel;
-        let main_glass = &self.main_glass;
         animate(tuning.pop_seconds, || {
-            panel.animator().setAlphaValue(1.0);
-            if !reduce_motion {
-                main_glass.animator().setFrame(main_frame);
-            }
+            self.panel.animator().setAlphaValue(1.0);
         });
-        if !reduce_motion {
-            self.settle_main_glass_after(tuning.pop_seconds);
+        if reduce_motion {
+            self.motion_view.set_scale(1.0, 0.0);
+        } else if was_popping_out {
+            self.motion_view.set_scale(1.0, tuning.pop_seconds);
+        } else {
+            self.motion_view.pop_in(1.0 - tuning.pop_shrink, tuning.pop_seconds * 1.5);
         }
+    }
+
+    /// Finishing nonempty dictation holds at 80% until its paste is ready.
+    /// A transform that resumes editing keeps the full-size overlay.
+    pub fn set_finishing(&self, finishing: bool, reduce_motion: bool) {
+        let scale = if finishing && !reduce_motion { 0.8 } else { 1.0 };
+        self.motion_view.set_scale(scale, if reduce_motion { 0.0 } else { 0.16 });
     }
 
     /// Pops the window out and orders it out when the motion ends. Reduce
     /// Motion fades it out without the pop.
-    pub fn pop_out(&self, reduce_motion: bool) {
+    pub fn pop_out(&self, reduce_motion: bool, on_hidden: impl Fn() + 'static) {
         let tuning = self.tuning.get();
         cancel_timer(&self.correction_out_timer);
-        // The pop out's end puts the glass back where it rests.
-        cancel_timer(&self.main_settle_timer);
-        let main_frame = self.main_resting_frame.get();
-        let panel = &self.panel;
-        let main_glass = &self.main_glass;
+        // Root scaling leaves an in-flight glass expansion's settle intact.
         let end_opacity = pop_edge_opacity(&tuning, reduce_motion);
         animate(tuning.pop_seconds, || {
-            panel.animator().setAlphaValue(end_opacity);
-            if !reduce_motion {
-                main_glass
-                    .animator()
-                    .setFrame(popped_frame(main_frame, tuning.pop_shrink));
-            }
+            self.panel.animator().setAlphaValue(end_opacity);
         });
+        if !reduce_motion {
+            self.motion_view.set_scale(self.motion_view.scale().min(1.0 - tuning.pop_shrink), tuning.pop_seconds);
+        }
 
         let glass = self.weak_self.clone();
         schedule_after_motion(&self.pop_out_timer, tuning.pop_seconds, move || {
@@ -1089,9 +1098,10 @@ impl OverlayGlass {
             };
             glass.panel.orderOut(None);
             glass.panel.setAlphaValue(1.0);
-            glass.main_glass.setFrame(glass.main_resting_frame.get());
+            glass.motion_view.set_scale(1.0, 0.0);
             glass.correction_phase.set(CorrectionPhase::Hidden);
             glass.set_correction_hidden(true);
+            on_hidden();
         });
     }
 
@@ -1589,6 +1599,22 @@ fn make_panel(mtm: MainThreadMarker, panel_rect: NSRect) -> Retained<NSPanel> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uniform_scale_keeps_the_visual_center_fixed_for_appkit_layer_anchors() {
+        use objc2_core_foundation::CGPoint;
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        for anchor in [CGPoint::new(0.0, 0.0), CGPoint::new(0.5, 0.5)] {
+            for scale in [0.8, 1.0, 1.1] {
+                let bounds = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(800.0, 400.0));
+                let transform = super::centered_scale(bounds, anchor, scale);
+                let center_x = bounds.size.width * (0.5 - anchor.x);
+                let center_y = bounds.size.height * (0.5 - anchor.y);
+                assert_eq!(center_x * transform.m11 + transform.m41, center_x);
+                assert_eq!(center_y * transform.m22 + transform.m42, center_y);
+                assert_eq!(transform.m11, transform.m22);
+            }
+        }
+    }
     use super::*;
 
     /// The blur mask drawn ring by ring at full size: what the stretched

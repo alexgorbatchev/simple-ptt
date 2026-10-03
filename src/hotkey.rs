@@ -497,10 +497,10 @@ fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionControll
         return;
     }
 
+    state.set_overlay_text_opacity(1.0);
+    state.begin_finishing_dictation();
     match controller.stop_session_and_paste() {
         Ok(()) => {
-            state.set_overlay_text_opacity(1.0);
-            state.set_state(STATE_PROCESSING);
             log::info!("recording stopped ({})", reason);
         }
         Err(stop_error) => {
@@ -522,10 +522,10 @@ fn stop_recording_and_transform_and_paste(
         return;
     }
 
+    state.set_overlay_text_opacity(1.0);
+    state.begin_finishing_dictation();
     match controller.stop_session_and_transform_and_paste() {
         Ok(()) => {
-            state.set_overlay_text_opacity(0.02);
-            state.set_state(STATE_PROCESSING);
             log::info!("recording stopped ({})", reason);
         }
         Err(stop_error) => {
@@ -549,6 +549,7 @@ fn start_recording(
     }
     match controller.start_session() {
         Ok(()) => {
+            state.restore_overlay();
             state.set_state(STATE_RECORDING);
             log::info!("recording started");
             Some(RecordHotkeyAction::StartRecording)
@@ -571,7 +572,7 @@ fn stop_recording_and_transform_and_resume(
     reason: &str,
 ) {
     state.set_dictation_resuming(true);
-    state.set_overlay_text_opacity(0.02);
+    state.set_overlay_text_opacity(1.0);
     state.set_state(STATE_PROCESSING);
     match controller.stop_session_and_transform_and_resume() {
         Ok(()) => {
@@ -685,6 +686,7 @@ mod tests {
 
         let state = AppState::new();
         state.set_state(STATE_IDLE);
+        state.dismiss_overlay();
         let controller = crate::transcription::TranscriptionController::without_worker();
 
         assert_eq!(
@@ -692,6 +694,7 @@ mod tests {
             Some(super::RecordHotkeyAction::StartRecording)
         );
         assert_eq!(state.get_state(), STATE_RECORDING);
+        assert!(!state.is_overlay_dismissed());
     }
 
     #[test]
@@ -766,6 +769,85 @@ mod tests {
         assert_eq!(parse_correction_key("RightMeta"), Some(Key::MetaRight));
         assert_eq!(parse_correction_key("F7"), Some(Key::F7));
         assert_eq!(parse_correction_key("Cmd"), None);
+    }
+
+    #[test]
+    fn finishing_dictation_keeps_the_transcript_readable_during_transformation() {
+        use crate::state::{AppState, STATE_PROCESSING, STATE_RECORDING};
+        use crate::transcription::TranscriptionController;
+
+        let state = AppState::new();
+        state.set_overlay_text("Keep my narration visible.");
+        state.set_state(STATE_RECORDING);
+        let controller = TranscriptionController::without_worker();
+
+        stop_recording_and_transform_and_paste(&state, &controller, "test");
+
+        assert_eq!(state.get_state(), STATE_PROCESSING);
+        assert_eq!(&*state.overlay_text(), "Keep my narration visible.");
+        assert_eq!(state.overlay_text_opacity(), 1.0);
+        assert!(state.is_finishing_dictation());
+        assert!(!state.is_overlay_dismissed());
+        state.set_state(crate::state::STATE_TRANSFORMING);
+        assert!(state.is_finishing_dictation());
+        state.report_error("Transformation failed");
+        assert!(!state.is_finishing_dictation());
+    }
+
+    #[test]
+    fn finishing_empty_dictation_dismisses_without_waiting_or_discarding_final_audio() {
+        use crate::state::{AppState, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING};
+        use crate::transcription::TranscriptionController;
+
+        for text in ["", " \n\t "] {
+            for finish in [
+                stop_recording_and_paste,
+                stop_recording_and_transform_and_paste,
+            ] {
+                let state = AppState::new();
+                state.set_overlay_text(text);
+                state.set_state(STATE_RECORDING);
+                state.set_overlay_window_visible(true);
+                let controller = TranscriptionController::without_worker();
+
+                finish(&state, &controller, "test");
+
+                assert_eq!(state.get_state(), STATE_PROCESSING);
+                assert!(state.is_overlay_dismissed());
+                assert!(!state.is_finishing_dictation());
+                assert!(!state.is_abort_requested());
+                assert!(state.is_overlay_window_visible());
+
+                state.set_overlay_window_visible(false);
+                state.set_overlay_text("Final speech can arrive after F5.");
+                state.set_state(STATE_TRANSFORMING);
+                assert!(state.is_overlay_dismissed());
+                assert!(!state.is_finishing_dictation());
+                assert_eq!(&*state.overlay_text(), "Final speech can arrive after F5.");
+
+                state.report_error("Session failed");
+                assert!(!state.is_overlay_dismissed());
+            }
+        }
+    }
+
+    #[test]
+    fn transforming_and_resuming_keeps_the_transcript_readable() {
+        use crate::state::{AppState, STATE_PROCESSING, STATE_RECORDING};
+        use crate::transcription::TranscriptionController;
+
+        let state = AppState::new();
+        state.set_overlay_text("Keep my narration visible.");
+        state.set_state(STATE_RECORDING);
+        let controller = TranscriptionController::without_worker();
+
+        stop_recording_and_transform_and_resume(&state, &controller, "test");
+
+        assert_eq!(state.get_state(), STATE_PROCESSING);
+        assert!(state.is_dictation_resuming());
+        assert_eq!(&*state.overlay_text(), "Keep my narration visible.");
+        assert_eq!(state.overlay_text_opacity(), 1.0);
+        assert!(!state.is_finishing_dictation());
     }
 
     #[test]

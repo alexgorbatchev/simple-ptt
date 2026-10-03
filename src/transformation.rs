@@ -15,6 +15,8 @@ use crate::state::AppState;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformationPreviewMode<'a> {
     ReplaceOverlay,
+    /// Collect the result for pasting while the narrated text stays visible.
+    PreserveOverlay,
     #[expect(
         dead_code,
         reason = "inline correction preview (5fd64e9) lost its only constructor when 2719264 \
@@ -306,24 +308,21 @@ fn apply_overlay_update(
     preview_mode: TransformationPreviewMode<'_>,
     update: OverlayUpdate,
 ) {
-    if let Some(opacity) = update.reset_with_opacity {
-        match preview_mode {
-            TransformationPreviewMode::ReplaceOverlay => {
-                state.set_overlay_text(String::new());
-            }
-            TransformationPreviewMode::InlineCorrection { original_text } => {
-                state.set_overlay_text(original_text.to_owned());
-                state.clear_overlay_correction_text();
-            }
-        }
-        state.set_overlay_text_opacity(opacity);
-    }
-
     match preview_mode {
+        TransformationPreviewMode::PreserveOverlay => {}
         TransformationPreviewMode::ReplaceOverlay => {
+            if let Some(opacity) = update.reset_with_opacity {
+                state.set_overlay_text(String::new());
+                state.set_overlay_text_opacity(opacity);
+            }
             state.set_overlay_text(update.text);
         }
-        TransformationPreviewMode::InlineCorrection { .. } => {
+        TransformationPreviewMode::InlineCorrection { original_text } => {
+            if let Some(opacity) = update.reset_with_opacity {
+                state.set_overlay_text(original_text.to_owned());
+                state.clear_overlay_correction_text();
+                state.set_overlay_text_opacity(opacity);
+            }
             state.set_overlay_correction_text(update.text);
         }
     }
@@ -568,6 +567,28 @@ mod tests {
         items: Vec<Result<RawStreamingChoice, CompletionError>>,
     ) -> StreamingCompletionResponse {
         StreamingCompletionResponse::stream("test-provider", Box::pin(tokio_stream::iter(items)))
+    }
+
+    #[tokio::test]
+    async fn finishing_preview_preserves_narration_through_reasoning_and_answer() {
+        let state = AppState::new();
+        state.set_overlay_text("The narrated text.");
+        let original = state.overlay_text_snapshot().text;
+        let stream = raw_stream(vec![
+            Ok(RawStreamingChoice::Reasoning {
+                id: rig_core::streaming::StreamPartId::wire("reasoning"),
+                provider_id: None,
+                content: ReasoningContent::Text { text: "Working on it".to_owned(), signature: None },
+            }),
+            Ok(RawStreamingChoice::Message("Transformed ".to_owned())),
+            Ok(RawStreamingChoice::Message("result".to_owned())),
+        ]);
+
+        let result = drain_stream(stream, &state, TransformationPreviewMode::PreserveOverlay).await;
+
+        assert_eq!(result, Ok("Transformed result".to_owned()));
+        assert!(Arc::ptr_eq(&original, &state.overlay_text_snapshot().text));
+        assert_eq!(state.overlay_text_opacity(), 1.0);
     }
 
     #[tokio::test]

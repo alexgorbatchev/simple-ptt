@@ -197,7 +197,8 @@ pub fn spawn_transcription_thread(
                         continue;
                     }
 
-                    state.restore_overlay();
+                    // The hotkey owns this presentation's visibility. A
+                    // queued start must not undo a later empty F5 dismissal.
                     state.set_overlay_text(recording_prefix.clone());
                     state.set_overlay_text_opacity(1.0);
 
@@ -612,7 +613,7 @@ pub fn spawn_transcription_thread(
                                         state.clone(),
                                         &transformation_config,
                                         &buffered_text,
-                                        TransformationPreviewMode::ReplaceOverlay,
+                                        TransformationPreviewMode::PreserveOverlay,
                                     )) {
                                         Ok(transformed_text) => {
                                             log::info!(

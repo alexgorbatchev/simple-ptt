@@ -1,4 +1,10 @@
-These behaviors were measured on macOS 26.6 with probes. Each gives the behavior, then where the code handles it. Do not undo a handling without re-measuring.
+---
+created_on: 2026-09-27 11:29
+last_modified: 2026-10-03 08:24
+status: current
+---
+
+These behaviors were measured on macOS 26.6 with probes, with later versions noted below. Each gives the behavior, then where the code handles it. Do not undo a handling without re-measuring.
 
 ## Liquid Glass (`NSGlassEffectView`)
 
@@ -26,6 +32,12 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 
 ## Scroll views and text
 
+- **An unchanged overlay refresh must preserve text selection and scrolling** (macOS 26.6.2).
+  - With seven error-text characters selected, the old `OverlayWindow::update` moved the selection from `{ location: 0, length: 7 }` to `{ location: 37, length: 0 }`. A subsequent native Command-C event left the pasteboard unchanged; the same event copied successfully before the refresh.
+  - `set_working_text` already moves the caret and scrolls when replacing text. `update` leaves these alone. In two probe runs, selection remained `{ location: 0, length: 7 }` through the refresh and Command-C wrote the selected text. Restoring the unconditional caret move reproduced the failure.
+- **Transformation feedback needs readable text through both processing states** (macOS 26.6.2).
+  - The old record/transform handoff set text opacity to `0.02`; after twelve UI updates the text view's measured alpha was `0.0196078431372549`. The shimmer ran only in `STATE_TRANSFORMING`, leaving the final transcription wait without it.
+  - Both transform handoffs in `hotkey.rs` retain full text opacity. `OverlayWindow::update` runs the existing shimmer in `STATE_PROCESSING` and `STATE_TRANSFORMING`. Two probe runs measured text alpha `1.0` in both states and advancing presentation-layer gradient locations; the mask was absent in recording and error states. Disabling the changes reproduced the low alpha and missing processing shimmer. Reduce Motion still suppresses the shimmer through `Shimmer::start`.
 - **The scroll view pulls its content in near a container's rounded corner.**
   - On macOS 26 an `NSScrollView` insets its clip view (`contentInsets`) while a rounded ancestor corner is near its edge (`_NSScrollViewLayoutHelper updateLayoutWithMinimumDocumentFrameSize:` → `_applyContentAreaLayout:`). The text view shrinks and scrolls by the inset. The Expand collapse moved the transcript 6pt for about 50ms.
   - `automaticallyAdjustsContentInsets` does **not** control this.
@@ -56,6 +68,21 @@ These behaviors were measured on macOS 26.6 with probes. Each gives the behavior
 
 ## Window and halo
 
+- **An empty F5 handoff dismisses instead of holding a placeholder** (macOS 26.6.2).
+  - Before the change, empty narration held at scale `0.8`, panel alpha `1.0`, with shimmer throughout processing and transformation. The finishing handoff now marks only nonempty narration for that hold; empty or whitespace-only narration sets the existing dismissal flag before processing starts.
+  - Two native runs sampled every 12ms, each checking 204 samples with zero failures: empty F5 faded immediately through the normal 0.24s dismissal, remained hidden through late final text, and nonempty F5 still held at `0.8` with shimmer. Disabling the handoff change restored 154 failures in 203 samples and the failing hotkey regression test.
+  - The recording hotkey restores visibility when starting the next recording. The queued transcription start does not restore it, so a delayed start cannot undo a subsequent empty F5 dismissal. Errors still restore the overlay through `report_error`. No private API was added.
+- **Uniform overlay scaling belongs on the root rendering layer** (macOS 26.6.2).
+  - Animating the main glass's frame changed its width during dismissal (560 → 559.5pt in the first step) while the text view stayed 560pt wide. It resized the glass rather than scaling the whole overlay.
+  - `OverlayMotionView` uses public Core Animation transforms from its AppKit `updateLayer` override. The window, glass, root bounds, and text layout stay fixed. Two repeated runs each checked 125 samples with no invariant failures: F5 held root scale `0.8` through processing and transformation, and F6 held `1.0`; both shimmered. Captures show the text, footer, glass, and halo scaling together.
+  - Entrance keyframes go through `1.1` and settle at `1.0`. Sampled entrance peaks were `1.1` and `1.0998241941560991`; the display sampling can miss the exact peak between keyframes. Reduce Motion uses an unscaled fade.
+  - `NSView::convertRect_toView` continues to report the unscaled layout rectangle through the root layer's transform. For composited motion, measure the root presentation transform as well as layout bounds and inspect captures.
+  - Exercise the real capture flag when probing F5. Removing the meter on the recording-to-processing transition changed the text view's height from `120.2` to `151.0` and its screen y from `511.8` to `481.0`, even with the correct root scale. F5's finishing update retains the displayed text, meter, and layout instead of rebuilding them. With the real capture transition, two runs again checked 125 samples each with zero failures; F6 continues its live meter updates.
+- **Dismissal must retain its displayed text and report actual window visibility** (macOS 26.6.2).
+  - The old `hide()` cleared 84 characters to zero while the panel was still visible and fading. Keeping the view's content until its next visible update retains narration throughout the fade; transformation's `PreserveOverlay` mode collects F5's result without replacing that narration. F6 keeps `ReplaceOverlay`.
+  - Marking the overlay hidden at the start of its fade gave `visible=true, reported_visible=false` at `t=2.017`, allowing the paste handoff to proceed early. `pop_out` now calls the owner's visibility callback after `orderOut`; repeated probes keep both visibility values equal through dismissal.
+  - A result can finish between UI ticks. The finishing marker survives `STATE_IDLE` until the actual hidden callback clears it, and `hide` applies the finishing scale even when no processing tick was rendered. The fast-result probe reached scale `0.8` during its fade; disabling marker retention restores the failing lifecycle test and an 8% dismissal shrink.
+  - Disabling the rendering transforms, narration retention, and finishing marker produced 91 failures in 125 samples and restored the two failing finishing regression tests. No private API was added.
 - **The glass content must sit on whole points.** The glass sits `margin()` in from the window edge. With a fractional margin (90.71), AppKit snapped the text view to the pixel grid but not the meter's layers, which ended up 0.21 pt apart. `margin()` rounds to whole points, and every margin use goes through it.
 - **The halo fades out at the edge of its own views** (blur, dim, fallback glass), not at the window's edge. `layout_halo` sizes them.
   - With Expand they end a margin above the main glass's current top, so the blur grows with the glass. Before, it took the grown size the moment the correction showed.

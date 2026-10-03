@@ -2,6 +2,7 @@ pub mod dev;
 pub mod diff;
 pub mod glass;
 mod legibility;
+mod motion;
 pub mod private_effects;
 mod text_effects;
 
@@ -238,6 +239,19 @@ impl OverlayWindow {
             return;
         }
 
+        // F5 finishes interaction with this presentation. Retain its text,
+        // meter, and layout while the result is prepared, so stopping audio
+        // cannot reflow the overlay underneath the uniform scale animation.
+        if self.is_visible.get()
+            && self.state.is_finishing_dictation()
+            && matches!(state, STATE_PROCESSING | STATE_TRANSFORMING)
+        {
+            self.shimmer.start(&self.working_scroll_view);
+            self.glass.set_finishing(true, reduce_motion());
+            self.state.set_overlay_window_visible(true);
+            return;
+        }
+
         let is_error = state == STATE_ERROR;
 
         let (display_text, display_provisional_start) = if is_error {
@@ -310,7 +324,7 @@ impl OverlayWindow {
             footer_is_visible,
             meter_is_visible,
         );
-        if state == STATE_TRANSFORMING {
+        if matches!(state, STATE_PROCESSING | STATE_TRANSFORMING) {
             self.shimmer.start(&self.working_scroll_view);
         } else {
             self.shimmer.stop(&self.working_scroll_view);
@@ -333,12 +347,14 @@ impl OverlayWindow {
             self.is_visible.set(true);
         }
 
-        let text_length = self.working_text_view.string().length();
-        self.working_text_view
-            .setSelectedRange(NSRange::new(text_length, 0));
-        self.working_text_view
-            .scrollRangeToVisible(NSRange::new(text_length, 0));
+        self.glass.set_finishing(
+            self.state.is_finishing_dictation()
+                && matches!(state, STATE_PROCESSING | STATE_TRANSFORMING),
+            reduce_motion(),
+        );
 
+        // Text replacements position the caret and follow new text themselves.
+        // An unchanged refresh must preserve the user's selection and scroll.
         if correction_is_visible {
             let correction_length = self.correction_text_view.string().length();
             self.correction_text_view
@@ -350,14 +366,21 @@ impl OverlayWindow {
 
     pub fn hide(&self) {
         if self.is_visible.replace(false) {
-            self.glass.pop_out(reduce_motion());
+            // A fast result can skip the processing UI tick. Still scale the
+            // finishing presentation before its fade, using its retained flag.
+            if self.state.is_finishing_dictation() {
+                self.glass.set_finishing(true, reduce_motion());
+            }
+            let state = self.state.clone();
+            self.glass.pop_out(reduce_motion(), move || {
+                state.set_overlay_window_visible(false);
+            });
+        } else if !self.glass.panel.isVisible() {
+            self.state.set_overlay_window_visible(false);
         }
         self.shimmer.stop(&self.working_scroll_view);
-        self.state.set_overlay_window_visible(false);
-        self.ui_meter_view.clear(self.meter_span());
-        self.set_working_text("", None, None);
-        self.set_correction_text("", None, false);
-        self.set_working_text_opacity(1.0);
+        // Keep the displayed narration through the fade. The next visible
+        // update replaces it before the panel is ordered front again.
     }
 
     pub fn glass_tuning(&self) -> GlassTuning {

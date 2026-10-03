@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-30 11:51
-last_modified: 2026-10-02 15:26
+last_modified: 2026-10-03 08:24
 status: current
 ---
 
@@ -9,6 +9,8 @@ status: current
 This reference is for anyone changing the overlay's pill meter (`ui.meter_style = "pills"`). It records what the user asked for, in their words, and which part of the design answers each request, so that no part is "simplified" away without knowing what it protects. Keep it current with the code.
 
 The pills are a live picture of the voice, not a measurement. What matters is what the user sees: the pills respond at once, show the voice's changing spectrum, and stay empty while the room is quiet.
+
+When F5 finishes nonempty dictation for pasting, audio capture stops and the overlay retains its last displayed text, meter, and layout while transformation runs. The whole presentation scales to 80% and fades together; removing the meter during that wait would move the text. An empty overlay fades out immediately without that hold. F6 continues capturing audio and updating the spectrum at full overlay size while transformation runs.
 
 ## Requirements
 
