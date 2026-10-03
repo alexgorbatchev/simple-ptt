@@ -16,6 +16,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Install to `~/Applications` and launch: `just install-app && just start`
 - Overlay debug mode (for the user to run; it blocks): `just debug-overlay` (`simple-ptt --debug`) shows the overlay with built-in default config and a window of live controls for every `GlassTuning` and `PillTuning` value, the meter style, the voice that drives the meter (a synthetic voice that alternates soft and loud with a 1.5 s silence every 6 s, queuing its spectrum as the audio callback does, or the microphone from the user's `[mic]` config through the app's own audio path), a readout of the pills' range and the latest loudest band, the correction, and a narration loop. "Copy values" copies the tuned values for the user to paste back.
 - Capture every overlay state over light and dark backdrops, then exit: `cargo run -- --overlay-snapshot .tmp/snapshots` (needs Screen Recording permission for the terminal).
+- Record the README demo video (overlay, transcript, correction): follow the `readme-demo` skill in `.agents/skills/readme-demo/`; `bun .agents/skills/readme-demo/scripts/record-demo.ts record`, then `encode`.
 
 ## Setup
 - Runtime and release packaging are macOS-only and currently target Apple Silicon (`aarch64-apple-darwin` in `.github/workflows/release.yml`). The app requires macOS 26 or later (`LSMinimumSystemVersion` in `scripts/build-macos-app.sh`) because the overlay uses Liquid Glass (`NSGlassEffectView`); keep each release's `sparkle:minimumSystemVersion` in `appcast.xml` at the same version.
@@ -44,7 +45,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - LaunchServices-launched apps do not reliably inherit shell environment variables. For real app runs, prefer file-backed config in `~/.config/simple-ptt/config.toml`.
 - `just run` sets `SIMPLE_PTT_CONFIG=./config.toml`; `just run-xdg` does not. Use the right command when reproducing config-loading bugs.
 - macOS TCC state can become stale after rebuilding or replacing the ad-hoc-signed app bundle. Use the in-app permissions flow or `scripts/clear-macos-permissions.sh`, then relaunch.
-- Do not start the application yourself, that's a blocking process and user doesn't expect it. This includes `just debug-overlay`; `--overlay-snapshot` is the exception because it exits on its own.
+- Do not start the application yourself, that's a blocking process and user doesn't expect it. This includes `just debug-overlay`; `--overlay-snapshot` and the `readme-demo` skill's `record-demo.ts record` are the exceptions because they exit on their own.
 - Every settings pane must fit the window's minimum content size: `SettingsWindow::new` sizes it from the largest pane's `fittingSize`, measured again after a layout pass so wrapping hints count at their wrapped height. Hint rows hidden while empty (the API key environment hints) are not counted; the Transformation pane's prompt editors give up that height instead of the window growing, because their minimum height has a priority below `NSLayoutPriorityWindowSizeStayPut`. `cargo test` cannot check AppKit layout, so verify layout changes with an ad hoc, uncommitted off-screen harness under `.tmp/` that builds the window on the main thread and checks `hasAmbiguousLayout`, first-baseline alignment, and snapshots; do not launch the app.
 - **Overlay UI Keybindings:** Do not introduce explicit keyboard actions (like Enter, Esc, etc.) inside the overlay's text editor. The entire dictation, editing, and pasting sequence is driven purely by the system-wide record/transform hotkeys (e.g., F5/F6) captured by the CGEventTap in `src/hotkey_macos.rs` and dispatched in `src/hotkey.rs`. Releasing the recording hotkey acts as the trigger to finish and paste.
 
@@ -67,5 +68,6 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - `src/permissions.rs`
 - `docs/internal/references/pill-meter.md`
 - `.agents/skills/overlay-visual-debugging/`
+- `.agents/skills/readme-demo/`
 - `scripts/build-macos-app.sh`
 - `.github/workflows/release.yml`
