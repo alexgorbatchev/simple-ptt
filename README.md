@@ -1,6 +1,6 @@
 # simple-ptt
 
-![simple-ptt demo](./screen.gif)
+https://github.com/user-attachments/assets/bee52a5c-f207-4414-be92-f4aae5e65231
 
 A fast, minimal push-to-talk app for macOS with live Deepgram transcription and optional LLM cleanup before paste.
 
