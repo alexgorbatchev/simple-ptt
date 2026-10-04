@@ -8,7 +8,8 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Test: `cargo test --locked`
 - Build sanity/typecheck: `cargo check --message-format=short`
 - CI gate (Apple Silicon macOS, `.github/workflows/ci.yml`): run `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, `RUSTFLAGS="-D warnings" cargo test --locked`, and `RUSTFLAGS="-D warnings" cargo build --locked --release --target aarch64-apple-darwin`. Keep the same `RUSTFLAGS` for all three commands; changing it rebuilds Cargo artifacts, so run this gate as a separate sequence from ordinary development checks.
-- Run with the repo-local dev config: `just setup` then `just run` (setup creates the gitignored `./config.toml` from `config.example.toml` when it is missing)
+- Run with the repo-local dev config: `just setup` then `just run` (both create the gitignored `./config.toml` from `config.example.toml` when it is missing)
+- Prepare the default dev config without starting the app: `just prepare-default-config`
 - Run with an explicit config file: `just run-config path/to/config.toml`
 - Run with normal XDG/home config lookup: `just run-xdg`
 - List audio input devices from an installed app bundle: `just list-devices`

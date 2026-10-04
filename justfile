@@ -1,15 +1,13 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
-run:
+run: prepare-default-config
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-config config_path="config.toml":
+    if [ "{{ config_path }}" = "config.toml" ] || [ "{{ config_path }}" = "./config.toml" ]; then just prepare-default-config; fi
     SIMPLE_PTT_CONFIG="{{ config_path }}" cargo run
 
-run-local:
-    SIMPLE_PTT_CONFIG="./config.toml" cargo run
-
-run-simulated-error error_msg="deepgram connection failed":
+run-simulated-error error_msg="deepgram connection failed": prepare-default-config
     SIMPLE_PTT_SIMULATE_ERROR="{{ error_msg }}" SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-xdg:
@@ -48,4 +46,8 @@ list-devices app_path="$HOME/Applications/simple-ptt.app":
 setup:
     test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64 || { echo 'simple-ptt requires macOS 26 or later on Apple Silicon' >&2; exit 1; }
     cargo fetch --locked
+    just prepare-default-config
+
+# Create the local development config without overwriting existing edits.
+prepare-default-config:
     if [ ! -f config.toml ]; then cp config.example.toml config.toml; fi
