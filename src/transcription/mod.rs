@@ -1400,6 +1400,14 @@ mod tests {
     fn worker(state: &std::sync::Arc<crate::state::AppState>) -> super::TranscriptionController {
         let mut config = crate::config::Config::default();
         config.deepgram.api_key = Some("test-key".to_owned());
+        worker_with_config(state, config)
+    }
+
+    /// Builds a worker from an explicit config; tests do not connect to Deepgram.
+    fn worker_with_config(
+        state: &std::sync::Arc<crate::state::AppState>,
+        config: crate::config::Config,
+    ) -> super::TranscriptionController {
         let config_store = crate::settings::LiveConfigStore::new(
             config.clone(),
             config,
@@ -1461,5 +1469,65 @@ mod tests {
         assert!(!state.is_capturing_audio());
         assert_eq!(state.get_state(), crate::state::STATE_ERROR);
         assert_eq!(&*state.overlay_text(), "Keep the annotation");
+    }
+
+    #[test]
+    fn dictation_without_deepgram_key_reports_guidance_and_keeps_buffer() {
+        if run_without_deepgram_key("dictation_without_deepgram_key_reports_guidance_and_keeps_buffer") {
+            return;
+        }
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
+
+        let state = AppState::new();
+        state.set_overlay_text("draft to keep");
+        state.set_state(STATE_BUFFER_READY);
+        worker_with_config(&state, crate::config::Config::default())
+            .start_session(&state)
+            .unwrap();
+
+        wait_for_state(&state, STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "draft to keep");
+        let error = state.overlay_error_text();
+        assert!(error.contains("Settings > Deepgram"), "{error}");
+        assert!(error.contains("deepgram.api_key"), "{error}");
+        assert!(error.contains("DEEPGRAM_API_KEY"), "{error}");
+    }
+
+    #[test]
+    fn correction_without_deepgram_key_reports_guidance_and_keeps_buffer() {
+        if run_without_deepgram_key("correction_without_deepgram_key_reports_guidance_and_keeps_buffer") {
+            return;
+        }
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
+
+        let state = AppState::new();
+        state.set_overlay_text("draft to keep");
+        state.set_state(STATE_BUFFER_READY);
+        worker_with_config(&state, crate::config::Config::default())
+            .start_correction_session()
+            .unwrap();
+
+        wait_for_state(&state, STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "draft to keep");
+        let error = state.overlay_error_text();
+        assert!(error.contains("Settings > Deepgram"), "{error}");
+        assert!(error.contains("deepgram.api_key"), "{error}");
+        assert!(error.contains("DEEPGRAM_API_KEY"), "{error}");
+    }
+
+    // Run only the requested test in a child with no real credentials. Other
+    // configuration tests may mutate the parent process's environment.
+    fn run_without_deepgram_key(test_name: &str) -> bool {
+        if std::env::var("SIMPLE_PTT_MISSING_KEY_TEST").as_deref() == Ok(test_name) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("transcription::tests::{test_name}"), "--nocapture"])
+            .env("SIMPLE_PTT_MISSING_KEY_TEST", test_name)
+            .env_remove("DEEPGRAM_API_KEY")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        true
     }
 }
