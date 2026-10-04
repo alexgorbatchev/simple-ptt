@@ -1,16 +1,16 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
-run:
+prepare-default-config:
     if [ ! -f config.toml ]; then cp config.example.toml config.toml && echo "Created config.toml from config.example.toml"; fi
+
+run: prepare-default-config
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-config config_path="config.toml":
+    if [ "{{config_path}}" = "config.toml" ] || [ "{{config_path}}" = "./config.toml" ]; then just prepare-default-config; fi
     SIMPLE_PTT_CONFIG="{{config_path}}" cargo run
 
-run-local:
-    SIMPLE_PTT_CONFIG="./config.toml" cargo run
-
-run-simulated-error error_msg="deepgram connection failed":
+run-simulated-error error_msg="deepgram connection failed": prepare-default-config
     SIMPLE_PTT_SIMULATE_ERROR="{{error_msg}}" SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-xdg:
