@@ -1027,6 +1027,16 @@ mod tests {
     }
 
     #[test]
+    fn default_transformation_system_prompt_uses_single_braces() {
+        let prompt = default_transformation_system_prompt();
+
+        assert!(prompt.contains("open brace to {,"));
+        assert!(prompt.contains("close brace to }."));
+        assert!(!prompt.contains("open brace to {{"));
+        assert!(!prompt.contains("close brace to }}"));
+    }
+
+    #[test]
     fn a_config_without_a_meter_style_uses_pills() {
         let config: Config = toml::from_str("[ui]\nfont_size = 14.0\n").unwrap();
 
