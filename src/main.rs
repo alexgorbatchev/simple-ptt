@@ -223,4 +223,13 @@ mod tests {
         assert!(instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
         assert!(instructions.contains("menu bar"));
     }
+
+    #[test]
+    fn startup_error_instructions_explain_config_recovery_without_fixed_paths() {
+        let instructions = startup_error_instructions("missing config");
+
+        assert!(instructions.contains("copy config.example.toml"));
+        assert!(!instructions.contains("~/.config/simple-ptt/config.toml"));
+        assert!(!instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
+    }
 }
