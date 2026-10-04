@@ -297,7 +297,7 @@ pub(crate) fn default_transformation_system_prompt() -> String {
         "When the speaker is clearly dictating symbols or meta words in a technical ",
         "context, convert them to the intended characters, for example dash to -, underscore to ",
         "_, slash to /, backslash to \\, colon to :, dot to ., open paren to (, close paren to ",
-        "), open bracket to [, close bracket to ], open brace to {{, and close brace to }}.\n\n",
+        "), open bracket to [, close bracket to ], open brace to {, and close brace to }.\n\n",
         "Do not add new facts, commentary, or formatting beyond what is implied by the input. ",
         "Return only the transformed text."
     )
