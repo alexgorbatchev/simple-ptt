@@ -285,7 +285,7 @@ pub(crate) fn default_transformation_system_prompt() -> String {
         "accordingly. When the speaker is clearly dictating symbols or meta words in a technical ",
         "context, convert them to the intended characters, for example dash to -, underscore to ",
         "_, slash to /, backslash to \\, colon to :, dot to ., open paren to (, close paren to ",
-        "), open bracket to [, close bracket to ], open brace to {{, and close brace to }}. Do ",
+        "), open bracket to [, close bracket to ], open brace to {, and close brace to }. Do ",
         "not add new facts, commentary, or formatting beyond what is implied by the input. ",
         "Return only the transformed text."
     )
@@ -1024,6 +1024,16 @@ mod tests {
     fn env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn default_transformation_system_prompt_uses_single_braces() {
+        let prompt = default_transformation_system_prompt();
+
+        assert!(prompt.contains("open brace to {,"));
+        assert!(prompt.contains("close brace to }."));
+        assert!(!prompt.contains("open brace to {{"));
+        assert!(!prompt.contains("close brace to }}"));
     }
 
     #[test]
