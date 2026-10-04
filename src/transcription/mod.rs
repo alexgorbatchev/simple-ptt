@@ -168,17 +168,8 @@ pub fn spawn_transcription_thread(
                     let deepgram_config = match resolved_deepgram_config(&current_config) {
                         Ok(deepgram_config) => deepgram_config,
                         Err(error) => {
-                            if error.contains("Deepgram API key is not configured") {
-                                log::info!(
-                                    "ignoring dictation recording start because Deepgram is not configured"
-                                );
-                                state.clear_overlay_text();
-                                state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_IDLE);
-                            } else {
-                                log::error!("failed to resolve Deepgram config: {}", error);
-                                state.report_error(error.to_string());
-                            }
+                            log::error!("failed to resolve Deepgram config: {}", error);
+                            state.report_error(error);
                             continue;
                         }
                     };
@@ -833,18 +824,10 @@ pub fn spawn_transcription_thread(
 
 fn resolved_deepgram_config(config: &Config) -> Result<DeepgramConfig, String> {
     let runtime_config = crate::config::materialize_runtime_config(config);
-    if runtime_config
-        .deepgram
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .is_some()
-    {
-        Ok(runtime_config.deepgram)
-    } else {
-        Err("Deepgram API key is not configured".to_owned())
-    }
+    runtime_config
+        .resolve_deepgram_api_key()
+        .map_err(|error| format!("{error} You can also add it in Settings > Deepgram."))?;
+    Ok(runtime_config.deepgram)
 }
 
 fn resolve_transformation_config(
