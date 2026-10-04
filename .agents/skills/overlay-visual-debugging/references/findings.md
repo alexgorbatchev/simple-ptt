@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-03 09:04
+last_modified: 2026-10-04 11:04
 status: current
 ---
 
@@ -93,6 +93,10 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 
 ## The pills (Core Animation)
 
+- **Narrower pills and tighter gaps retain the centred animated row** (macOS 26.6.2).
+  - `PillCluster` uses 2.8 pt widths and 1.5 pt gaps, keeping its 1.4 pt corner radius. The 40-pill span falls from 211 pt to 170.5 pt.
+  - Two native 12ms runs checked 247 and 283 samples with zero failures: model and presentation widths stayed at 2.8 pt, the row's centre offset stayed exactly zero, and x positions stayed fixed while presentation heights changed in 187 and 193 samples. The capture shows the compact pills in the overlay.
+  - Restoring the previous widths and gaps makes the native compact-row check fail again. No private API was added.
 - **Frequency bands spread from the centre for a balanced speech silhouette** (macOS 26.6.2).
   - With ascending frequencies placed from left to right, the synthetic voice's 284.7 Hz peak appeared 87.8625 pt left of centre; its height-weighted centre moved as far as 68.701156 pt from the middle of the 211 pt cluster.
   - `PillCluster::pill_x` now gives the lowest pair the two centre positions, and successive pairs alternate towards the edges. The peak above appeared 7.9875 pt right of centre. Two 12ms probe runs checked 342 and 448 samples without failure: every sampled peak was in the middle half, x positions stayed identical through the runs, and the height-weighted centre stayed within 3.421995 and 3.167551 pt respectively. This is a fixed visual arrangement of the bands; their input data remains in ascending frequency order.

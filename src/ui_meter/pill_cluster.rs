@@ -14,10 +14,10 @@ use crate::state::SPECTRUM_BANDS;
 use super::{cg_color_in, centred_bar_frame};
 
 /// Width of each pill.
-const PILL_WIDTH: f64 = 3.325;
+const PILL_WIDTH: f64 = 2.8;
 /// Gap between pills, unless the row is too narrow for it.
-const PILL_SPACING: f64 = 2.0;
-/// Scaled with the width (2 pt at 4.75 pt), so the pills keep their shape.
+const PILL_SPACING: f64 = 1.5;
+/// Half the width, keeping the pills' ends rounded.
 const PILL_CORNER_RADIUS: f64 = 1.4;
 /// Every pill's opacity, in the label color: the level changes only heights.
 const PILL_OPACITY: f64 = 0.5;
@@ -156,8 +156,8 @@ mod tests {
         for pair in xs.windows(2) {
             assert!((pair[1] - pair[0] - (PILL_WIDTH + PILL_SPACING)).abs() < 1e-9);
         }
-        // 40 pills at 5.325 pt need 211 pt: a 150 pt row closes them up to
-        // fill it exactly.
+        // A 150 pt row is too narrow for the normal gaps, so it closes
+        // them up to fill the row exactly.
         let xs = ordered_positions(150.0);
         let left = xs[0] - METER_BORDER_PADDING;
         let right = xs[SPECTRUM_BANDS - 1] - METER_BORDER_PADDING + PILL_WIDTH;
