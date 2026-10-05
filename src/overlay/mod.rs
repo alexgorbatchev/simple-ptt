@@ -17,7 +17,7 @@ use objc2::runtime::{AnyObject, NSObject};
 use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
-    NSActionCell, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode,
+    NSActionCell, NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode,
     NSScreen, NSScrollView, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
     NSTextViewDelegate, NSUnderlineColorAttributeName, NSUnderlineStyle,
     NSUnderlineStyleAttributeName, NSView,
@@ -251,13 +251,14 @@ impl OverlayWindow {
             footer.is_some()
         };
 
-        // F5 finishes interaction with this presentation. Retain its text,
-        // meter, and layout while the result is prepared, so stopping audio
+        // F5 finishes interaction with this presentation. Retain its text
+        // and layout while the result is prepared, so stopping audio
         // cannot reflow the overlay underneath the uniform scale animation.
         if self.is_visible.get()
             && self.state.is_finishing_dictation()
             && matches!(state, STATE_PROCESSING | STATE_TRANSFORMING)
         {
+            self.fade_finishing_meter();
             self.shimmer.start(&self.working_scroll_view);
             self.glass.set_finishing(true, reduce_motion());
             self.state.set_overlay_window_visible(true);
@@ -380,6 +381,7 @@ impl OverlayWindow {
             // A fast result can skip the processing UI tick. Still scale the
             // finishing presentation before its fade, using its retained flag.
             if self.state.is_finishing_dictation() {
+                self.fade_finishing_meter();
                 self.glass.set_finishing(true, reduce_motion());
             }
             let state = self.state.clone();
@@ -392,6 +394,17 @@ impl OverlayWindow {
         self.shimmer.stop(&self.working_scroll_view);
         // Keep the displayed narration through the fade. The next visible
         // update replaces it before the panel is ordered front again.
+    }
+
+    /// Fade the last captured meter with the finishing shrink, retaining its
+    /// layout space. Setting the target once keeps status ticks from restarting
+    /// the animation; the next recording's normal update restores its opacity.
+    fn fade_finishing_meter(&self) {
+        if self.meter_alpha.replace(0.0) > 0.0 {
+            glass::animate(0.16, || {
+                self.ui_meter_view.view().animator().setAlphaValue(0.0);
+            });
+        }
     }
 
     pub fn glass_tuning(&self) -> GlassTuning {

@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-05 11:14
+last_modified: 2026-10-05 16:09
 status: current
 ---
 
@@ -72,6 +72,11 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 
 ## Window and halo
 
+- **F5 fades the meter without releasing its layout space** (macOS 26.6.2).
+  - The finishing early return previously retained meter opacity at `1.0` throughout processing and transformation. `fade_finishing_meter` now animates the meter container's public `alphaValue` to zero over 0.16 s, alongside the finishing shrink. Its target is set once so status ticks do not restart the fade; the fast-result dismissal path uses it too.
+  - Two native runs sampled every 12 ms checked 125 finishing samples each with zero failures: meter opacity decreased in 9 and 10 sampled steps, reached exactly `0.0`, and stayed there through transformation. The transcript's screen rectangle stayed `(1000.0, 1058.8, 560.0, 120.19999999999999)`; root scale held exactly `0.8` after the transition. The next recording restored meter opacity to `1.0`.
+  - Disabling the fade restored opacity `1.0`, with 100 failing samples out of 125. No private API is added.
+
 - **An empty F5 handoff dismisses instead of holding a placeholder** (macOS 26.6.2).
   - Before the change, empty narration held at scale `0.8`, panel alpha `1.0`, with shimmer throughout processing and transformation. The finishing handoff now marks only nonempty narration for that hold; empty or whitespace-only narration sets the existing dismissal flag before processing starts.
   - Two native runs sampled every 12ms, each checking 204 samples with zero failures: empty F5 faded immediately through the normal 0.24s dismissal, remained hidden through late final text, and nonempty F5 still held at `0.8` with shimmer. Disabling the handoff change restored 154 failures in 203 samples and the failing hotkey regression test.
@@ -81,7 +86,7 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
   - `OverlayMotionView` uses public Core Animation transforms from its AppKit `updateLayer` override. The window, glass, root bounds, and text layout stay fixed. Two repeated runs each checked 125 samples with no invariant failures: F5 held root scale `0.8` through processing and transformation, and F6 held `1.0`; both shimmered. Captures show the text, footer, glass, and halo scaling together.
   - Entrance keyframes go through `1.1` and settle at `1.0`. Sampled entrance peaks were `1.1` and `1.0998241941560991`; the display sampling can miss the exact peak between keyframes. Reduce Motion uses an unscaled fade.
   - `NSView::convertRect_toView` continues to report the unscaled layout rectangle through the root layer's transform. For composited motion, measure the root presentation transform as well as layout bounds and inspect captures.
-  - Exercise the real capture flag when probing F5. Removing the meter on the recording-to-processing transition changed the text view's height from `120.2` to `151.0` and its screen y from `511.8` to `481.0`, even with the correct root scale. F5's finishing update retains the displayed text, meter, and layout instead of rebuilding them. With the real capture transition, two runs again checked 125 samples each with zero failures; F6 continues its live meter updates.
+  - Exercise the real capture flag when probing F5. Removing the meter on the recording-to-processing transition changed the text view's height from `120.2` to `151.0` and its screen y from `511.8` to `481.0`, even with the correct root scale. F5's finishing update retains the displayed text and layout instead of rebuilding them; the meter now fades within its retained space as measured above. With the real capture transition, two runs again checked 125 samples each with zero failures; F6 continues its live meter updates.
 - **Dismissal must retain its displayed text and report actual window visibility** (macOS 26.6.2).
   - The old `hide()` cleared 84 characters to zero while the panel was still visible and fading. Keeping the view's content until its next visible update retains narration throughout the fade; transformation's `PreserveOverlay` mode collects F5's result without replacing that narration. F6 keeps `ReplaceOverlay`.
   - Marking the overlay hidden at the start of its fade gave `visible=true, reported_visible=false` at `t=2.017`, allowing the paste handoff to proceed early. `pop_out` now calls the owner's visibility callback after `orderOut`; repeated probes keep both visibility values equal through dismissal.

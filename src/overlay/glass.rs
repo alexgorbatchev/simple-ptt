@@ -1283,7 +1283,7 @@ impl OverlayGlass {
 }
 
 /// Runs `changes` as one ease-in-ease-out animation group of `seconds`.
-fn animate(seconds: f64, changes: impl Fn()) {
+pub(super) fn animate(seconds: f64, changes: impl Fn()) {
     animate_with(seconds, EASE_IN_OUT, changes);
 }
 
