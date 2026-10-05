@@ -522,6 +522,7 @@ mod tests {
 
         form.prompts.reset_to_default(Prompt::Dictation);
 
+        assert!(form.prompts.text(Prompt::Dictation).contains("\n\n"));
         assert_eq!(
             form.prompts,
             PromptsForm {
@@ -545,6 +546,7 @@ mod tests {
 
         form.prompts.reset_to_default(Prompt::Correction);
 
+        assert!(form.prompts.text(Prompt::Correction).contains("\n\n"));
         assert_eq!(
             form.prompts,
             PromptsForm {
