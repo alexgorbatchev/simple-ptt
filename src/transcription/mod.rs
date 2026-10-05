@@ -155,7 +155,12 @@ pub fn spawn_transcription_thread(
                 Command::StartSession => {
                     if let Some(old_session) = active_session.take() {
                         log::info!("cleaning up previous active session before starting new session");
-                        let _ = old_session.finish(&runtime, state.clone());
+                        if matches!(finish_session(old_session, &state), Ok(None)) {
+                            buffered_text.clear();
+                            recording_prefix.clear();
+                            resume_after_correction = false;
+                            continue;
+                        }
                     }
 
                     if state.get_state() == STATE_BUFFER_READY {
@@ -203,7 +208,6 @@ pub fn spawn_transcription_thread(
                     state.set_overlay_text_opacity(1.0);
 
                     match start_session(
-                        &runtime,
                         state.clone(),
                         &deepgram_config,
                         current_sample_rate,
@@ -229,8 +233,14 @@ pub fn spawn_transcription_thread(
                         .unwrap_or(false);
 
                     if let Some(session) = active_session.take() {
-                        match session.finish(&runtime, state.clone()) {
-                            Ok(text) => {
+                        match finish_session(session, &state) {
+                            Ok(None) => {
+                                buffered_text.clear();
+                                recording_prefix.clear();
+                                resume_after_correction = false;
+                                continue;
+                            }
+                            Ok(Some(text)) => {
                                 if !text.trim().is_empty() {
                                     buffered_text = text;
                                 }
@@ -295,7 +305,6 @@ pub fn spawn_transcription_thread(
                     };
 
                     match start_session(
-                        &runtime,
                         state.clone(),
                         &deepgram_config,
                         current_sample_rate,
@@ -314,7 +323,7 @@ pub fn spawn_transcription_thread(
                 }
                 Command::PushAudio(pcm_data) => {
                     if let Some(session) = &active_session {
-                        match session.push_audio(&runtime, pcm_data) {
+                        match session.push_audio(pcm_data) {
                             PushAudioResult::Ok => {}
                             PushAudioResult::Full => {
                                 log::warn!("audio queue full; dropping audio chunk");
@@ -329,8 +338,14 @@ pub fn spawn_transcription_thread(
                 }
                 Command::StopSessionAndPaste => {
                     if let Some(session) = active_session.take() {
-                        match session.finish(&runtime, state.clone()) {
-                            Ok(text) => {
+                        match finish_session(session, &state) {
+                            Ok(None) => {
+                                buffered_text.clear();
+                                recording_prefix.clear();
+                                resume_after_correction = false;
+                                continue;
+                            }
+                            Ok(Some(text)) => {
                                 buffered_text = text;
                                 flush_buffered_text_or_paste(&state, &mut buffered_text, true);
                             }
@@ -361,8 +376,14 @@ pub fn spawn_transcription_thread(
                     let was_recording = state.is_recording();
                     if was_recording {
                         if let Some(session) = active_session.take() {
-                            match session.finish(&runtime, state.clone()) {
-                                Ok(text) => {
+                            match finish_session(session, &state) {
+                                Ok(None) => {
+                                    buffered_text.clear();
+                                    recording_prefix.clear();
+                                    resume_after_correction = false;
+                                    continue;
+                                }
+                                Ok(Some(text)) => {
                                     recording_prefix = text;
                                 }
                                 Err(error) => {
@@ -410,7 +431,6 @@ pub fn spawn_transcription_thread(
                         };
 
                         match start_session(
-                            &runtime,
                             state.clone(),
                             &deepgram_config,
                             current_sample_rate,
@@ -442,8 +462,14 @@ pub fn spawn_transcription_thread(
                     resume_after_correction = false;
 
                     if let Some(session) = active_session.take() {
-                        let correction_request = match session.finish(&runtime, state.clone()) {
-                            Ok(text) => text,
+                        let correction_request = match finish_session(session, &state) {
+                            Ok(None) => {
+                                buffered_text.clear();
+                                recording_prefix.clear();
+                                resume_after_correction = false;
+                                continue;
+                            }
+                            Ok(Some(text)) => text,
                             Err(error) => {
                                 log::error!("correction Deepgram session failed: {}", error);
                                 state.set_overlay_correction_active(false);
@@ -544,7 +570,6 @@ pub fn spawn_transcription_thread(
                                         };
 
                                     match start_session(
-                                        &runtime,
                                         state.clone(),
                                         &deepgram_config,
                                         current_sample_rate,
@@ -578,8 +603,14 @@ pub fn spawn_transcription_thread(
                 }
                 Command::StopSessionAndTransformAndPaste => {
                     if let Some(session) = active_session.take() {
-                        match session.finish(&runtime, state.clone()) {
-                            Ok(text) => {
+                        match finish_session(session, &state) {
+                            Ok(None) => {
+                                buffered_text.clear();
+                                recording_prefix.clear();
+                                resume_after_correction = false;
+                                continue;
+                            }
+                            Ok(Some(text)) => {
                                 buffered_text = text;
                                 if buffered_text.trim().is_empty() {
                                     state.clear_overlay_text();
@@ -657,8 +688,14 @@ pub fn spawn_transcription_thread(
                     // capture carries on until this ends, however it ends.
                     let _resuming = ResumingDictation::new(&state, true);
                     if let Some(session) = active_session.take() {
-                        match session.finish(&runtime, state.clone()) {
-                            Ok(text) => {
+                        match finish_session(session, &state) {
+                            Ok(None) => {
+                                buffered_text.clear();
+                                recording_prefix.clear();
+                                resume_after_correction = false;
+                                continue;
+                            }
+                            Ok(Some(text)) => {
                                 buffered_text = text;
                                 if buffered_text.trim().is_empty() {
                                     state.clear_overlay_text();
@@ -738,7 +775,6 @@ pub fn spawn_transcription_thread(
                                     };
 
                                 match start_session(
-                                    &runtime,
                                     state.clone(),
                                     &deepgram_config,
                                     current_sample_rate,
@@ -832,6 +868,34 @@ pub fn spawn_transcription_thread(
     TranscriptionController { command_tx }
 }
 
+/// Settle cancellation before any caller can paste, transform, or resume.
+/// `None` means the recording was discarded, not an empty transcript.
+fn finish_session(session: ActiveSession, state: &AppState) -> Result<Option<String>, String> {
+    settle_session_finish(session.finish(state), state)
+}
+
+fn settle_session_finish(
+    result: Result<String, SessionFinishError>,
+    state: &AppState,
+) -> Result<Option<String>, String> {
+    // Also catch an abort that raced a normal completion or timeout.
+    if state.consume_abort_request() || matches!(result, Err(SessionFinishError::Aborted)) {
+        state.set_dictation_resuming(false);
+        state.set_overlay_correction_active(false);
+        state.clear_overlay_correction_text();
+        state.clear_overlay_text();
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_IDLE);
+        log::info!("discarded aborted transcription session");
+        return Ok(None);
+    }
+    match result {
+        Ok(text) => Ok(Some(text)),
+        Err(SessionFinishError::Failed(error)) => Err(error),
+        Err(SessionFinishError::Aborted) => unreachable!("aborted sessions are settled above"),
+    }
+}
+
 fn resolved_deepgram_config(config: &Config) -> Result<DeepgramConfig, String> {
     let runtime_config = crate::config::materialize_runtime_config(config);
     if runtime_config
@@ -875,6 +939,51 @@ impl Drop for ResumingDictation<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn aborted_session_finish_clears_capture_and_abort_state() {
+        use crate::state::{AppState, STATE_IDLE, STATE_PROCESSING};
+        let state = AppState::new();
+        state.set_overlay_text("discard this");
+        state.set_overlay_correction_text("discard correction");
+        state.set_overlay_correction_active(true);
+        state.set_dictation_resuming(true);
+        state.set_state(STATE_PROCESSING);
+        state.dismiss_overlay();
+        state.request_abort();
+
+        let result = super::settle_session_finish(Err(super::SessionFinishError::Aborted), &state);
+
+        assert_eq!(result, Ok(None));
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(!state.is_abort_requested());
+        assert!(!state.is_capturing_audio());
+        assert!(!state.is_overlay_correction_active());
+        assert!(state.overlay_text().is_empty());
+        assert!(state.overlay_correction_text().is_empty());
+        assert!(state.is_overlay_dismissed());
+    }
+
+    #[test]
+    fn an_abort_racing_empty_session_completion_is_consumed() {
+        let state = crate::state::AppState::new();
+        state.set_state(crate::state::STATE_PROCESSING);
+        state.request_abort();
+
+        assert_eq!(super::settle_session_finish(Ok(String::new()), &state), Ok(None));
+        assert!(!state.is_abort_requested());
+        assert_eq!(state.get_state(), crate::state::STATE_IDLE);
+    }
+
+    #[test]
+    fn session_finish_errors_remain_errors_instead_of_pasting_partial_text() {
+        let state = crate::state::AppState::new();
+        state.set_overlay_text("incomplete words");
+        let result = super::settle_session_finish(
+            Err(super::SessionFinishError::Failed("shutdown timed out".to_owned())), &state,
+        );
+        assert_eq!(result, Err("shutdown timed out".to_owned()));
+    }
+
     #[test]
     fn dictation_counts_as_resuming_only_while_the_guard_lives() {
         let state = crate::state::AppState::new();

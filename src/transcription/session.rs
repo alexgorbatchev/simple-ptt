@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use deepgram::common::options::{Encoding, Endpointing, Options};
 use deepgram::common::stream_response::{Channel, StreamResponse};
-use deepgram::listen::websocket::{TranscriptionStream, WebsocketBuilder};
+use deepgram::listen::websocket::WebsocketBuilder;
 use deepgram::Deepgram;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -21,6 +21,15 @@ pub const AUDIO_QUEUE_CAPACITY: usize = 512;
 /// keeps it, and the audio thread never waits because it hands audio over
 /// through an unbounded channel.
 const AUDIO_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+/// Allow the server to drain queued audio and return its final transcript.
+const SESSION_FINISH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const ABORT_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum SessionFinishError {
+    Aborted,
+    Failed(String),
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PushAudioResult {
@@ -39,6 +48,9 @@ pub struct ActiveSession {
     audio_tx: TokioSender<Result<Bytes, std::io::Error>>,
     kind: SessionKind,
     task: tokio::task::JoinHandle<Result<String, String>>,
+    // The SDK spawns detached transport tasks. Owning their runtime ensures
+    // they and their sockets are dropped even if the SDK never ends its stream.
+    runtime: Runtime,
     /// The queue stayed full through a whole wait: chunks are dropped
     /// without waiting until it has room again.
     stalled: std::cell::Cell<bool>,
@@ -51,15 +63,15 @@ impl ActiveSession {
 
     /// Queues `pcm_data` for the session, waiting up to `AUDIO_QUEUE_WAIT`
     /// for room when the queue is full.
-    pub fn push_audio(&self, runtime: &Runtime, pcm_data: Bytes) -> PushAudioResult {
-        self.push_audio_within(runtime, pcm_data, AUDIO_QUEUE_WAIT)
+    pub fn push_audio(&self, pcm_data: Bytes) -> PushAudioResult {
+        self.push_audio_within(pcm_data, AUDIO_QUEUE_WAIT)
     }
 
     /// Queues `pcm_data`, waiting up to `wait` for room in a full queue. Once
     /// a wait runs out the session is stalled, and chunks are dropped at once
     /// until the queue takes one again, so a stall holds the worker (and the
     /// commands queued behind the audio) up for one wait, not one per chunk.
-    fn push_audio_within(&self, runtime: &Runtime, pcm_data: Bytes, wait: std::time::Duration) -> PushAudioResult {
+    fn push_audio_within(&self, pcm_data: Bytes, wait: std::time::Duration) -> PushAudioResult {
         let pcm_data = match self.audio_tx.try_send(Ok(pcm_data)) {
             Ok(()) => {
                 self.stalled.set(false);
@@ -70,7 +82,7 @@ impl ActiveSession {
             Err(tokio_mpsc::error::TrySendError::Full(pcm_data)) => pcm_data,
         };
         // Built inside the runtime: the timeout needs its timer.
-        match runtime.block_on(async { tokio::time::timeout(wait, self.audio_tx.send(pcm_data)).await }) {
+        match self.runtime.block_on(async { tokio::time::timeout(wait, self.audio_tx.send(pcm_data)).await }) {
             Ok(Ok(())) => PushAudioResult::Ok,
             Ok(Err(_)) => PushAudioResult::Closed,
             Err(_) => {
@@ -80,16 +92,53 @@ impl ActiveSession {
         }
     }
 
-    pub fn finish(self, runtime: &Runtime, _state: Arc<AppState>) -> Result<String, String> {
+    pub fn finish(self, state: &AppState) -> Result<String, SessionFinishError> {
+        self.finish_within(state, SESSION_FINISH_TIMEOUT)
+    }
+
+    fn finish_within(self, state: &AppState, wait: std::time::Duration) -> Result<String, SessionFinishError> {
         drop(self.audio_tx);
-        runtime
-            .block_on(self.task)
-            .map_err(|error| format!("transcription task join error: {}", error))?
+        let mut task = self.task;
+        self.runtime.block_on(async {
+            let deadline = tokio::time::sleep(wait);
+            tokio::pin!(deadline);
+            let mut abort_checks = tokio::time::interval(ABORT_CHECK_INTERVAL);
+            loop {
+                if state.is_abort_requested() {
+                    task.abort();
+                    let _ = task.await;
+                    return Err(SessionFinishError::Aborted);
+                }
+                tokio::select! {
+                    result = &mut task => {
+                        return result
+                            .map_err(|error| SessionFinishError::Failed(format!("transcription task join error: {error}")))?
+                            .map_err(SessionFinishError::Failed);
+                    }
+                    _ = &mut deadline => {
+                        task.abort();
+                        let _ = task.await;
+                        return Err(SessionFinishError::Failed(
+                            "Timed out waiting for Deepgram to finish transcription. Try recording again.".to_owned(),
+                        ));
+                    }
+                    _ = abort_checks.tick() => {}
+                }
+            }
+        })
     }
 }
 
+fn session_runtime() -> Result<Runtime, String> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_name("deepgram-session")
+        .enable_all()
+        .build()
+        .map_err(|error| format!("failed to create Deepgram session runtime: {error}"))
+}
+
 pub fn start_session(
-    runtime: &Runtime,
     state: Arc<AppState>,
     config: &DeepgramConfig,
     sample_rate: u32,
@@ -102,6 +151,7 @@ pub fn start_session(
 
     let (audio_tx, audio_rx) = tokio_mpsc::channel(AUDIO_QUEUE_CAPACITY);
     let deepgram_config = config.clone();
+    let runtime = session_runtime()?;
 
     let transcription_stream = runtime.block_on(async move {
         let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
@@ -136,6 +186,7 @@ pub fn start_session(
         audio_tx,
         kind: session_kind,
         task,
+        runtime,
         stalled: std::cell::Cell::new(false),
     })
 }
@@ -176,12 +227,15 @@ fn configure_stream_request<'a>(
         .keep_alive()
 }
 
-pub async fn run_transcription_stream(
-    stream: &mut TranscriptionStream,
+pub async fn run_transcription_stream<S>(
+    stream: &mut S,
     state: Arc<AppState>,
     session_kind: SessionKind,
     mut recording_prefix: String,
-) -> Result<String, String> {
+) -> Result<String, String>
+where
+    S: tokio_stream::Stream<Item = Result<StreamResponse, deepgram::DeepgramError>> + Unpin,
+{
     log::debug!("running transcription stream for {:?}", session_kind);
     let mut interim_transcript = String::new();
     let mut transcript_parts: Vec<String> = Vec::new();
@@ -265,6 +319,9 @@ pub async fn run_transcription_stream(
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
                 log::info!("Deepgram stream closed after {:.2}s", duration);
+                // Metadata is the server's terminal response after all final
+                // transcripts. Do not wait for the SDK's transport to end.
+                break;
             }
             Ok(StreamResponse::SpeechStartedResponse { .. }) => {
                 log::debug!("Deepgram detected speech start");
@@ -337,17 +394,18 @@ mod tests {
     }
 
     /// A session whose audio queue holds one chunk, and its receiving end.
-    fn one_chunk_session(runtime: &Runtime) -> (ActiveSession, tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>) {
+    fn one_chunk_session() -> (ActiveSession, tokio_mpsc::Receiver<Result<Bytes, std::io::Error>>) {
+        let runtime = session_runtime().unwrap();
         let (audio_tx, audio_rx) = tokio_mpsc::channel(1);
         let task = runtime.spawn(async { Ok(String::new()) });
-        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task, stalled: std::cell::Cell::new(false) }, audio_rx)
+        (ActiveSession { audio_tx, kind: SessionKind::Dictation, task, runtime, stalled: std::cell::Cell::new(false) }, audio_rx)
     }
 
     #[test]
     fn a_full_audio_queue_waits_for_room_instead_of_dropping() {
         let runtime = Runtime::new().unwrap();
-        let (session, mut audio_rx) = one_chunk_session(&runtime);
-        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"first")), PushAudioResult::Ok);
+        let (session, mut audio_rx) = one_chunk_session();
+        assert_eq!(session.push_audio(Bytes::from_static(b"first")), PushAudioResult::Ok);
         // The queue is full until the receiver takes a chunk 50 ms later.
         let received = runtime.spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -356,7 +414,7 @@ mod tests {
             (first, second)
         });
 
-        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"second")), PushAudioResult::Ok);
+        assert_eq!(session.push_audio(Bytes::from_static(b"second")), PushAudioResult::Ok);
         drop(session);
         let (first, second) = runtime.block_on(received).unwrap();
         assert_eq!(first.unwrap().unwrap(), Bytes::from_static(b"first"));
@@ -365,12 +423,11 @@ mod tests {
 
     #[test]
     fn a_queue_that_stays_full_drops_the_chunk_after_waiting() {
-        let runtime = Runtime::new().unwrap();
-        let (session, _audio_rx) = one_chunk_session(&runtime);
-        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"first")), PushAudioResult::Ok);
+        let (session, _audio_rx) = one_chunk_session();
+        assert_eq!(session.push_audio(Bytes::from_static(b"first")), PushAudioResult::Ok);
         let started = std::time::Instant::now();
         assert_eq!(
-            session.push_audio_within(&runtime, Bytes::from_static(b"second"), std::time::Duration::from_millis(30)),
+            session.push_audio_within(Bytes::from_static(b"second"), std::time::Duration::from_millis(30)),
             PushAudioResult::Full
         );
         assert!(started.elapsed() >= std::time::Duration::from_millis(30));
@@ -378,37 +435,149 @@ mod tests {
 
     #[test]
     fn a_stalled_queue_drops_at_once_until_it_has_room_again() {
-        let runtime = Runtime::new().unwrap();
-        let (session, mut audio_rx) = one_chunk_session(&runtime);
+        let (session, mut audio_rx) = one_chunk_session();
         let wait = std::time::Duration::from_millis(40);
-        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"1"), wait), PushAudioResult::Ok);
+        assert_eq!(session.push_audio_within(Bytes::from_static(b"1"), wait), PushAudioResult::Ok);
 
         // The first chunk to meet the full queue waits, then is dropped.
         let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"2"), wait), PushAudioResult::Full);
+        assert_eq!(session.push_audio_within(Bytes::from_static(b"2"), wait), PushAudioResult::Full);
         assert!(started.elapsed() >= wait);
 
         // The session is stalled: the next chunks are dropped without waiting,
         // so commands behind them are not held up a wait each.
         let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"3"), wait), PushAudioResult::Full);
+        assert_eq!(session.push_audio_within(Bytes::from_static(b"3"), wait), PushAudioResult::Full);
         assert!(started.elapsed() < wait / 2, "{:?}", started.elapsed());
 
         // Once the queue has room, chunks go in and a full queue is waited on
         // again.
         assert!(audio_rx.try_recv().is_ok());
-        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"4"), wait), PushAudioResult::Ok);
+        assert_eq!(session.push_audio_within(Bytes::from_static(b"4"), wait), PushAudioResult::Ok);
         let started = std::time::Instant::now();
-        assert_eq!(session.push_audio_within(&runtime, Bytes::from_static(b"5"), wait), PushAudioResult::Full);
+        assert_eq!(session.push_audio_within(Bytes::from_static(b"5"), wait), PushAudioResult::Full);
         assert!(started.elapsed() >= wait);
     }
 
     #[test]
     fn a_closed_audio_queue_reports_closed() {
-        let runtime = Runtime::new().unwrap();
-        let (session, audio_rx) = one_chunk_session(&runtime);
+        let (session, audio_rx) = one_chunk_session();
         drop(audio_rx);
-        assert_eq!(session.push_audio(&runtime, Bytes::from_static(b"chunk")), PushAudioResult::Closed);
+        assert_eq!(session.push_audio(Bytes::from_static(b"chunk")), PushAudioResult::Closed);
+    }
+
+    #[test]
+    fn finishing_a_session_observes_an_abort_while_waiting() {
+        let (mut session, _audio_rx) = one_chunk_session();
+        session.task = session.runtime.spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            Ok("must not be pasted".to_owned())
+        });
+        let state = AppState::new();
+        let abort_state = state.clone();
+        session.runtime.spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            abort_state.request_abort();
+        });
+
+        let started = std::time::Instant::now();
+        let result = session.finish(&state);
+
+        assert_eq!(result, Err(SessionFinishError::Aborted));
+        assert!(started.elapsed() < std::time::Duration::from_millis(150));
+        assert!(state.is_abort_requested(), "the worker must consume the abort");
+    }
+
+    #[test]
+    fn finishing_a_stalled_session_times_out_and_drops_all_session_tasks() {
+        let (mut session, audio_rx) = one_chunk_session();
+        session.task = session.runtime.spawn(async move {
+            let _audio_rx = audio_rx;
+            std::future::pending().await
+        });
+        // Like the SDK's transport, this task is detached from the app task.
+        let (transport_tx, transport_rx) = std::sync::mpsc::channel::<()>();
+        session.runtime.spawn(async move {
+            let _transport_tx = transport_tx;
+            std::future::pending::<()>().await;
+        });
+        let task_abort = session.task.abort_handle();
+        let state = AppState::new();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let finishing = std::thread::spawn(move || {
+            let result = session.finish_within(&state, std::time::Duration::from_millis(30));
+            result_tx.send(result).unwrap();
+        });
+        let result = result_rx.recv_timeout(std::time::Duration::from_secs(1))
+            .expect("stalled session shutdown never returned");
+        finishing.join().unwrap();
+
+        assert!(matches!(result, Err(SessionFinishError::Failed(message)) if message.contains("Timed out")));
+        assert!(task_abort.is_finished());
+        assert_eq!(transport_rx.recv_timeout(std::time::Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+    }
+
+    #[test]
+    fn finishing_a_session_drains_audio_and_preserves_the_final_transcript() {
+        let (mut session, mut audio_rx) = one_chunk_session();
+        session.task = session.runtime.spawn(async move {
+            assert_eq!(audio_rx.recv().await.unwrap().unwrap(), Bytes::from_static(b"last audio"));
+            assert!(audio_rx.recv().await.is_none());
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            Ok("final words".to_owned())
+        });
+        assert_eq!(session.push_audio(Bytes::from_static(b"last audio")), PushAudioResult::Ok);
+
+        assert_eq!(session.finish(&AppState::new()), Ok("final words".to_owned()));
+    }
+
+    #[test]
+    fn aborting_a_session_drops_detached_transport_tasks() {
+        let (mut session, audio_rx) = one_chunk_session();
+        session.task = session.runtime.spawn(async move {
+            let _audio_rx = audio_rx;
+            std::future::pending().await
+        });
+        let (transport_tx, transport_rx) = std::sync::mpsc::channel::<()>();
+        session.runtime.spawn(async move {
+            let _transport_tx = transport_tx;
+            std::future::pending::<()>().await;
+        });
+        let state = AppState::new();
+        state.request_abort();
+
+        assert_eq!(session.finish(&state), Err(SessionFinishError::Aborted));
+        assert_eq!(transport_rx.recv_timeout(std::time::Duration::from_millis(50)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+    }
+
+    #[test]
+    fn terminal_metadata_finishes_without_waiting_for_transport_eof() {
+        let runtime = session_runtime().unwrap();
+        for kind in [SessionKind::Dictation, SessionKind::Correction] {
+            let state = AppState::new();
+            let final_message = serde_json::from_value::<StreamResponse>(serde_json::json!({
+                "type": "Results", "start": 0.0, "duration": 1.0,
+                "is_final": true, "speech_final": true, "from_finalize": true,
+                "channel_index": [0, 1],
+                "channel": {"alternatives": [{"transcript": "final words", "confidence": 1.0, "words": []}]},
+                "metadata": {"request_id": "test-request", "model_uuid": "test-model", "model_info": {"name": "test", "version": "test", "arch": "test"}}
+            })).unwrap();
+            let terminal = StreamResponse::TerminalResponse {
+                request_id: "test-request".to_owned(), created: String::new(), duration: 1.0, channels: 1,
+            };
+            let mut stream = tokio_stream::iter([Ok(final_message), Ok(terminal)])
+                .chain(tokio_stream::pending());
+
+            let result = runtime.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(200),
+                    run_transcription_stream(&mut stream, state.clone(), kind, "prefix ".to_owned()),
+                ).await
+            });
+
+            assert_eq!(result.unwrap().unwrap(), "prefix final words ");
+            assert_eq!(session_overlay_text(&state, kind), "prefix final words ");
+        }
     }
 
     #[test]
