@@ -177,25 +177,31 @@ fn run_graphical_application() -> Result<(), String> {
 
 fn report_startup_error(error: &str) {
     log::error!("startup failed: {}", error);
+    let config_path = config::config_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|path_error| format!("unavailable ({path_error})"));
+    let executable_path = std::env::current_exe()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|path_error| format!("unavailable ({path_error})"));
+
     app::show_startup_error_dialog(
         "simple-ptt couldn't start",
-        &startup_error_instructions(error),
+        &startup_error_instructions(error, &config_path, &executable_path),
     );
 }
 
-fn startup_error_instructions(error: &str) -> String {
+fn startup_error_instructions(error: &str, config_path: &str, executable_path: &str) -> String {
     format!(
         concat!(
             "{}\n\n",
             "What to check:\n",
-            "- ~/.config/simple-ptt/config.toml exists and is valid TOML\n",
-            "- if mic.audio_device is configured, it matches a real input device\n",
-            "- if startup fails before the menu appears, run the bundled binary directly from Terminal for the exact error\n\n",
-            "For more detail, run this in Terminal:\n",
-            "/Applications/simple-ptt.app/Contents/MacOS/simple-ptt\n\n",
+            "This config file must exist and contain valid TOML:\n{}\n",
+            "If it is missing, create its parent directory if needed and copy config.example.toml from the repository to that path. If you meant to use the normal home config, unset SIMPLE_PTT_CONFIG.\n",
+            "- If mic.audio_device is configured, it matches a real input device\n\n",
+            "For more detail, run this executable from Terminal (quote the path if it contains spaces):\n{}\n\n",
             "Note: simple-ptt is a menu bar app. On successful launch it appears in the menu bar, not in the Dock."
         ),
-        error
+        error, config_path, executable_path
     )
 }
 
@@ -216,11 +222,31 @@ mod tests {
     use super::startup_error_instructions;
 
     #[test]
-    fn startup_error_instructions_include_terminal_debugging_path() {
-        let instructions =
-            startup_error_instructions("configured audio_device 'Missing' was not found");
+    fn startup_error_instructions_include_resolved_paths() {
+        let config_path = "/Users/example/Library/Application Support/simple-ptt/config.toml";
+        let executable_path = "/Applications/Custom Simple PTT.app/Contents/MacOS/simple-ptt";
+        let instructions = startup_error_instructions(
+            "configured audio_device 'Missing' was not found",
+            config_path,
+            executable_path,
+        );
 
-        assert!(instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
+        assert!(instructions.contains(config_path));
+        assert!(instructions.contains(executable_path));
         assert!(instructions.contains("menu bar"));
+    }
+
+    #[test]
+    fn startup_error_instructions_explain_config_recovery_without_fixed_paths() {
+        let config_path = "/tmp/simple-ptt/custom-config.toml";
+        let executable_path = "/tmp/simple-ptt/bin/simple-ptt";
+        let instructions =
+            startup_error_instructions("missing config", config_path, executable_path);
+
+        assert!(instructions.contains("copy config.example.toml"));
+        assert!(instructions.contains(config_path));
+        assert!(instructions.contains(executable_path));
+        assert!(!instructions.contains("~/.config/simple-ptt/config.toml"));
+        assert!(!instructions.contains("/Applications/simple-ptt.app/Contents/MacOS/simple-ptt"));
     }
 }

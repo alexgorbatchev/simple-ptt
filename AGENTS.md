@@ -4,11 +4,14 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 
 ## Commands
 - Build (debug): `cargo build --locked`
-- Build (release): `cargo build --locked --release`
-- Test: `cargo test --locked`
-- Build sanity/typecheck: `cargo check --message-format=short`
+- Build (release): `RUSTFLAGS="-D warnings" cargo build --locked --release --target aarch64-apple-darwin`
+- Test: `RUSTFLAGS="-D warnings" cargo test --locked`
+- Build sanity/typecheck: `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`
 - Run with the repo-local dev config: `just run` (creates the gitignored `./config.toml` from `config.example.toml` when it is missing)
+- Prepare the default dev config without starting the app: `just prepare-default-config`
 - Run with an explicit config file: `just run-config path/to/config.toml`
+- Simulate a startup error for manual dialog testing (for the user to run; it blocks): `just run-simulated-error`
+- Test the Sparkle updater flow (for the user to run): `just test-update`
 - Run with normal XDG/home config lookup: `just run-xdg`
 - List audio input devices from an installed app bundle: `just list-devices`
 - Build the `.app` bundle: `just bundle-release`
@@ -19,7 +22,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Record the README demo video (overlay, transcript, correction): follow the `readme-demo` skill in `.agents/skills/readme-demo/`; `bun .agents/skills/readme-demo/scripts/record-demo.ts record`, then `encode`.
 
 ## Setup
-- Runtime and release packaging are macOS-only and currently target Apple Silicon (`aarch64-apple-darwin` in `.github/workflows/release.yml`). The app requires macOS 26 or later (`LSMinimumSystemVersion` in `scripts/build-macos-app.sh`) because the overlay uses Liquid Glass (`NSGlassEffectView`); keep each release's `sparkle:minimumSystemVersion` in `appcast.xml` at the same version.
+- Runtime and release packaging are macOS-only and currently target Apple Silicon (`aarch64-apple-darwin` in `.github/workflows/release.yml`). The app requires macOS 26 or later (`LSMinimumSystemVersion` in `scripts/build-macos-app.sh`) because the overlay uses Liquid Glass (`NSGlassEffectView`); keep each release's `sparkle:minimumSystemVersion` in `appcast.xml` at the same version. CI runs for pull requests and pushes to `main`; `.github/workflows/ci.yml` denies warnings, checks all targets, runs tests, and builds the Apple Silicon release binary.
 - Normal app launches should use `~/.config/simple-ptt/config.toml`. `SIMPLE_PTT_CONFIG` is for Terminal-driven dev runs only.
 - Keep secrets out of the repo. Use placeholders in `config.example.toml`; do not commit real Deepgram or LLM API keys.
 
@@ -33,7 +36,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Open the settings window only through `AppDelegate::present_settings_window` in `src/app/mod.rs`. `NSApplication::activate` is only a request, so the window is ordered front after `applicationDidBecomeActive:` (decided by `src/app/settings_presentation.rs`); a key window in an inactive app does not open its pop-up menus (#16). If macOS declines activation, the request stays pending until the app is next activated (for example from its Dock icon) or, when Settings is already on screen, until it is closed. Apart from the launch-time activation request in `applicationDidFinishLaunching:`, do not activate the app for Settings or order the Settings window front anywhere else. The windows opened at launch, and their order, are planned in `src/app/startup_windows.rs`.
 - Preserve user config comments and unknown TOML sections by writing through `config::save_config` in `src/config/mod.rs`. It intentionally uses `toml_edit`; do not replace it with a lossy serializer.
 - Permission changes are stateful and may require relaunch after grant. Follow the `NeedsRelaunch` flow in `src/permissions.rs` and `src/permissions_dialog.rs` instead of shortcutting it.
-- Keep packaging changes aligned across `scripts/build-macos-app.sh`, `scripts/build-macos-dmg.sh`, and `.github/workflows/release.yml`.
+- Keep packaging, CI, and release changes aligned across `scripts/build-macos-app.sh`, `scripts/build-macos-dmg.sh`, `.github/workflows/ci.yml`, and `.github/workflows/release.yml`.
 - Before changing how the overlay looks or moves (`src/overlay/`, `src/ui_meter.rs`, `src/ui_meter/`), load the `overlay-visual-debugging` skill in `.agents/skills/`; it holds the probe workflow and measured macOS 26 glass behaviors. Values the user settles on in debug mode become the `GlassTuning` defaults in `src/overlay/glass.rs`, pinned by its tests. Debug mode lives in `src/overlay/dev/`; product code must not call the `OverlayWindow` methods only it uses (`pin_to_top`, `glass_tuning`, `set_glass_tuning`, `halo_is_progressive`, `glass_internals_now`, `pill_tuning`, `set_pill_tuning`, `pill_range_now`). Values the user settles on for the pills become the `PillTuning` defaults in `src/ui_meter/pill_tuning.rs`. Debug mode is a developer tool: keep it out of `README.md`.
 - The pill meter's requirements, and why each part of its design exists, are in `docs/internal/references/pill-meter.md`. Read it before changing the pills (`src/ui_meter/pill_levels.rs`, `src/ui_meter/pill_cluster.rs`, the spectrum in `src/audio/spectrum.rs` and its plumbing in `src/audio/stream.rs` and `src/state.rs`), and update it with any change to what they do.
 
@@ -52,8 +55,8 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - **Overlay UI Keybindings:** Do not introduce explicit keyboard actions (like Enter, Esc, etc.) inside the overlay's text editor. The entire dictation, editing, and pasting sequence is driven purely by the system-wide record/transform hotkeys (e.g., F5/F6) captured by the CGEventTap in `src/hotkey_macos.rs` and dispatched in `src/hotkey.rs`. Releasing the recording hotkey acts as the trigger to finish and paste.
 
 ## Boundaries
-- Always: there MUST be ZERO errors AND ZERO WARNINGS when the application is checked or built (`cargo check`, `cargo test`, `cargo build`). A successful build that emits warnings is strictly unacceptable and considered a build failure.
-- Always: after Rust or packaging-script changes, run `cargo test --locked`, `cargo check --message-format=short`, and `cargo build --locked --release`. Verify that output is 100% clean with zero warnings.
+- Always: there MUST be ZERO errors AND ZERO WARNINGS when the application is checked or built (`cargo check`, `cargo test`, `cargo build`). A successful build that emits warnings is strictly unacceptable and considered a build failure. `.github/workflows/ci.yml` enforces this on pull requests and pushes to `main`, checking all Rust targets and building the Apple Silicon release binary.
+- Always: after Rust or packaging-script changes, run the CI-equivalent checks with `RUSTFLAGS="-D warnings"`: `cargo check --locked --all-targets`, `cargo test --locked`, and `cargo build --locked --release --target aarch64-apple-darwin`. Keep the same `RUSTFLAGS` across the sequence so Cargo can reuse its build cache.
 - Ask first: changes to `Cargo.toml`, `.github/workflows/release.yml`, bundle metadata/signing in `scripts/build-macos-app.sh`, or the permission architecture in `src/permissions*.rs`.
 - Never: commit secrets in config files, hand-edit generated output under `dist/` or `target/`, bypass `config::save_config` with a destructive config rewrite, or introduce fallbacks, degraded functionality, or secondary alternative execution paths unless explicitly requested by the user.
 
@@ -73,4 +76,5 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - `.agents/skills/overlay-visual-debugging/`
 - `.agents/skills/readme-demo/`
 - `scripts/build-macos-app.sh`
+- `.github/workflows/ci.yml`
 - `.github/workflows/release.yml`
