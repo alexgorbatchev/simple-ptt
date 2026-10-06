@@ -174,17 +174,8 @@ pub fn spawn_transcription_thread(
                     let deepgram_config = match resolved_deepgram_config(&current_config) {
                         Ok(deepgram_config) => deepgram_config,
                         Err(error) => {
-                            if error.contains("Deepgram API key is not configured") {
-                                log::info!(
-                                    "ignoring dictation recording start because Deepgram is not configured"
-                                );
-                                state.clear_overlay_text();
-                                state.set_overlay_text_opacity(1.0);
-                                state.set_state(STATE_IDLE);
-                            } else {
-                                log::error!("failed to resolve Deepgram config: {}", error);
-                                state.report_error(error.to_string());
-                            }
+                            log::error!("failed to resolve Deepgram config: {}", error);
+                            state.report_error(error);
                             continue;
                         }
                     };
@@ -943,18 +934,10 @@ fn complete_session_cancellation(state: &AppState, buffered_text: &mut String, k
 
 fn resolved_deepgram_config(config: &Config) -> Result<DeepgramConfig, String> {
     let runtime_config = crate::config::materialize_runtime_config(config);
-    if runtime_config
-        .deepgram
-        .api_key
-        .as_deref()
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .is_some()
-    {
-        Ok(runtime_config.deepgram)
-    } else {
-        Err("Deepgram API key is not configured".to_owned())
-    }
+    runtime_config
+        .resolve_deepgram_api_key()
+        .map_err(|error| format!("{error} You can also add it in Settings > Deepgram."))?;
+    Ok(runtime_config.deepgram)
 }
 
 fn resolve_transformation_config(
@@ -1085,6 +1068,14 @@ mod tests {
     fn worker(state: &std::sync::Arc<crate::state::AppState>) -> super::TranscriptionController {
         let mut config = crate::config::Config::default();
         config.deepgram.api_key = Some("test-key".to_owned());
+        worker_with_config(state, config)
+    }
+
+    /// Builds a worker from an explicit config; tests do not connect to Deepgram.
+    fn worker_with_config(
+        state: &std::sync::Arc<crate::state::AppState>,
+        config: crate::config::Config,
+    ) -> super::TranscriptionController {
         let config_store = crate::settings::LiveConfigStore::new(
             config.clone(),
             config,
@@ -1129,5 +1120,44 @@ mod tests {
 
         wait_for_state(&state, STATE_BUFFER_READY);
         assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn dictation_without_deepgram_key_reports_guidance_and_keeps_buffer() {
+        use crate::state::{AppState, STATE_ERROR, STATE_RECORDING};
+
+        let state = AppState::new();
+        state.set_overlay_text("draft to keep");
+        // The hotkey has moved the app into recording before the worker reads it.
+        state.set_state(STATE_RECORDING);
+        worker_with_config(&state, crate::config::Config::default())
+            .start_session()
+            .unwrap();
+
+        wait_for_state(&state, STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "draft to keep");
+        let error = state.overlay_error_text();
+        assert!(error.contains("Settings > Deepgram"), "{error}");
+        assert!(error.contains("deepgram.api_key"), "{error}");
+        assert!(error.contains("DEEPGRAM_API_KEY"), "{error}");
+    }
+
+    #[test]
+    fn correction_without_deepgram_key_reports_guidance_and_keeps_buffer() {
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
+
+        let state = AppState::new();
+        state.set_overlay_text("draft to keep");
+        state.set_state(STATE_BUFFER_READY);
+        worker_with_config(&state, crate::config::Config::default())
+            .start_correction_session()
+            .unwrap();
+
+        wait_for_state(&state, STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "draft to keep");
+        let error = state.overlay_error_text();
+        assert!(error.contains("Settings > Deepgram"), "{error}");
+        assert!(error.contains("deepgram.api_key"), "{error}");
+        assert!(error.contains("DEEPGRAM_API_KEY"), "{error}");
     }
 }
