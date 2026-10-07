@@ -15,6 +15,7 @@ mod permissions_dialog;
 mod settings;
 mod settings_window;
 mod state;
+mod text_edit;
 mod transcription;
 mod transformation;
 mod transformation_models;

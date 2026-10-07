@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-05 16:09
+last_modified: 2026-10-07 13:50
 status: current
 ---
 
@@ -32,13 +32,25 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 
 ## Scroll views and text
 
+- **Keyboard edits must keep their rendered baseline separate from the speech source** (macOS 26.6.2).
+  - A native `insertText:replacementRange:` edit changed `hello` to `Hi` while `still coming in` remained interim. The following speech update displayed `Hi still coming in still coming in and working` at `t=2.113`; all 59 checked samples contained duplication.
+  - The editor now publishes its edit relative to its last rendered text, and the session merges revisions against its preceding speech source under the text lock. Two native runs using the `similar` implementation each checked 59 samples with zero failures: `Hi still coming in and working` appeared at `t=2.113` and survived finalization. The transcript rectangle stayed unchanged across the keyboard and speech updates in each run.
+  - Restoring the old prefix rebase reproduced the duplicated text at `t=2.113` and 59 failures out of 59 checks. The three session regressions failed again. Disabling the stale-editor merge separately lost a word received between UI ticks and failed its state regression.
+  - The original duplication-fix probe also exposed unconditional caret movement from `{ location: 2, length: 0 }` after typing to `{ location: 31, length: 0 }` after the next result. The conditional following rule below now handles that behavior. No private API was added.
+
+- **Narration follows only an idle caret already at the end** (macOS 26.6.2).
+  - Before the change, a caret at offset 2 jumped to 15 on incoming narration at `t=2.303`. After a native `insertText:replacementRange:` at `t=3.001`, another result moved offset 20 to 26 at `t=3.204`. The probe failed 165 of 181 checked samples, including a selected range and a second keystroke restarting the pause.
+  - `replace_working_text` captures the selection before replacing storage. It follows the new end only for a zero-length selection at the previous end and at least two seconds since the last `textDidChange:`. Otherwise it restores the existing selection, clamped to valid UTF-16 boundaries when a revision shortens or changes the text. The same rule applies to inline correction previews; scrolling to the new end happens only when following.
+  - Two native runs each checked 210 samples with zero failures. In both, selection stayed at offset 2 through the `t=2.101` narration update, at offset 20 through the `t=3.204` update after typing, and at offset 27 through the `t=5.004` update after another keystroke. Moving the caret to the end without typing allowed the `t=6.109` update to follow to offset 37, over two seconds after the last keystroke. Moving it back into the text kept offset 2 through the next update. The transcript screen rectangle stayed `(1000.0, 674.8, 560.0, 120.19999999999999)` across these events in each run.
+  - Disabling the two-second guard moved offset 20 to 26 again at `t=3.205`, failed 92 of 210 native checks, and failed the timing regression. Disabling the end-position guard separately failed the middle-caret and shortened-selection regressions. No private API was added.
+
 - **Waiting feedback must update before the finishing layout hold** (macOS 26.6.2).
   - Updating the footer after the finishing early return left the shortcut hint displayed at `t=5.605` with `waiting=true, finishing=true`. The footer now changes before that return, while the hold still retains text, meter, and layout.
   - Two runs sampled every 12 ms and checked 542 samples each after selecting seven characters at `t=1.9`: transcript screen rect stayed `(584.0, 732.8, 560.0, 120.19999999999999)`, selection stayed `{ location: 0, length: 7 }`, glass height stayed `180.0`, and finishing scale stayed `0.8` after the transition. Both live and finishing notices appeared and cleared within the next UI update. Restoring the earlier return reproduced the missing finishing notice at `t=5.605` with the same geometry and selection.
   - Light and dark captures show the waiting footer at full recording size and uniformly scaled with finishing narration. The footer keeps `secondaryLabelColor`; no private API is added.
 - **An unchanged overlay refresh must preserve text selection and scrolling** (macOS 26.6.2).
   - With seven error-text characters selected, the old `OverlayWindow::update` moved the selection from `{ location: 0, length: 7 }` to `{ location: 37, length: 0 }`. A subsequent native Command-C event left the pasteboard unchanged; the same event copied successfully before the refresh.
-  - `set_working_text` already moves the caret and scrolls when replacing text. `update` leaves these alone. In two probe runs, selection remained `{ location: 0, length: 7 }` through the refresh and Command-C wrote the selected text. Restoring the unconditional caret move reproduced the failure.
+  - Changed working text now preserves the selection or follows the end according to the idle-caret rule above. `update` leaves selection and scrolling alone when the text is unchanged. In two probe runs, selection remained `{ location: 0, length: 7 }` through the refresh and Command-C wrote the selected text. Restoring the unconditional caret move reproduced the failure.
 - **Transformation feedback needs readable text through both processing states** (macOS 26.6.2).
   - The old record/transform handoff set text opacity to `0.02`; after twelve UI updates the text view's measured alpha was `0.0196078431372549`. The shimmer ran only in `STATE_TRANSFORMING`, leaving the final transcription wait without it.
   - Both transform handoffs in `hotkey.rs` retain full text opacity. `OverlayWindow::update` runs the existing shimmer in `STATE_PROCESSING` and `STATE_TRANSFORMING`. Two probe runs measured text alpha `1.0` in both states and advancing presentation-layer gradient locations; the mask was absent in recording and error states. Disabling the changes reproduced the low alpha and missing processing shimmer. Reduce Motion still suppresses the shimmer through `Shimmer::start`.

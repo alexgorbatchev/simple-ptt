@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-03 09:21
-last_modified: 2026-10-05 11:14
+last_modified: 2026-10-07 12:49
 status: current
 ---
 
@@ -24,6 +24,14 @@ The transcript reader accepts the final metadata (`TerminalResponse`) as complet
 
 `AppState::wait_for_abort` registers its notification before checking the abort latch. The session does not consume the latch: `finish_session` and `settle_session_finish` in the transcription worker consume it before any paste, transformation, or resume. This also catches an abort racing a successful result or a timeout. Finishing cancellation discards the recording and returns to idle. Cancellation during connection startup clears dictation, or retains the base annotation when starting a correction. Both paths clear the waiting indication and retain an overlay dismissed by the hotkey.
 
+## Keyboard edits during live narration
+
+The session keeps its speech source separate from the editable overlay. `AppState` merges each speech revision with the current text while holding the text lock, using `similar`'s Unicode word differences. Keyboard replacements win where both writers revise the same word; independent additions and punctuation remain intact. The provisional boundary moves with edits so its byte offset still belongs to the displayed text.
+
+`OverlayWindow` keeps the last rendered text as the keyboard edit's baseline. `AppDelegate::text_did_change` publishes through `OverlayWindow::apply_text_edit`, which merges against the latest state rather than overwriting speech received between UI ticks. Editing the overlay does not reset the session's recording prefix or finalized transcript parts.
+
+A final response may cover less audio than the preceding interim result, as documented in [Deepgram's partial-final example](https://developers.deepgram.com/docs/understand-endpointing-interim-results). In that case, the session collects the final segment while retaining the preceding source preview until the next result incorporates the remaining audio. This keeps edits attached to interim words that appear again in the next segment. Terminal metadata merges the collected final text and clears its provisional marker.
+
 ## Waiting indication
 
 `SessionLimits` in `src/transcription/progress.rs` gives connection and finishing waits a 15-second limit. Each displays an indication after 5 seconds. Finishing uses an absolute deadline; additional responses do not extend it.
@@ -39,6 +47,7 @@ The status poll compares `deepgram_waiting` as part of `UiSnapshot`. Recording a
 - The fork's `tests/websocket_shutdown_local.rs` uses real local WebSockets to exercise delayed final responses past the three-second timer, disabled keep-alives, and dropping quiet handles and streams.
 - `src/transcription/progress.rs` tests live delays, recovery, quiet audio, absolute finishing deadlines, connection timeout, and cancellation of concurrent waits.
 - `src/transcription/session.rs` tests terminal metadata without EOF, incomplete disconnection, final audio draining, cancellation during finishing, runtime transport teardown after cancellation and timeout, and dropping a quiet session.
+- Its keyboard-edit regressions cover finalized-word edits, interim-word revisions, and partial final results. `src/state.rs` covers stale rendered text, successive edits, and provisional offsets; `src/text_edit.rs` covers replacements, deletion, simultaneous additions, punctuation, and Unicode.
 - `src/transcription/mod.rs` tests cancellation state and annotation ownership. `src/app/mod.rs` tests status polling and title changes, including a dismissed overlay.
 - `--overlay-snapshot` captures live and finishing notices over light and dark backdrops. The overlay skill's `references/findings.md` records native geometry and selection measurements.
 - A native status item using the app's active microphone icon expands from 34 to 96 points when the waiting title is assigned, then returns to 34 points when cleared. A bitmap cached from the native button verifies that the icon and title render together.

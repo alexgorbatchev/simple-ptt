@@ -3,6 +3,7 @@ pub mod diff;
 pub mod glass;
 mod legibility;
 mod motion;
+mod selection;
 pub mod private_effects;
 mod text_effects;
 
@@ -11,6 +12,7 @@ pub use diff::{build_inline_correction_preview, utf16_offset, working_text_updat
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Instant;
 
 use objc2::runtime::ProtocolObject;
 use objc2::runtime::{AnyObject, NSObject};
@@ -37,6 +39,7 @@ use glass::{
     correction_resting_frame, plan_correction_motion, CorrectionEffect, CorrectionPhase,
     GlassTuning, OverlayGlass,
 };
+use selection::selection_after_update;
 pub(crate) use text_effects::reduce_motion;
 use text_effects::{
     attributed_text, crossfade_next_change, provisional_utf16_range, restyle_provisional,
@@ -83,6 +86,10 @@ pub struct OverlayWindow {
     ui_meter_view: UiMeterView,
     working_scroll_view: Retained<NSScrollView>,
     working_text_view: Retained<NSTextView>,
+    /// Baseline for native keyboard changes, distinct from speech that may
+    /// already have arrived in AppState since the last UI update.
+    rendered_working_text: RefCell<String>,
+    last_keyboard_edit: Cell<Option<Instant>>,
     footer_hint_text_field: Retained<NSTextField>,
     footer_hint: RefCell<Option<String>>,
     is_visible: Cell<bool>,
@@ -198,6 +205,8 @@ impl OverlayWindow {
             ui_meter_view,
             working_scroll_view,
             working_text_view,
+            rendered_working_text: RefCell::new(String::new()),
+            last_keyboard_edit: Cell::new(None),
             footer_hint_text_field,
             footer_hint: RefCell::new(style.shortcut_hint.clone()),
             is_visible: Cell::new(false),
@@ -457,6 +466,16 @@ impl OverlayWindow {
         self.working_text_view.string().to_string()
     }
 
+    pub fn apply_text_edit(&self) {
+        self.last_keyboard_edit.set(Some(Instant::now()));
+        let text = self.text();
+        let mut rendered = self.rendered_working_text.borrow_mut();
+        if text != *rendered {
+            self.state.apply_overlay_edit(&rendered, &text);
+            *rendered = text;
+        }
+    }
+
     pub fn set_delegate(&self, delegate: &ProtocolObject<dyn NSTextViewDelegate>) {
         self.working_text_view.setDelegate(Some(delegate));
     }
@@ -695,6 +714,7 @@ impl OverlayWindow {
 
         let current_text = self.working_text_view.string().to_string();
         if working_text_update_is_semantically_unchanged(&current_text, text) {
+            *self.rendered_working_text.borrow_mut() = current_text;
             // Interim words that became final settle in place.
             if self.working_provisional_start.replace(provisional_start) != provisional_start {
                 crossfade_next_change(&self.working_scroll_view);
@@ -710,21 +730,13 @@ impl OverlayWindow {
 
         let attributes = text_attributes(&self.text_font.borrow(), &self.working_text_color());
         crossfade_next_change(&self.working_scroll_view);
-        self.replace_text(
-            &self.working_text_view,
-            &attributed_text(text, provisional_start, &attributes),
-        );
+        self.replace_working_text(&attributed_text(text, provisional_start, &attributes));
         self.working_provisional_start.set(provisional_start);
+        *self.rendered_working_text.borrow_mut() = text.to_owned();
 
-        // Move cursor to the end
-        let length = text.encode_utf16().count();
-        self.working_text_view
-            .setSelectedRange(NSRange::new(length, 0));
         // SAFETY: `attributes` maps attribute keys to values of their
         // documented types (an `NSFont` and an `NSColor`).
         unsafe { self.working_text_view.setTypingAttributes(&attributes) };
-        self.working_text_view
-            .scrollRangeToVisible(NSRange::new(length, 0));
     }
 
     fn set_working_text_with_preview(&self, original_text: &str, preview_text: &str) {
@@ -763,17 +775,27 @@ impl OverlayWindow {
         }
 
         crossfade_next_change(&self.working_scroll_view);
-        self.replace_text(&self.working_text_view, &attributed_text);
+        self.replace_working_text(&attributed_text);
         self.working_provisional_start.set(None);
+        *self.rendered_working_text.borrow_mut() = rendered_preview.text.clone();
 
-        let length = rendered_preview.text.encode_utf16().count();
-        self.working_text_view
-            .setSelectedRange(NSRange::new(length, 0));
         // SAFETY: `attributes` maps attribute keys to values of their
         // documented types (an `NSFont` and an `NSColor`).
         unsafe { self.working_text_view.setTypingAttributes(&attributes) };
-        self.working_text_view
-            .scrollRangeToVisible(NSRange::new(length, 0));
+    }
+
+    fn replace_working_text(&self, text: &NSMutableAttributedString) {
+        let selection = selection_after_update(
+            self.working_text_view.selectedRange(),
+            self.working_text_view.string().length(),
+            &text.string().to_string(),
+            self.last_keyboard_edit.get().map(|edited| edited.elapsed()),
+        );
+        self.replace_text(&self.working_text_view, text);
+        self.working_text_view.setSelectedRange(selection.range);
+        if selection.follow_end {
+            self.working_text_view.scrollRangeToVisible(selection.range);
+        }
     }
 
     fn set_correction_text(&self, text: &str, provisional_start: Option<usize>, failed: bool) {

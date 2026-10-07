@@ -548,8 +548,7 @@ define_class!(
         #[unsafe(method(textDidChange:))]
         fn text_did_change(&self, _notification: &NSNotification) {
             if let Some(overlay_window) = self.ivars().overlay_window.get() {
-                let text = overlay_window.text();
-                self.ivars().state.set_overlay_text(text);
+                overlay_window.apply_text_edit();
             }
         }
     }

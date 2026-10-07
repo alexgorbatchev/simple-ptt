@@ -256,7 +256,7 @@ pub async fn run_transcription_stream<S>(
     stream: &mut S,
     state: Arc<AppState>,
     session_kind: SessionKind,
-    mut recording_prefix: String,
+    recording_prefix: String,
     progress: Arc<SessionProgress>,
 ) -> Result<String, SessionError>
 where
@@ -264,10 +264,10 @@ where
 {
     let _indicator = WaitingIndicator(state.clone());
     log::debug!("running transcription stream for {:?}", session_kind);
-    let mut interim_transcript = String::new();
+    let mut interim_audio_end = 0.0;
     let mut transcript_parts: Vec<String> = Vec::new();
     let mut last_final_transcript = String::new();
-    let mut last_pushed_text = session_overlay_text(&state, session_kind);
+    let mut last_source_text = session_overlay_text(&state, session_kind);
 
     loop {
         let message = progress.next(stream, &state).await?
@@ -287,19 +287,6 @@ where
                     continue;
                 }
 
-                let current_ui_text = session_overlay_text(&state, session_kind);
-                if current_ui_text != last_pushed_text {
-                    let mut new_prefix = current_ui_text.clone();
-                    if !new_prefix.is_empty() && !new_prefix.ends_with(|c: char| c.is_whitespace())
-                    {
-                        new_prefix.push(' ');
-                    }
-                    recording_prefix = new_prefix;
-                    transcript_parts.clear();
-                    interim_transcript.clear();
-                    last_final_transcript.clear();
-                }
-
                 if is_final {
                     if transcript != last_final_transcript {
                         log::info!(
@@ -312,41 +299,47 @@ where
                             transcript
                         );
                         last_final_transcript = transcript.clone();
-                        interim_transcript.clear();
                         transcript_parts.push(transcript);
-                        if !state.is_abort_requested() {
+                        // A partial final can end before the latest interim.
+                        // Keep that source preview until the following result
+                        // incorporates the still-pending audio. Removing it
+                        // here would detach edits from the words re-emitted
+                        // in the next segment.
+                        if !state.is_abort_requested() && start + duration >= interim_audio_end {
                             let live_text = build_overlay_text(
                                 recording_prefix.as_str(),
                                 &transcript_parts,
                                 None,
                             );
-                            last_pushed_text = live_text.text.clone();
-                            set_session_overlay_text(
+                            merge_session_overlay_text(
                                 &state,
                                 session_kind,
-                                live_text.text,
+                                &last_source_text,
+                                live_text.text.clone(),
                                 live_text.provisional_start,
                             );
+                            last_source_text = live_text.text;
                         }
                     }
                     continue;
                 }
 
                 log::debug!("Deepgram interim: {}", transcript);
-                interim_transcript = transcript;
+                interim_audio_end = start + duration;
                 if !state.is_abort_requested() {
                     let live_text = build_overlay_text(
                         recording_prefix.as_str(),
                         &transcript_parts,
-                        Some(interim_transcript.as_str()),
+                        Some(transcript.as_str()),
                     );
-                    last_pushed_text = live_text.text.clone();
-                    set_session_overlay_text(
+                    merge_session_overlay_text(
                         &state,
                         session_kind,
-                        live_text.text,
+                        &last_source_text,
+                        live_text.text.clone(),
                         live_text.provisional_start,
                     );
+                    last_source_text = live_text.text;
                 }
             }
             Ok(StreamResponse::TerminalResponse { duration, .. }) => {
@@ -374,17 +367,16 @@ where
         }
     }
 
-    let final_ui_text = session_overlay_text(&state, session_kind);
-    let final_transcript = if final_ui_text != last_pushed_text {
-        final_ui_text
-    } else {
-        join_transcript_parts(recording_prefix.as_str(), &transcript_parts)
-    };
-
     if !state.is_abort_requested() {
-        set_session_overlay_text(&state, session_kind, final_transcript.clone(), None);
+        merge_session_overlay_text(
+            &state,
+            session_kind,
+            &last_source_text,
+            join_transcript_parts(recording_prefix.as_str(), &transcript_parts),
+            None,
+        );
     }
-    Ok(final_transcript)
+    Ok(session_overlay_text(&state, session_kind))
 }
 
 pub fn session_overlay_text(state: &AppState, session_kind: SessionKind) -> String {
@@ -394,15 +386,16 @@ pub fn session_overlay_text(state: &AppState, session_kind: SessionKind) -> Stri
     }
 }
 
-pub fn set_session_overlay_text(
+fn merge_session_overlay_text(
     state: &AppState,
     session_kind: SessionKind,
-    text: impl Into<String>,
+    before: &str,
+    text: String,
     provisional_start: Option<usize>,
 ) {
     match session_kind {
-        SessionKind::Dictation => state.set_live_overlay_text(text, provisional_start),
-        SessionKind::Correction => state.set_live_overlay_correction_text(text, provisional_start),
+        SessionKind::Dictation => state.merge_live_overlay_text(before, text, provisional_start),
+        SessionKind::Correction => state.merge_live_overlay_correction_text(before, text, provisional_start),
     }
 }
 
@@ -421,6 +414,104 @@ pub fn format_deepgram_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn transcript_response(text: &str, is_final: bool, start: f64, duration: f64) -> StreamResponse {
+        serde_json::from_value(serde_json::json!({
+            "type": "Results", "start": start, "duration": duration,
+            "is_final": is_final, "speech_final": is_final, "from_finalize": false,
+            "channel_index": [0, 1],
+            "channel": {"alternatives": [{"transcript": text, "confidence": 1.0, "words": []}]},
+            "metadata": {"request_id": "test-request", "model_uuid": "test-model", "model_info": {"name": "test", "version": "test", "arch": "test"}}
+        })).unwrap()
+    }
+
+    #[tokio::test]
+    async fn editing_final_words_does_not_replay_the_interim_tail() {
+        use tokio_stream::StreamExt;
+        let state = AppState::new();
+        let edited_state = state.clone();
+        let messages = [
+            transcript_response("hello", true, 0.0, 1.0),
+            transcript_response("still coming in", false, 1.0, 2.0),
+            transcript_response("still coming in and working", false, 1.0, 3.0),
+            transcript_response("still coming in and working", true, 1.0, 3.0),
+            StreamResponse::TerminalResponse {
+                request_id: "test-request".to_owned(), created: String::new(), duration: 4.0, channels: 1,
+            },
+        ];
+        let mut index = 0;
+        let mut stream = tokio_stream::iter(messages).map(move |message| {
+            if index == 2 {
+                assert_eq!(&*edited_state.overlay_text(), "hello still coming in ");
+                edited_state.set_overlay_text("Hi still coming in ");
+            }
+            index += 1;
+            Ok(message)
+        });
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.finish();
+        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        assert_eq!(text, "Hi still coming in and working ");
+        assert_eq!(&*state.overlay_text(), text);
+    }
+
+    #[tokio::test]
+    async fn editing_interim_words_keeps_the_edit_when_more_narration_arrives() {
+        use tokio_stream::StreamExt;
+        let state = AppState::new();
+        let edited_state = state.clone();
+        let messages = [
+            transcript_response("meet Thursday", false, 0.0, 1.0),
+            transcript_response("meet Thursday afternoon", false, 0.0, 2.0),
+            transcript_response("Meet Thursday afternoon.", true, 0.0, 2.0),
+            StreamResponse::TerminalResponse {
+                request_id: "test-request".to_owned(), created: String::new(), duration: 2.0, channels: 1,
+            },
+        ];
+        let mut index = 0;
+        let mut stream = tokio_stream::iter(messages).map(move |message| {
+            if index == 1 {
+                assert_eq!(&*edited_state.overlay_text(), "meet Thursday ");
+                edited_state.set_overlay_text("meet Friday ");
+            }
+            index += 1;
+            Ok(message)
+        });
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.finish();
+        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        assert_eq!(text, "Meet Friday afternoon. ");
+        assert_eq!(&*state.overlay_text(), text);
+    }
+
+    #[tokio::test]
+    async fn editing_an_interim_tail_does_not_replay_it_after_a_partial_final() {
+        use tokio_stream::StreamExt;
+        let state = AppState::new();
+        let edited_state = state.clone();
+        let messages = [
+            transcript_response("one two three", false, 0.0, 3.0),
+            transcript_response("one two", true, 0.0, 2.0),
+            transcript_response("three four", false, 2.0, 2.0),
+            transcript_response("three four", true, 2.0, 2.0),
+            StreamResponse::TerminalResponse {
+                request_id: "test-request".to_owned(), created: String::new(), duration: 4.0, channels: 1,
+            },
+        ];
+        let mut index = 0;
+        let mut stream = tokio_stream::iter(messages).map(move |message| {
+            if index == 1 {
+                edited_state.set_overlay_text("one two THREE ");
+            }
+            index += 1;
+            Ok(message)
+        });
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.finish();
+        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        assert_eq!(text, "one two THREE four ");
+        assert_eq!(&*state.overlay_text(), text);
+    }
 
     #[test]
     fn audio_queue_capacity_provides_ample_buffer_depth() {

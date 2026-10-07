@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use sha2::{Digest, Sha256};
 
+use crate::text_edit::{edited_offset, merge_text};
+
 pub const STATE_IDLE: u8 = 0;
 pub const STATE_RECORDING: u8 = 1;
 pub const STATE_PROCESSING: u8 = 2;
@@ -35,6 +37,14 @@ impl Default for OverlayText {
     fn default() -> Self {
         Self::new(String::new(), None)
     }
+}
+
+fn merge_overlay_text(current: &mut OverlayText, before: &str, incoming: OverlayText) {
+    let text = merge_text(before, &current.text, &incoming.text);
+    let provisional_start = incoming
+        .provisional_start
+        .map(|start| edited_offset(&incoming.text, &text, start));
+    *current = OverlayText::new(text, provisional_start);
 }
 
 /// Identifies a Deepgram API key without keeping the key: the first 8 bytes of
@@ -338,6 +348,31 @@ impl AppState {
         self.set_overlay_text(String::new());
     }
 
+    /// Merge a speech revision with keyboard edits under the text's lock.
+    /// `before` is the preceding speech result, before any keyboard edits.
+    pub fn merge_live_overlay_text(
+        &self,
+        before: &str,
+        text: String,
+        provisional_start: Option<usize>,
+    ) {
+        if let Ok(mut current) = self.overlay_text.lock() {
+            merge_overlay_text(&mut current, before, OverlayText::new(text, provisional_start));
+        }
+    }
+
+    /// The editor's baseline is its last rendered text, which may precede
+    /// the latest speech result. Keep speech that arrived between UI ticks.
+    pub fn apply_overlay_edit(&self, rendered: &str, edited: &str) {
+        if let Ok(mut current) = self.overlay_text.lock() {
+            let text = merge_text(rendered, edited, &current.text);
+            let provisional_start = current
+                .provisional_start
+                .map(|start| edited_offset(&current.text, &text, start));
+            *current = OverlayText::new(text, provisional_start);
+        }
+    }
+
     pub fn set_overlay_error_text(&self, overlay_error_text: impl Into<String>) {
         if let Ok(mut current_overlay_error_text) = self.overlay_error_text.lock() {
             *current_overlay_error_text = Arc::from(overlay_error_text.into());
@@ -372,6 +407,17 @@ impl AppState {
 
     pub fn clear_overlay_correction_text(&self) {
         self.set_overlay_correction_text(String::new());
+    }
+
+    pub fn merge_live_overlay_correction_text(
+        &self,
+        before: &str,
+        text: String,
+        provisional_start: Option<usize>,
+    ) {
+        if let Ok(mut current) = self.overlay_correction_text.lock() {
+            merge_overlay_text(&mut current, before, OverlayText::new(text, provisional_start));
+        }
     }
 
     pub fn set_overlay_text_opacity(&self, overlay_text_opacity: f64) {
@@ -665,6 +711,48 @@ mod tests {
         assert_eq!(&*snapshot.text, "final words still talking ");
         assert_eq!(snapshot.provisional_start, Some(12));
         assert!(std::sync::Arc::ptr_eq(&snapshot.text, &state.overlay_text()));
+    }
+
+    #[test]
+    fn keyboard_edits_keep_speech_received_since_the_last_render() {
+        let state = AppState::new();
+        state.set_live_overlay_text("hello still talking today ", Some("hello ".len()));
+        state.apply_overlay_edit("hello still talking ", "Hé🙂 still talking ");
+        let snapshot = state.overlay_text_snapshot();
+        assert_eq!(&*snapshot.text, "Hé🙂 still talking today ");
+        assert_eq!(snapshot.provisional_start, Some("Hé🙂 ".len()));
+        state.merge_live_overlay_text(
+            "hello still talking today ",
+            "hello still talking today and tomorrow ".to_owned(),
+            Some("hello ".len()),
+        );
+        let snapshot = state.overlay_text_snapshot();
+        assert_eq!(&*snapshot.text, "Hé🙂 still talking today and tomorrow ");
+        assert_eq!(snapshot.provisional_start, Some("Hé🙂 ".len()));
+    }
+
+    #[test]
+    fn keyboard_edits_survive_finalization_and_a_later_edit() {
+        let state = AppState::new();
+        state.set_live_overlay_text("meet Thursday ", Some(0));
+        state.apply_overlay_edit("meet Thursday ", "meet Friday ");
+        state.merge_live_overlay_text(
+            "meet Thursday ",
+            "Meet Thursday afternoon. ".to_owned(),
+            None,
+        );
+        assert_eq!(&*state.overlay_text(), "Meet Friday afternoon. ");
+        assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+        state.apply_overlay_edit("Meet Friday afternoon. ", "Meet Friday morning. ");
+        state.merge_live_overlay_text(
+            "Meet Thursday afternoon. ",
+            "Meet Thursday afternoon. See you then. ".to_owned(),
+            None,
+        );
+        assert_eq!(
+            &*state.overlay_text(),
+            "Meet Friday morning. See you then. "
+        );
     }
 
     #[test]
