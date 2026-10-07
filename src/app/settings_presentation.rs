@@ -6,6 +6,9 @@
 //! (`NSApplication.h`). A key window in an inactive app does not open
 //! `NSPopUpButton` menus (#16), so the Settings window is ordered front only
 //! once the app is active.
+//! A key nonactivating overlay can make `NSApplication::isActive` true while
+//! another process is frontmost. Check `NSRunningApplication::isActive` too,
+//! and request activation through that process object before showing Settings.
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum SettingsPresentation {
@@ -41,11 +44,15 @@ impl SettingsPresentation {
         }
     }
 
-    /// Runs on the scheduled default-mode turn: an active app presents at
-    /// once, an inactive one requests activation and keeps the window hidden.
-    pub(super) fn default_mode_turn(&mut self, app_is_active: bool) -> SettingsPresentationStep {
+    /// Runs on the scheduled default-mode turn: an active, frontmost app
+    /// presents at once; otherwise request activation and keep the window hidden.
+    pub(super) fn default_mode_turn(
+        &mut self,
+        app_is_active: bool,
+        app_is_frontmost: bool,
+    ) -> SettingsPresentationStep {
         match self {
-            Self::AwaitingDefaultModeTurn if app_is_active => {
+            Self::AwaitingDefaultModeTurn if app_is_active && app_is_frontmost => {
                 *self = Self::Idle;
                 SettingsPresentationStep::Present
             }
@@ -115,7 +122,7 @@ mod tests {
         presentation.request();
 
         assert_eq!(
-            presentation.default_mode_turn(false),
+            presentation.default_mode_turn(false, false),
             SettingsPresentationStep::RequestActivation
         );
         assert!(presentation.is_awaiting_activation());
@@ -125,7 +132,7 @@ mod tests {
     fn inactive_app_presents_only_after_it_becomes_active() {
         let mut presentation = SettingsPresentation::default();
         presentation.request();
-        presentation.default_mode_turn(false);
+        presentation.default_mode_turn(false, false);
 
         assert_eq!(
             presentation.app_did_become_active(),
@@ -140,7 +147,28 @@ mod tests {
         presentation.request();
 
         assert_eq!(
-            presentation.default_mode_turn(true),
+            presentation.default_mode_turn(true, true),
+            SettingsPresentationStep::Present
+        );
+        assert!(!presentation.is_pending());
+    }
+
+    #[test]
+    fn key_nonactivating_panel_waits_for_application_activation() {
+        let mut presentation = SettingsPresentation::default();
+        presentation.request();
+
+        assert_eq!(
+            presentation.default_mode_turn(true, false),
+            SettingsPresentationStep::RequestActivation
+        );
+        assert!(presentation.is_awaiting_activation());
+        assert_eq!(
+            presentation.default_mode_turn(true, false),
+            SettingsPresentationStep::Wait
+        );
+        assert_eq!(
+            presentation.app_did_become_active(),
             SettingsPresentationStep::Present
         );
         assert!(!presentation.is_pending());
@@ -167,7 +195,7 @@ mod tests {
             SettingsPresentationStep::Wait
         );
         assert_eq!(
-            presentation.default_mode_turn(true),
+            presentation.default_mode_turn(true, true),
             SettingsPresentationStep::Present
         );
     }
@@ -177,11 +205,11 @@ mod tests {
         let mut presentation = SettingsPresentation::default();
 
         assert_eq!(
-            presentation.default_mode_turn(true),
+            presentation.default_mode_turn(true, true),
             SettingsPresentationStep::Wait
         );
         assert_eq!(
-            presentation.default_mode_turn(false),
+            presentation.default_mode_turn(false, false),
             SettingsPresentationStep::Wait
         );
         assert!(!presentation.is_pending());
@@ -191,7 +219,7 @@ mod tests {
     fn presentation_happens_once_per_request() {
         let mut presentation = SettingsPresentation::default();
         presentation.request();
-        presentation.default_mode_turn(false);
+        presentation.default_mode_turn(false, false);
         presentation.app_did_become_active();
 
         assert_eq!(
@@ -204,7 +232,7 @@ mod tests {
     fn closing_settings_while_awaiting_activation_drops_the_request() {
         let mut presentation = SettingsPresentation::default();
         presentation.request();
-        presentation.default_mode_turn(false);
+        presentation.default_mode_turn(false, false);
 
         presentation.cancel();
 
@@ -224,7 +252,7 @@ mod tests {
 
         assert!(!presentation.is_pending());
         assert_eq!(
-            presentation.default_mode_turn(false),
+            presentation.default_mode_turn(false, false),
             SettingsPresentationStep::Wait
         );
     }
@@ -233,14 +261,14 @@ mod tests {
     fn request_while_awaiting_activation_schedules_a_new_activation_request() {
         let mut presentation = SettingsPresentation::default();
         presentation.request();
-        presentation.default_mode_turn(false);
+        presentation.default_mode_turn(false, false);
 
         assert_eq!(
             presentation.request(),
             SettingsPresentationStep::ScheduleDefaultModeTurn
         );
         assert_eq!(
-            presentation.default_mode_turn(false),
+            presentation.default_mode_turn(false, false),
             SettingsPresentationStep::RequestActivation
         );
     }

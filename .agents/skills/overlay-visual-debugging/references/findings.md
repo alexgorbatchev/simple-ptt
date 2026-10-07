@@ -1,6 +1,6 @@
 ---
 created_on: 2026-09-27 11:29
-last_modified: 2026-10-07 13:50
+last_modified: 2026-10-07 15:36
 status: current
 ---
 
@@ -83,6 +83,12 @@ These behaviors were measured on macOS 26.6 with probes, with later versions not
 - **Only text and the pills use semantic colours.** The pills are `labelColor` resolved in their view's appearance (`cg_color_in` in `ui_meter.rs`); the other meter styles' bars and the shimmer mask are fixed sRGB and do not adapt.
 
 ## Window and halo
+
+- **A key nonactivating overlay can report AppKit activation without process activation** (macOS 26.6.2).
+  - While recording, the native probe measured `NSApplication::isActive=true` and `NSRunningApplication::currentApplication().isActive=false` with the overlay as key window. Opening Settings from that state produced `active=false, frontmost=false, settings=true, hotkeys_blocked=true, key=None` at `t=2.110`: the Settings window was inaccessible and recording hotkeys were blocked.
+  - The Settings default-mode turn now requires both activation flags. It requests process activation through `NSRunningApplication` and retains the existing `applicationDidBecomeActive:` presentation path. If macOS declines activation, Settings remains hidden and recording hotkeys remain enabled while the request is pending.
+  - Two native runs sampled every 12ms and checked 134 samples each with zero failures. At `t=2.100` and `t=2.097`, both retained the recording overlay with `settings=false, hotkeys_blocked=false, pending=AwaitingActivation`. Cancelling cleared the request; ending recording dismissed the overlay. The measured transcript rectangle was `(1000.0, 674.8, 560.0, 120.19999999999999)` in both runs.
+  - Removing the requirement for process activation reproduced `settings=true, hotkeys_blocked=true, key=None` at `t=2.120`, with 83 failures out of 121 checked samples, and failed the state-transition regression. Reasserting `NSApplication::activate` before or after ordering Settings did not reliably fix the failure. The automated runs did not receive process activation, so the native successful-activation path still needs an interactive check. No private API was added.
 
 - **F5 fades the meter without releasing its layout space** (macOS 26.6.2).
   - The finishing early return previously retained meter opacity at `1.0` throughout processing and transformation. `fade_finishing_meter` now animates the meter container's public `alphaValue` to zero over 0.16 s, alongside the finishing shrink. Its target is set once so status ticks do not restart the fade; the fast-result dismissal path uses it too.

@@ -321,8 +321,12 @@ define_class!(
         fn run_settings_presentation_turn(&self) {
             let app_is_active =
                 NSApplication::sharedApplication(MainThreadMarker::from(self)).isActive();
+            // A key nonactivating panel can make AppKit report active while
+            // another process is still frontmost. Settings needs both.
+            let app_is_frontmost =
+                objc2_app_kit::NSRunningApplication::currentApplication().isActive();
             let step = self.advance_settings_presentation(|presentation| {
-                presentation.default_mode_turn(app_is_active)
+                presentation.default_mode_turn(app_is_active, app_is_frontmost)
             });
             self.perform_settings_presentation_step(step);
         }
@@ -882,10 +886,9 @@ impl AppDelegate {
 
     /// Carries out a step decided by `SettingsPresentation`. The new state is
     /// stored before this runs, so `applicationDidBecomeActive:` sees
-    /// `AwaitingActivation` even if AppKit delivers it before `activate()`
-    /// returns.
+    /// `AwaitingActivation` even if AppKit delivers it before the activation
+    /// request returns.
     fn perform_settings_presentation_step(&self, step: SettingsPresentationStep) {
-        let mtm = MainThreadMarker::from(self);
         match step {
             SettingsPresentationStep::Wait => {}
             SettingsPresentationStep::ScheduleDefaultModeTurn => {
@@ -909,7 +912,10 @@ impl AppDelegate {
                 log::info!(
                     "requested app activation; Settings opens once macOS activates simple-ptt"
                 );
-                NSApplication::sharedApplication(mtm).activate();
+                // Request process activation, even if the nonactivating overlay
+                // has already made NSApplication report itself as active.
+                objc2_app_kit::NSRunningApplication::currentApplication()
+                    .activateWithOptions(NSApplicationActivationOptions::empty());
             }
             SettingsPresentationStep::Present => {
                 let Some(settings_window) = self.ivars().settings_window.get() else {
