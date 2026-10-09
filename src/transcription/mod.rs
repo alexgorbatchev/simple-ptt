@@ -793,12 +793,7 @@ pub fn spawn_transcription_thread(
                     }
                 }
                 Command::TransformBuffer => {
-                    if buffered_text.trim().is_empty() {
-                        buffered_text = state.overlay_text().to_string();
-                    }
-
-                    if buffered_text.trim().is_empty() {
-                        log::info!("ignoring transform_buffer command because buffer is empty");
+                    if !prepare_buffer_transform(&state, &mut buffered_text) {
                         continue;
                     }
 
@@ -808,7 +803,7 @@ pub fn spawn_transcription_thread(
                         Ok(config) => config,
                         Err(error) => {
                             log::error!("failed to resolve transformation config: {}", error);
-                            state.clear_overlay_text();
+                            state.set_overlay_text(buffered_text.clone());
                             state.set_overlay_text_opacity(1.0);
                             state.report_error(error.to_string());
                             continue;
@@ -839,7 +834,7 @@ pub fn spawn_transcription_thread(
                         }
                         Err(error) => {
                             log::error!("transformation failed: {}", error);
-                            state.clear_overlay_text();
+                            state.set_overlay_text(buffered_text.clone());
                             state.set_overlay_text_opacity(1.0);
                             state.report_error(error.to_string());
                         }
@@ -865,6 +860,26 @@ pub fn spawn_transcription_thread(
     });
 
     TranscriptionController { command_tx }
+}
+
+/// Refresh from the editable annotation before deciding whether to transform.
+fn prepare_buffer_transform(state: &AppState, buffered_text: &mut String) -> bool {
+    if state.is_abort_requested() {
+        complete_session_cancellation(state, buffered_text, SessionKind::Dictation);
+        return false;
+    }
+
+    // Ready-buffer keyboard edits live in AppState, independently of the
+    // worker's last transcript or transformation result. Empty edits count too.
+    *buffered_text = state.overlay_text().to_string();
+    if buffered_text.trim().is_empty() {
+        log::info!("ignoring transform_buffer command because buffer is empty");
+        state.clear_overlay_text();
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_IDLE);
+        return false;
+    }
+    true
 }
 
 /// Apply spoken changes, if any, then prepare the original dictation to
@@ -1031,6 +1046,93 @@ impl Drop for ResumingDictation<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn ready_buffer_transform_worker_stops_after_the_user_deletes_a_cached_annotation() {
+        use crate::state::{AppState, STATE_ERROR, STATE_IDLE, STATE_TRANSFORMING};
+
+        let state = AppState::new();
+        let config = crate::config::Config::default();
+        let store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            ".tmp/ready-buffer-edits/config.toml".into(),
+        );
+        let controller = super::spawn_transcription_thread(state.clone(), store);
+        state.set_overlay_text("This text enters the worker cache.");
+        state.set_state(STATE_TRANSFORMING);
+        controller.transform_buffer().unwrap();
+        // An unconfigured provider fails before making a network request,
+        // leaving a nonempty worker cache for the second command.
+        wait_for_state(&state, STATE_ERROR);
+        assert_eq!(
+            &*state.overlay_text(),
+            "This text enters the worker cache.",
+            "a failed transform must leave the editable input available for retry"
+        );
+
+        state.set_overlay_text("The annotation before the keyboard deletion.");
+        let rendered = state.overlay_text();
+        state.apply_overlay_edit(&rendered, "");
+        state.set_state(STATE_TRANSFORMING);
+        controller.transform_buffer().unwrap();
+        wait_for_state(&state, STATE_IDLE);
+        assert!(state.overlay_text().is_empty());
+    }
+
+    #[test]
+    fn ready_buffer_transform_uses_keyboard_edits_instead_of_cached_text() {
+        let state = crate::state::AppState::new();
+        for edited in [
+            "Meet Friday instead.",
+            "Edited after the previous transform.",
+            "Café à Montréal.",
+        ] {
+            let mut buffered_text = "Meet Thursday.".to_owned();
+            state.set_state(crate::state::STATE_BUFFER_READY);
+            state.set_overlay_text(buffered_text.clone());
+            state.apply_overlay_edit(&buffered_text, edited);
+            state.set_state(crate::state::STATE_TRANSFORMING);
+
+            assert!(super::prepare_buffer_transform(&state, &mut buffered_text));
+            assert_eq!(
+                buffered_text, edited,
+                "F6 must transform the editable annotation"
+            );
+        }
+    }
+
+    #[test]
+    fn ready_buffer_transform_does_not_restore_text_deleted_in_the_overlay() {
+        let state = crate::state::AppState::new();
+        for edited in ["", " \n\t "] {
+            let mut buffered_text = "Delete this entire annotation.".to_owned();
+            state.set_overlay_text(buffered_text.clone());
+            state.apply_overlay_edit(&buffered_text, edited);
+            state.set_state(crate::state::STATE_TRANSFORMING);
+
+            assert!(!super::prepare_buffer_transform(&state, &mut buffered_text));
+            assert!(buffered_text.trim().is_empty());
+            assert_eq!(state.get_state(), crate::state::STATE_IDLE);
+            assert!(state.overlay_text().is_empty());
+        }
+    }
+
+    #[test]
+    fn ready_buffer_transform_settles_cancellation_before_reading_a_deleted_annotation() {
+        let state = crate::state::AppState::new();
+        let mut buffered_text = "The worker still holds the discarded annotation.".to_owned();
+        state.set_overlay_text(buffered_text.clone());
+        state.request_abort();
+        state.dismiss_overlay();
+        state.clear_overlay_text();
+
+        assert!(!super::prepare_buffer_transform(&state, &mut buffered_text));
+        assert!(buffered_text.is_empty());
+        assert!(!state.is_abort_requested());
+        assert!(state.is_overlay_dismissed());
+        assert_eq!(state.get_state(), crate::state::STATE_IDLE);
+    }
+
     #[test]
     fn manual_transform_is_not_repeated_when_pasting_unchanged_text() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
