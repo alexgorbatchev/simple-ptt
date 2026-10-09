@@ -26,10 +26,11 @@ use startup_windows::StartupWindows;
 
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
 use crate::config::{self, Config};
+use crate::correction_binding::CorrectionBinding;
 use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
 };
-use crate::hotkey_binding::{format_hotkey_binding, parse_hotkey_binding, parse_key};
+use crate::hotkey_binding::parse_hotkey_binding;
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
     HotkeyCaptureTarget,
@@ -1308,12 +1309,21 @@ impl AppDelegate {
                 settings_window.cancel_hotkey_capture();
                 settings_window.set_status("Hotkey capture canceled.");
             }
-            HotkeyCaptureOutcome::Captured { target, binding } => {
-                let Some(captured_name) = format_hotkey_binding(binding) else {
+            HotkeyCaptureOutcome::Captured { .. }
+            | HotkeyCaptureOutcome::CorrectionModifiersCaptured { .. } => {
+                let Some((target, captured_name)) = outcome.captured_binding() else {
                     settings_window.cancel_hotkey_capture();
                     settings_window.set_status("That hotkey is not supported.");
                     return;
                 };
+
+                if target == HotkeyCaptureTarget::Correction {
+                    if let Err(error) = CorrectionBinding::parse(&captured_name) {
+                        settings_window.cancel_hotkey_capture();
+                        settings_window.set_status(&error);
+                        return;
+                    }
+                }
 
                 let conflicting_target = [
                     HotkeyCaptureTarget::Record,
@@ -1517,7 +1527,7 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
         .map_err(|error| format!("record hotkey is invalid: {}", error))?;
     let correction_key = parse_correction_key(config.ui.correction_key.as_str())?;
 
-    if hotkey_uses_key(record_hotkey, correction_key) {
+    if correction_key.overlaps(record_hotkey) {
         return Err("record hotkey and correction key must be different".to_owned());
     }
 
@@ -1544,7 +1554,7 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
             if record_hotkey == transform_hotkey {
                 return Err("record and transform hotkeys must be different".to_owned());
             }
-            if hotkey_uses_key(transform_hotkey, correction_key) {
+            if correction_key.overlaps(transform_hotkey) {
                 return Err("transform hotkey and correction key must be different".to_owned());
             }
             config.resolve_transformation_config()?;
@@ -1554,55 +1564,14 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_correction_key(raw: &str) -> Result<crate::key::Key, String> {
-    parse_key(raw.trim()).ok_or_else(|| {
-        "correction key must be a single supported key such as LeftMeta, RightMeta, LeftAlt, or F7"
-            .to_owned()
-    })
+fn parse_correction_key(raw: &str) -> Result<CorrectionBinding, String> {
+    CorrectionBinding::parse(raw)
 }
 
 fn correction_key_hint_label(raw: &str) -> String {
-    match raw.trim() {
-        value
-            if value.eq_ignore_ascii_case("LeftMeta")
-                || value.eq_ignore_ascii_case("RightMeta") =>
-        {
-            "Cmd".to_owned()
-        }
-        value
-            if value.eq_ignore_ascii_case("LeftAlt") || value.eq_ignore_ascii_case("RightAlt") =>
-        {
-            "Alt".to_owned()
-        }
-        value
-            if value.eq_ignore_ascii_case("LeftControl")
-                || value.eq_ignore_ascii_case("RightControl") =>
-        {
-            "Ctrl".to_owned()
-        }
-        value
-            if value.eq_ignore_ascii_case("LeftShift")
-                || value.eq_ignore_ascii_case("RightShift") =>
-        {
-            "Shift".to_owned()
-        }
-        value if value.eq_ignore_ascii_case("Escape") => "Esc".to_owned(),
-        value => value.to_owned(),
-    }
-}
-
-fn hotkey_uses_key(binding: crate::hotkey_binding::HotkeyBinding, key: crate::key::Key) -> bool {
-    if binding.key == key {
-        return true;
-    }
-
-    match key {
-        crate::key::Key::ShiftLeft | crate::key::Key::ShiftRight => binding.modifiers.shift,
-        crate::key::Key::ControlLeft | crate::key::Key::ControlRight => binding.modifiers.control,
-        crate::key::Key::AltLeft | crate::key::Key::AltRight => binding.modifiers.alt,
-        crate::key::Key::MetaLeft | crate::key::Key::MetaRight => binding.modifiers.meta,
-        _ => false,
-    }
+    CorrectionBinding::parse(raw)
+        .map(CorrectionBinding::hint_label)
+        .unwrap_or_else(|_| raw.trim().to_owned())
 }
 
 fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retained<NSMenu> {
@@ -1986,7 +1955,7 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<Hold Alt> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Alt+Cmd> correction <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
@@ -2018,7 +1987,7 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<Hold Alt> correction <F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Alt+Cmd> correction <F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
@@ -2032,6 +2001,20 @@ mod tests {
         assert_eq!(
             style.shortcut_hint.as_deref(),
             Some("<Hold Alt> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn validate_settings_accepts_a_modifier_only_correction_chord() {
+        let mut config = Config::default();
+        config.deepgram.api_key = Some("test-key".to_owned());
+        config.ui.correction_key = "Alt+Cmd".to_owned();
+        assert_eq!(validate_settings_config(&config), Ok(()));
+
+        config.ui.hotkey = "Alt+Cmd+F5".to_owned();
+        assert_eq!(
+            validate_settings_config(&config).unwrap_err(),
+            "record hotkey and correction key must be different"
         );
     }
 

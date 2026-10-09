@@ -7,9 +7,8 @@ use std::time::{Duration, Instant};
 
 use self::platform::run_hotkey_event_loop;
 use crate::audio::NO_MICROPHONE_MESSAGE;
-use crate::hotkey_binding::{
-    is_modifier_key, parse_hotkey_binding, parse_key, HotkeyBinding, HotkeyModifiers,
-};
+use crate::correction_binding::CorrectionBinding;
+use crate::hotkey_binding::{parse_hotkey_binding, HotkeyBinding, HotkeyModifiers};
 use crate::hotkey_capture::HotkeyCaptureController;
 use crate::key::Key;
 use crate::settings::LiveConfigStore;
@@ -37,12 +36,13 @@ pub(super) enum HotkeyEvent {
     /// A key went down, with the modifiers held as it did (for a modifier
     /// key, the others), read from the event itself.
     KeyPress(Key, HotkeyModifiers),
-    KeyRelease(Key),
+    /// A key went up, with the modifiers still held after its release.
+    KeyRelease(Key, HotkeyModifiers),
 }
 
 struct CurrentHotkeyConfig {
     auto_transform_enabled: bool,
-    correction_key: Option<Key>,
+    correction_key: Option<CorrectionBinding>,
     hold_ms: u64,
     record_hotkey: Option<HotkeyBinding>,
     transform_hotkey: Option<HotkeyBinding>,
@@ -88,14 +88,15 @@ pub fn spawn_hotkey_thread(
                             )
                         }
                     }
-                    HotkeyEvent::KeyRelease(key) => {
-                        if hotkey_capture_controller.handle_key_release(key) {
+                    HotkeyEvent::KeyRelease(key, current_modifiers) => {
+                        if hotkey_capture_controller.handle_key_release(key, current_modifiers) {
                             true
                         } else if settings_window_visible {
                             false
                         } else {
                             handle_key_release(
                                 key,
+                                current_modifiers,
                                 &config_store,
                                 &state,
                                 &controller,
@@ -206,7 +207,10 @@ fn handle_key_press(
         return true;
     }
 
-    if hotkey_config.correction_key == Some(key) {
+    if hotkey_config
+        .correction_key
+        .is_some_and(|binding| binding.matches_press(key, current_modifiers))
+    {
         if correction_key_origin.get().is_some() {
             return true;
         }
@@ -215,11 +219,6 @@ fn handle_key_press(
         if matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING) {
             correction_key_origin.set(None);
             log::info!("ignoring correction while background work is still running");
-            return false;
-        }
-
-        if is_modifier_key(key) && current_modifiers.any() {
-            correction_key_origin.set(None);
             return false;
         }
 
@@ -364,6 +363,7 @@ fn handle_key_press(
 
 fn handle_key_release(
     key: Key,
+    current_modifiers: HotkeyModifiers,
     config_store: &LiveConfigStore,
     state: &AppState,
     controller: &TranscriptionController,
@@ -375,7 +375,10 @@ fn handle_key_release(
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
 
-    if hotkey_config.correction_key == Some(key) {
+    if hotkey_config
+        .correction_key
+        .is_some_and(|binding| binding.matches_release(key, current_modifiers))
+    {
         let Some(origin) = correction_key_origin.replace(None) else {
             return false;
         };
@@ -512,8 +515,8 @@ fn is_clipboard_insert_shortcut(key: Key, current_modifiers: HotkeyModifiers) ->
         && !current_modifiers.alt
 }
 
-fn parse_correction_key(raw: &str) -> Option<Key> {
-    parse_key(raw.trim())
+fn parse_correction_key(raw: &str) -> Option<CorrectionBinding> {
+    CorrectionBinding::parse(raw).ok()
 }
 
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
@@ -751,9 +754,18 @@ mod tests {
             // Releasing held record, transform, or correction keys after the
             // shortcut must not trigger another operation.
             for key in [Key::F5, Key::F6, Key::AltLeft] {
-                super::handle_key_release(key, &store, &state, &controller,
-                    &pressed_at, &record_action, &correction_origin,
-                    &transform_down, &clipboard_down);
+                super::handle_key_release(
+                    key,
+                    HotkeyModifiers::default(),
+                    &store,
+                    &state,
+                    &controller,
+                    &pressed_at,
+                    &record_action,
+                    &correction_origin,
+                    &transform_down,
+                    &clipboard_down,
+                );
             }
             assert!(state.overlay_text().is_empty());
             assert!(state.is_overlay_dismissed());
@@ -899,18 +911,84 @@ mod tests {
 
     #[test]
     fn correction_key_parses_supported_single_keys() {
-        assert_eq!(parse_correction_key("LeftMeta"), Some(Key::MetaLeft));
-        assert_eq!(parse_correction_key("RightMeta"), Some(Key::MetaRight));
-        assert_eq!(parse_correction_key("F7"), Some(Key::F7));
+        assert_eq!(
+            parse_correction_key("LeftMeta"),
+            Some(crate::correction_binding::CorrectionBinding::Key(
+                Key::MetaLeft
+            ))
+        );
+        assert_eq!(
+            parse_correction_key("RightMeta"),
+            Some(crate::correction_binding::CorrectionBinding::Key(
+                Key::MetaRight
+            ))
+        );
+        assert_eq!(
+            parse_correction_key("F7"),
+            Some(crate::correction_binding::CorrectionBinding::Key(Key::F7))
+        );
         assert_eq!(parse_correction_key("Cmd"), None);
     }
 
     #[test]
-    fn default_correction_leaves_command_shortcuts_available_and_uses_left_alt() {
+    fn default_correction_requires_option_and_command() {
+        use std::cell::Cell;
+
+        for (first, second) in [
+            (Key::AltLeft, Key::MetaLeft),
+            (Key::MetaRight, Key::AltRight),
+        ] {
+            let state = crate::state::AppState::new();
+            state.set_state(crate::state::STATE_BUFFER_READY);
+            state.set_overlay_text("Keep this narration");
+            let config = crate::config::Config::default();
+            let store = crate::settings::LiveConfigStore::new(
+                config.clone(),
+                config,
+                ".tmp/correction-chord/config.toml".into(),
+            );
+            let controller = crate::transcription::TranscriptionController::without_worker();
+            let pressed_at = Cell::new(None);
+            let record_action = Cell::new(None);
+            let correction_down = Cell::new(None);
+            let transform_down = Cell::new(false);
+            let clipboard_down = Cell::new(false);
+            let press = |key, modifiers| {
+                super::handle_key_press(
+                    key,
+                    modifiers,
+                    &store,
+                    &state,
+                    &controller,
+                    &pressed_at,
+                    &record_action,
+                    &correction_down,
+                    &transform_down,
+                    &clipboard_down,
+                )
+            };
+
+            assert!(
+                !press(first, HotkeyModifiers::default()),
+                "one modifier must not start correction"
+            );
+            assert!(!state.is_overlay_correction_active());
+            assert!(press(
+                second,
+                HotkeyModifiers::default().with_key_pressed(first)
+            ));
+            assert!(state.is_overlay_correction_active());
+            assert_eq!(&*state.overlay_text(), "Keep this narration");
+        }
+    }
+
+    #[test]
+    fn explicit_single_correction_key_leaves_command_shortcuts_available() {
         let state = crate::state::AppState::new();
         state.set_state(crate::state::STATE_RECORDING);
         state.set_overlay_text("Keep this narration");
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        config.ui.correction_key = "LeftAlt".to_owned();
         let store = crate::settings::LiveConfigStore::new(
             config.clone(), config,
             std::path::PathBuf::from(".tmp/correction/config.toml"),
@@ -925,10 +1003,20 @@ mod tests {
             key, modifiers, &store, &state, &controller, &pressed_at,
             &record_action, &correction_down, &transform_down, &clipboard_down,
         );
-        let release = |key| super::handle_key_release(
-            key, &store, &state, &controller, &pressed_at,
-            &record_action, &correction_down, &transform_down, &clipboard_down,
-        );
+        let release = |key| {
+            super::handle_key_release(
+                key,
+                HotkeyModifiers::default(),
+                &store,
+                &state,
+                &controller,
+                &pressed_at,
+                &record_action,
+                &correction_down,
+                &transform_down,
+                &clipboard_down,
+            )
+        };
         let command = HotkeyModifiers { meta: true, ..HotkeyModifiers::default() };
 
         assert!(!press(Key::MetaLeft, HotkeyModifiers::default()));

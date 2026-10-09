@@ -336,7 +336,7 @@ mod tests {
                 start_on_login: true,
                 auto_check_updates: false,
                 hotkey: "Cmd+F9".to_owned(),
-                correction_key: "RightAlt".to_owned(),
+                correction_key: "Alt+Cmd".to_owned(),
                 font_name: Some("Menlo".to_owned()),
                 font_size: 15.5,
                 footer_font_size: Some(10.25),
@@ -391,7 +391,7 @@ mod tests {
             form.general,
             GeneralForm {
                 hotkey: "Cmd+F9".to_owned(),
-                correction_key: "RightAlt".to_owned(),
+                correction_key: "Alt+Cmd".to_owned(),
                 font_name_title: Some("Menlo".to_owned()),
                 font_size: Some(15.5),
                 footer_font_size: Some(10.25),

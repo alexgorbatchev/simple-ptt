@@ -36,19 +36,27 @@ impl HotkeyModifiers {
         self
     }
 
-    pub fn with_key_released(mut self, key: Key) -> Self {
-        match modifier_group_for_key(key) {
-            Some(ModifierGroup::Shift) => self.shift = false,
-            Some(ModifierGroup::Control) => self.control = false,
-            Some(ModifierGroup::Alt) => self.alt = false,
-            Some(ModifierGroup::Meta) => self.meta = false,
-            None => {}
-        }
-        self
-    }
-
     pub fn any(&self) -> bool {
         self.shift || self.control || self.alt || self.meta
+    }
+
+    pub fn is_chord(self) -> bool {
+        [self.shift, self.control, self.alt, self.meta]
+            .into_iter()
+            .filter(|held| *held)
+            .count()
+            >= 2
+    }
+
+    pub fn contains(self, other: Self) -> bool {
+        (!other.shift || self.shift)
+            && (!other.control || self.control)
+            && (!other.alt || self.alt)
+            && (!other.meta || self.meta)
+    }
+
+    pub fn contains_key(self, key: Key) -> bool {
+        is_modifier_key(key) && self.contains(Self::default().with_key_pressed(key))
     }
 }
 
@@ -75,21 +83,69 @@ fn modifier_group_for_key(key: Key) -> Option<ModifierGroup> {
 }
 
 pub fn format_hotkey_binding(binding: HotkeyBinding) -> Option<String> {
+    let modifiers = format_modifiers(binding.modifiers);
+    if modifiers.is_empty() {
+        return Some(key_name(binding.key).to_owned());
+    }
+    Some(format!("{}+{}", modifiers, key_name(binding.key)))
+}
+
+pub fn format_modifiers(modifiers: HotkeyModifiers) -> String {
     let mut tokens = Vec::new();
-    if binding.modifiers.control {
+    if modifiers.control {
         tokens.push("Ctrl");
     }
-    if binding.modifiers.alt {
+    if modifiers.alt {
         tokens.push("Alt");
     }
-    if binding.modifiers.shift {
+    if modifiers.shift {
         tokens.push("Shift");
     }
-    if binding.modifiers.meta {
+    if modifiers.meta {
         tokens.push("Cmd");
     }
-    tokens.push(key_name(binding.key));
-    Some(tokens.join("+"))
+    tokens.join("+")
+}
+
+/// A chord containing at least two distinct modifier groups, with no primary key.
+pub fn parse_modifier_chord(raw: &str) -> Result<HotkeyModifiers, String> {
+    let mut modifiers = HotkeyModifiers::default();
+    for token in raw
+        .split('+')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        let modifier = match parse_modifier_token(token) {
+            Some(ModifierGroup::Shift) => HotkeyModifiers {
+                shift: true,
+                ..Default::default()
+            },
+            Some(ModifierGroup::Control) => HotkeyModifiers {
+                control: true,
+                ..Default::default()
+            },
+            Some(ModifierGroup::Alt) => HotkeyModifiers {
+                alt: true,
+                ..Default::default()
+            },
+            Some(ModifierGroup::Meta) => HotkeyModifiers {
+                meta: true,
+                ..Default::default()
+            },
+            None => return Err(format!("'{}' is not a modifier", token)),
+        };
+        if modifiers.contains(modifier) {
+            return Err(format!("modifier '{}' is repeated", token));
+        }
+        modifiers.shift |= modifier.shift;
+        modifiers.control |= modifier.control;
+        modifiers.alt |= modifier.alt;
+        modifiers.meta |= modifier.meta;
+    }
+    if !modifiers.is_chord() {
+        return Err("a modifier chord requires at least two different modifiers".to_owned());
+    }
+    Ok(modifiers)
 }
 
 pub fn parse_hotkey_binding(raw: &str) -> Result<HotkeyBinding, String> {

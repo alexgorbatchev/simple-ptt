@@ -17,12 +17,12 @@
 # Global hotkey used to start and stop recording.
 hotkey = "F5"
 
-# Single key used for correction. Hold this while dictating or while a
+# Shortcut used for correction. Hold this while dictating or while a
 # buffered annotation is visible to speak a correction request for the current text.
-# Left Alt (Option on macOS) leaves Command available for Cmd+C and Cmd+V.
-# Other supported keys include RightAlt, F7, LeftMeta, and RightMeta.
-# Use Settings to capture a key.
-correction_key = "LeftAlt"
+# Hold Option+Command (either side, either order), then release either to apply.
+# Single keys such as LeftAlt, RightAlt, F7, LeftMeta, and RightMeta are also supported.
+# Use Settings to capture a shortcut.
+correction_key = "Alt+Cmd"
 
 # Optional. Overlay font family. Omit to use the monospaced system font.
 # font_name = "Menlo"

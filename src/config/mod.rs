@@ -195,7 +195,7 @@ fn default_hotkey() -> String {
 }
 
 fn default_correction_key() -> String {
-    "LeftAlt".into()
+    "Alt+Cmd".into()
 }
 
 fn default_deepgram_language() -> String {
@@ -1084,7 +1084,7 @@ mod tests {
 
         let mut config = Config::default();
         config.ui.hotkey = "F5".to_owned();
-        config.ui.correction_key = "RightMeta".to_owned();
+        config.ui.correction_key = "Alt+Cmd".to_owned();
         config.ui.font_name = Some("SF Mono".to_owned());
         config.ui.font_size = 14.0;
         config.ui.footer_font_size = Some(11.0);
@@ -1100,7 +1100,7 @@ mod tests {
         assert!(updated_contents.contains("keep_me = true"));
         assert!(updated_contents.contains("overlay_font_family = \"SF Mono\""));
         assert!(updated_contents.contains("hotkey = \"F5\""));
-        assert!(updated_contents.contains("correction_key = \"RightMeta\""));
+        assert!(updated_contents.contains("correction_key = \"Alt+Cmd\""));
         assert!(updated_contents
             .contains("correction_system_prompt = \"Apply the spoken correction.\""));
     }
@@ -1111,7 +1111,7 @@ mod tests {
         assert!(!config.ui.start_on_login);
         assert!(config.ui.auto_check_updates);
         assert_eq!(config.ui.hotkey, "F5");
-        assert_eq!(config.ui.correction_key, "LeftAlt");
+        assert_eq!(config.ui.correction_key, "Alt+Cmd");
         assert_eq!(config.ui.font_name, None);
         assert_eq!(config.ui.font_size, 12.0);
         assert_eq!(config.ui.footer_font_size, None);

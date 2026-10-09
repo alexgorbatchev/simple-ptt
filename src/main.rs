@@ -2,6 +2,7 @@ mod app;
 mod audio;
 mod auto_launch;
 mod config;
+mod correction_binding;
 mod deepgram_api;
 mod deepgram_connection;
 mod hotkey;

@@ -200,12 +200,14 @@ fn hotkey_event(event_type: CGEventType, code: u16, flags: CGEventFlags) -> Opti
     let key = key_from_code(code)?;
     match event_type {
         CGEventType::KeyDown => Some(HotkeyEvent::KeyPress(key, modifiers_held(flags, None))),
-        CGEventType::KeyUp => Some(HotkeyEvent::KeyRelease(key)),
-        CGEventType::FlagsChanged if is_modifier_key(key) => Some(if modifier_is_down(key, flags) {
-            HotkeyEvent::KeyPress(key, modifiers_held(flags, Some(key)))
-        } else {
-            HotkeyEvent::KeyRelease(key)
-        }),
+        CGEventType::KeyUp => Some(HotkeyEvent::KeyRelease(key, modifiers_held(flags, None))),
+        CGEventType::FlagsChanged if is_modifier_key(key) => {
+            Some(if modifier_is_down(key, flags) {
+                HotkeyEvent::KeyPress(key, modifiers_held(flags, Some(key)))
+            } else {
+                HotkeyEvent::KeyRelease(key, modifiers_held(flags, None))
+            })
+        }
         _ => None,
     }
 }
@@ -390,6 +392,121 @@ mod tests {
     use crate::hotkey::HotkeyEvent;
 
     #[test]
+    fn native_option_command_events_hold_and_finish_correction_in_either_order() {
+        use crate::config::Config;
+        use crate::settings::LiveConfigStore;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_PROCESSING, STATE_RECORDING};
+        use crate::transcription::TranscriptionController;
+        use std::cell::Cell;
+
+        let options = [
+            (
+                super::OPTION_LEFT,
+                CGEventFlags::MaskAlternate | CGEventFlags::from_bits_retain(0x20),
+            ),
+            (
+                super::OPTION_RIGHT,
+                CGEventFlags::MaskAlternate | CGEventFlags::from_bits_retain(0x40),
+            ),
+        ];
+        let commands = [(META_LEFT, left_command()), (META_RIGHT, right_command())];
+        for option in options {
+            for command in commands {
+                for (first, second) in [(option, command), (command, option)] {
+                    for (released, remaining) in [(first, second), (second, first)] {
+                        for phase in [STATE_RECORDING, STATE_BUFFER_READY] {
+                            let state = AppState::new();
+                            state.set_state(phase);
+                            state.set_overlay_text("Preserve the dictated text");
+                            let config = Config::default();
+                            let store = LiveConfigStore::new(
+                                config.clone(),
+                                config,
+                                ".tmp/correction-chord/config.toml".into(),
+                            );
+                            let controller = TranscriptionController::without_worker();
+                            let pressed_at = Cell::new(None);
+                            let record_action = Cell::new(None);
+                            let correction_down = Cell::new(None);
+                            let transform_down = Cell::new(false);
+                            let clipboard_down = Cell::new(false);
+                            let dispatch = |kind, code, flags| match hotkey_event(kind, code, flags)
+                                .unwrap()
+                            {
+                                HotkeyEvent::KeyPress(key, modifiers) => {
+                                    crate::hotkey::handle_key_press(
+                                        key,
+                                        modifiers,
+                                        &store,
+                                        &state,
+                                        &controller,
+                                        &pressed_at,
+                                        &record_action,
+                                        &correction_down,
+                                        &transform_down,
+                                        &clipboard_down,
+                                    )
+                                }
+                                HotkeyEvent::KeyRelease(key, modifiers) => {
+                                    crate::hotkey::handle_key_release(
+                                        key,
+                                        modifiers,
+                                        &store,
+                                        &state,
+                                        &controller,
+                                        &pressed_at,
+                                        &record_action,
+                                        &correction_down,
+                                        &transform_down,
+                                        &clipboard_down,
+                                    )
+                                }
+                            };
+                            // Command by itself still permits copy/paste before correction.
+                            assert!(!dispatch(CGEventType::FlagsChanged, command.0, command.1));
+                            assert!(!dispatch(CGEventType::KeyDown, 0x08, command.1));
+                            assert_eq!(
+                                dispatch(CGEventType::KeyDown, 0x09, command.1),
+                                phase == STATE_RECORDING
+                            );
+                            assert_eq!(
+                                dispatch(CGEventType::KeyUp, 0x09, command.1),
+                                phase == STATE_RECORDING
+                            );
+                            assert!(!dispatch(
+                                CGEventType::FlagsChanged,
+                                command.0,
+                                CGEventFlags::empty()
+                            ));
+                            assert!(!state.is_overlay_correction_active());
+
+                            assert!(!dispatch(CGEventType::FlagsChanged, first.0, first.1));
+                            assert!(!state.is_overlay_correction_active());
+                            assert!(dispatch(
+                                CGEventType::FlagsChanged,
+                                second.0,
+                                first.1 | second.1
+                            ));
+                            assert!(state.is_overlay_correction_active());
+                            assert!(dispatch(CGEventType::FlagsChanged, released.0, remaining.1));
+                            assert!(!state.is_overlay_correction_active());
+                            assert_eq!(state.get_state(), STATE_PROCESSING);
+                            assert_eq!(state.is_dictation_resuming(), phase == STATE_RECORDING);
+                            assert_eq!(state.is_capturing_audio(), phase == STATE_RECORDING);
+                            assert_eq!(&*state.overlay_text(), "Preserve the dictated text");
+                            assert!(!dispatch(
+                                CGEventType::FlagsChanged,
+                                remaining.0,
+                                CGEventFlags::empty()
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn command_comma_is_reported_with_its_modifier_and_roundtrips() {
         let event = hotkey_event(CGEventType::KeyDown, 0x2B, CGEventFlags::MaskCommand);
         assert!(event.is_some(), "the event tap must report the comma key");
@@ -401,7 +518,13 @@ mod tests {
         assert_eq!(parse_hotkey_binding("Cmd+,").unwrap(), binding);
         assert_eq!(
             hotkey_event(CGEventType::KeyUp, 0x2B, CGEventFlags::MaskCommand),
-            Some(HotkeyEvent::KeyRelease(key)),
+            Some(HotkeyEvent::KeyRelease(
+                key,
+                HotkeyModifiers {
+                    meta: true,
+                    ..Default::default()
+                }
+            )),
         );
     }
 
@@ -454,12 +577,18 @@ mod tests {
         );
         assert_eq!(
             hotkey_event(CGEventType::FlagsChanged, META_LEFT, CGEventFlags::empty()),
-            Some(HotkeyEvent::KeyRelease(Key::MetaLeft))
+            Some(HotkeyEvent::KeyRelease(Key::MetaLeft, no_modifiers()))
         );
         // Left Command let go while right Command stays held.
         assert_eq!(
             hotkey_event(CGEventType::FlagsChanged, META_LEFT, right_command()),
-            Some(HotkeyEvent::KeyRelease(Key::MetaLeft))
+            Some(HotkeyEvent::KeyRelease(
+                Key::MetaLeft,
+                HotkeyModifiers {
+                    meta: true,
+                    ..no_modifiers()
+                }
+            ))
         );
         // Right Command pressed while left Command is held: the modifiers
         // before it already include Command.
