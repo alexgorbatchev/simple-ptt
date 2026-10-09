@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-03 09:21
-last_modified: 2026-10-09 14:38
+last_modified: 2026-10-09 15:01
 status: current
 ---
 
@@ -32,6 +32,8 @@ The transcript reader accepts the final metadata (`TerminalResponse`) as complet
 
 Dictation startup captures an owned snapshot of the editable annotation before publishing `STATE_RECORDING` and includes it in the queued start command. The worker uses that recording prefix; it does not infer resume intent from the later state or a stale worker buffer.
 
+The worker's `TransformationHistory` retains the output of successful manual transforms, both of a ready buffer and of dictation that resumes. On F5, the worker finishes capture before comparing the final editable annotation with that output. Matching text reuses the result without polling another LLM request or entering `STATE_TRANSFORMING`; new speech or edits run automatic transformation normally. Comparison trims segment-edge whitespace because transcription trims segments and adds a trailing separator. A fresh dictation with an empty prefix clears the history, while an explicit F6 request always runs. Failed or cancelled manual transforms do not populate the history. Reuse still calls `settle_session_finish`, so cancellation wins before paste.
+
 An empty correction skips transformation and follows the same resume path as a spoken correction. A correction started during dictation resumes with the preserved annotation, including edits made while holding the key; a correction of a ready buffer leaves it ready. The key release publishes resume intent before queuing completion. The `ResumingDictation` guard covers finishing the correction, applying it, and connecting the replacement dictation session, and clears pending capture even if the correction connection failed. Audio play and deferred rebuild decisions use `is_capturing_audio`, including this guard, so `mic.always_on = false` does not pause capture during a resume.
 
 The default correction shortcut is `Alt+Cmd` (Option+Command), represented by `CorrectionBinding::Modifiers` without a primary key. Either side and press order work; correction ends when native release flags show either required modifier group is no longer held. Releasing one side while the other side of the same modifier remains held keeps correction active. Settings captures modifier-only correction chords on release. Explicit single-key bindings remain supported, and record and transform hotkeys retain their primary-key model.
@@ -59,6 +61,7 @@ The status poll compares `deepgram_waiting` as part of `UiSnapshot`. Recording a
 - `src/transcription/session.rs` tests terminal metadata without EOF, incomplete disconnection, final audio draining, cancellation during finishing, runtime transport teardown after cancellation and timeout, and dropping a quiet session.
 - Its keyboard-edit regressions cover finalized-word edits, interim-word revisions, and partial final results. `src/state.rs` covers stale rendered text, successive edits, and provisional offsets; `src/text_edit.rs` covers replacements, deletion, simultaneous additions, punctuation, and Unicode.
 - `src/transcription/mod.rs` tests cancellation state and annotation ownership. `src/app/mod.rs` tests status polling and title changes, including a dismissed overlay.
+- Manual-transform reuse tests count polled requests across manual completion, resumed capture separators, and F5 completion. `src/transcription/transformation_history.rs` covers new speech, keyboard edits, repeated explicit transforms, fresh dictations, failed manual requests, and cancellation of a reused result.
 - Correction regressions cover an empty request with no LLM configured, retaining keyboard edits, resuming dictation or retaining a ready buffer, and clearing queued capture after connection failure. Hotkey tests cover Option+Command in either press/release order and on either side, single-key bindings, Command shortcuts, Settings capture, conflicts, and resume intent before the worker runs; audio tests cover pause decisions through correction and resume.
 - Settings shortcut regressions cover the native comma event and binding round trip, overlay visibility and modifiers, cleared held actions, empty-buffer cancellation, a quiet transformation, and cancellation racing completion or an error.
 - `--overlay-snapshot` captures live and finishing notices over light and dark backdrops. The overlay skill's `references/findings.md` records native geometry and selection measurements.

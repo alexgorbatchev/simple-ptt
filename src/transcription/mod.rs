@@ -2,6 +2,7 @@ pub mod clipboard;
 pub mod session;
 mod progress;
 pub mod text_builder;
+mod transformation_history;
 
 pub use clipboard::*;
 pub use session::*;
@@ -23,6 +24,7 @@ use crate::state::{
 use crate::transformation::{
     transform_text, TransformationPreviewMode, TransformationRuntimeConfig,
 };
+use transformation_history::TransformationHistory;
 
 const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
@@ -155,6 +157,7 @@ pub fn spawn_transcription_thread(
         let mut recording_prefix = String::new();
         let mut buffered_text = String::new();
         let mut resume_after_correction = false;
+        let mut transformation_history = TransformationHistory::default();
 
         while let Ok(command) = command_rx.recv() {
             match command {
@@ -173,6 +176,7 @@ pub fn spawn_transcription_thread(
                     }
 
                     recording_prefix = requested_prefix;
+                    transformation_history.begin_dictation(&recording_prefix);
 
                     let current_config = config_store.current();
                     let deepgram_config = match resolved_deepgram_config(&current_config) {
@@ -604,16 +608,23 @@ pub fn spawn_transcription_thread(
                                     };
 
                                 if let Some(transformation_config) = transformation_config {
-                                    state.set_state(STATE_TRANSFORMING);
-                                    match runtime.block_on(finish_transformation(&state, transform_text(
-                                        state.clone(),
-                                        &transformation_config,
+                                    match runtime.block_on(transformation_history.finish_automatic(
+                                        &state,
                                         &buffered_text,
-                                        TransformationPreviewMode::PreserveOverlay,
-                                    ))) {
+                                        async {
+                                            state.set_state(STATE_TRANSFORMING);
+                                            transform_text(
+                                                state.clone(),
+                                                &transformation_config,
+                                                &buffered_text,
+                                                TransformationPreviewMode::PreserveOverlay,
+                                            )
+                                            .await
+                                        },
+                                    )) {
                                         Ok(Some(transformed_text)) => {
                                             log::info!(
-                                                "transformation completed: chars={}",
+                                                "transcript ready for paste: chars={}",
                                                 transformed_text.chars().count()
                                             );
                                             buffered_text = transformed_text;
@@ -695,12 +706,15 @@ pub fn spawn_transcription_thread(
 
                                 if let Some(transformation_config) = transformation_config {
                                     state.set_state(STATE_TRANSFORMING);
-                                    match runtime.block_on(finish_transformation(&state, transform_text(
-                                        state.clone(),
-                                        &transformation_config,
-                                        &buffered_text,
-                                        TransformationPreviewMode::ReplaceOverlay,
-                                    ))) {
+                                    match runtime.block_on(transformation_history.finish_manual(
+                                        &state,
+                                        transform_text(
+                                            state.clone(),
+                                            &transformation_config,
+                                            &buffered_text,
+                                            TransformationPreviewMode::ReplaceOverlay,
+                                        ),
+                                    )) {
                                         Ok(Some(transformed_text)) => {
                                             log::info!(
                                                 "transformation completed: chars={}",
@@ -801,12 +815,15 @@ pub fn spawn_transcription_thread(
                         }
                     };
 
-                    match runtime.block_on(finish_transformation(&state, transform_text(
-                        state.clone(),
-                        &transformation_config,
-                        &buffered_text,
-                        TransformationPreviewMode::ReplaceOverlay,
-                    ))) {
+                    match runtime.block_on(transformation_history.finish_manual(
+                        &state,
+                        transform_text(
+                            state.clone(),
+                            &transformation_config,
+                            &buffered_text,
+                            TransformationPreviewMode::ReplaceOverlay,
+                        ),
+                    )) {
                         Ok(Some(transformed_text)) => {
                             log::info!(
                                 "transformation completed: chars={}",
@@ -1014,6 +1031,41 @@ impl Drop for ResumingDictation<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_transform_is_not_repeated_when_pasting_unchanged_text() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let state = crate::state::AppState::new();
+        let requests = std::cell::Cell::new(0);
+        let mut history = super::TransformationHistory::default();
+
+        let transformed = runtime
+            .block_on(history.finish_manual(&state, async {
+                requests.set(requests.get() + 1);
+                Ok("The cleaned transcript.".to_owned())
+            }))
+            .unwrap()
+            .unwrap();
+        // The resumed session adds its normal separator, with no new speech.
+        let final_transcript = super::join_transcript_parts(&transformed, &[]);
+        state.set_state(crate::state::STATE_PROCESSING);
+        let pasted = runtime
+            .block_on(history.finish_automatic(&state, &final_transcript, async {
+                state.set_state(crate::state::STATE_TRANSFORMING);
+                requests.set(requests.get() + 1);
+                Ok(final_transcript.clone())
+            }))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(pasted.trim(), transformed);
+        assert_eq!(
+            requests.get(),
+            1,
+            "F5 must reuse the unchanged manual result"
+        );
+        assert_eq!(state.get_state(), crate::state::STATE_PROCESSING);
+    }
+
     #[test]
     fn settings_cancellation_interrupts_a_quiet_transformation() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
