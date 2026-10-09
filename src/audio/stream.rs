@@ -4,7 +4,7 @@ use cpal::{
     SupportedStreamConfigRange,
 };
 use objc2_quartz_core::CACurrentMediaTime;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -13,6 +13,7 @@ use crate::state::{AppState, SpectrumFrame};
 use crate::transcription::TranscriptionController;
 
 use super::spectrum::SpectrumAnalyzer;
+use super::stream_activity::StreamActivity;
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
     smooth_meter_value,
@@ -23,7 +24,7 @@ pub struct InputStreamHandle {
     pub sample_rate: u32,
     pub device: cpal::Device,
     pub healthy: Arc<AtomicBool>,
-    pub last_callback_millis: Arc<AtomicU64>,
+    pub(super) activity: Arc<StreamActivity>,
 }
 
 pub fn build_input_stream(
@@ -48,7 +49,7 @@ pub fn build_input_stream(
     );
 
     let healthy = Arc::new(AtomicBool::new(true));
-    let last_callback_millis = Arc::new(AtomicU64::new(0));
+    let activity = Arc::new(StreamActivity::new(Instant::now()));
 
     let stream = match config.sample_format() {
         SampleFormat::F32 => build_stream_for_format::<f32>(
@@ -58,7 +59,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_millis.clone(),
+            activity.clone(),
         )?,
         SampleFormat::I16 => build_stream_for_format::<i16>(
             &device,
@@ -67,7 +68,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_millis.clone(),
+            activity.clone(),
         )?,
         SampleFormat::U16 => build_stream_for_format::<u16>(
             &device,
@@ -76,7 +77,7 @@ pub fn build_input_stream(
             controller,
             config_store,
             healthy.clone(),
-            last_callback_millis.clone(),
+            activity.clone(),
         )?,
         sample_format => {
             return Err(format!(
@@ -86,9 +87,11 @@ pub fn build_input_stream(
         }
     };
 
+    let play_requested_at = Instant::now();
     stream
         .play()
         .map_err(|error| format!("failed to start audio stream: {}", error))?;
+    activity.set_playing_at(true, play_requested_at);
     log::info!("audio capture started ({}Hz, {} ch)", actual_rate, channels);
 
     Ok(InputStreamHandle {
@@ -96,7 +99,7 @@ pub fn build_input_stream(
         sample_rate: actual_rate,
         device,
         healthy,
-        last_callback_millis,
+        activity,
     })
 }
 
@@ -171,7 +174,7 @@ fn build_stream_for_format<T>(
     controller: TranscriptionController,
     config_store: LiveConfigStore,
     healthy: Arc<AtomicBool>,
-    last_callback_millis: Arc<AtomicU64>,
+    activity: Arc<StreamActivity>,
 ) -> Result<Stream, String>
 where
     T: Sample + SizedSample + Send + 'static,
@@ -187,22 +190,17 @@ where
     let meter_state = Arc::clone(&state);
     let error_state = Arc::clone(&state);
     let stream_healthy = Arc::clone(&healthy);
-    let callback_last_millis = Arc::clone(&last_callback_millis);
+    let callback_activity = Arc::clone(&activity);
     let mut smoothed_level = 0.0f32;
     let mut smoothed_peak = 0.0f32;
     let mut was_capturing = false;
     let mut pcm_buffer = bytes::BytesMut::with_capacity(65536);
 
-    static PROCESS_START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
-
     device
         .build_input_stream(
             stream_config,
             move |data: &[T], _info: &cpal::InputCallbackInfo| {
-                callback_last_millis.store(
-                    PROCESS_START.elapsed().as_millis() as u64,
-                    Ordering::Relaxed,
-                );
+                callback_activity.record_callback_at(Instant::now());
                 let route = audio_route(&meter_state);
                 if route == AudioRoute::Idle {
                     if was_capturing {

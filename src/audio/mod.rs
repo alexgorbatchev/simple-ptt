@@ -1,5 +1,7 @@
 pub mod devices;
+mod device_changes;
 mod input_choice;
+mod stream_activity;
 mod spectrum;
 pub use spectrum::SpectrumAnalyzer;
 pub mod stream;
@@ -7,6 +9,7 @@ pub mod stream;
 pub use devices::*;
 pub use input_choice::{MICROPHONE_LOST_MESSAGE, NO_MICROPHONE_MESSAGE};
 use input_choice::{device_uid, BuiltInPreference};
+use stream_activity::StreamActivity;
 pub use stream::*;
 
 use cpal::traits::{HostTrait, StreamTrait};
@@ -17,6 +20,9 @@ use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
 static REGISTER_LISTENER: Once = Once::new();
+
+#[cfg(target_os = "macos")]
+static DEVICE_CHANGES: device_changes::DeviceChanges = device_changes::DeviceChanges::new();
 
 use crate::config::MicConfig;
 use crate::settings::LiveConfigStore;
@@ -43,6 +49,8 @@ pub struct AudioController {
     /// Whether the built-in microphone stands in for a device that
     /// disappeared.
     built_in_preference: Mutex<BuiltInPreference>,
+    #[cfg(target_os = "macos")]
+    hardware_generation: AtomicU64,
 }
 
 struct ActiveAudioStream {
@@ -54,7 +62,7 @@ struct ActiveAudioStream {
     requested_sample_rate: u32,
     _stream: Stream,
     healthy: Arc<AtomicBool>,
-    last_callback_millis: Arc<AtomicU64>,
+    activity: Arc<StreamActivity>,
 }
 
 impl ActiveAudioStream {
@@ -66,7 +74,7 @@ impl ActiveAudioStream {
             requested_sample_rate: mic_config.sample_rate,
             _stream: handle.stream,
             healthy: handle.healthy,
-            last_callback_millis: handle.last_callback_millis,
+            activity: handle.activity,
         }
     }
 }
@@ -118,6 +126,8 @@ impl AudioController {
             last_rebuild_attempt: Mutex::new(None),
             preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
             built_in_preference: Mutex::new(BuiltInPreference::default()),
+            #[cfg(target_os = "macos")]
+            hardware_generation: AtomicU64::new(DEVICE_CHANGES.generation()),
         }
     }
 
@@ -131,6 +141,8 @@ impl AudioController {
             core_audio_listener::register_hardware_listeners();
         });
 
+        #[cfg(target_os = "macos")]
+        let hardware_generation = DEVICE_CHANGES.generation();
         let mic_config = config_store.current().mic;
         let built = build_input_stream(
             state.clone(),
@@ -161,6 +173,8 @@ impl AudioController {
                 last_rebuild_attempt: Mutex::new(None),
                 preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
                 built_in_preference: Mutex::new(BuiltInPreference::default()),
+                #[cfg(target_os = "macos")]
+                hardware_generation: AtomicU64::new(hardware_generation),
             },
             startup_error,
         )
@@ -209,33 +223,20 @@ impl AudioController {
             return true;
         }
 
-        let is_recording = self.state.is_recording();
-        let is_preview = self.state.is_settings_window_visible();
-        let should_play = mic_config.always_on || is_recording || is_preview;
-        if should_play {
-            let last_ms = active.last_callback_millis.load(Ordering::Relaxed);
-            if last_ms > 0 {
-                static PROCESS_START: std::sync::LazyLock<Instant> =
-                    std::sync::LazyLock::new(Instant::now);
-                let now_ms = PROCESS_START.elapsed().as_millis() as u64;
-                if now_ms.saturating_sub(last_ms) > STREAM_STALL_TIMEOUT.as_millis() as u64 {
-                    log::warn!(
-                        "audio stream stalled (no audio callbacks for >1.5s); marking unhealthy"
-                    );
-                    active.healthy.store(false, Ordering::SeqCst);
-                    return true;
-                }
-            }
+        if active.activity.is_stalled_at(Instant::now()) {
+            active.healthy.store(false, Ordering::SeqCst);
+            return true;
         }
 
         #[cfg(target_os = "macos")]
-        let hardware_changed = core_audio_listener::HARDWARE_CHANGED.load(Ordering::SeqCst);
+        let hardware_changed =
+            DEVICE_CHANGES.has_changed_since(self.hardware_generation.load(Ordering::SeqCst));
         #[cfg(not(target_os = "macos"))]
         let hardware_changed = false;
 
         // A device appearing or disappearing, or the default input changing,
         // is the moment to choose again: a named device that reconnects, or
-        // a new default, is taken then (Core Audio's listener sets the flag).
+        // a new default, is taken then (Core Audio's listener advances the generation).
         if hardware_changed {
             return true;
         }
@@ -305,16 +306,37 @@ impl AudioController {
 
         if let Some(active) = active_stream.as_mut() {
             if should_play {
+                let play_requested_at = Instant::now();
                 if let Err(error) = active._stream.play() {
                     log::error!("failed to play audio stream: {}", error);
                     active.healthy.store(false, Ordering::SeqCst);
+                } else {
+                    active.activity.set_playing_at(true, play_requested_at);
                 }
             } else {
                 if let Err(error) = active._stream.pause() {
                     log::error!("failed to pause audio stream: {}", error);
                     active.healthy.store(false, Ordering::SeqCst);
+                } else {
+                    active.activity.set_playing_at(false, Instant::now());
                 }
             }
+            if active.activity.is_stalled_at(Instant::now()) {
+                log::warn!("audio stream stalled (no audio callbacks for >1.5s); marking unhealthy");
+                active.healthy.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let healthy = active_stream
+            .as_ref()
+            .is_some_and(|active| active.healthy.load(Ordering::SeqCst));
+        drop(active_stream);
+        if !healthy && self.state.is_recording() {
+            // Leave recording before idle recovery rebuilds the stream: a new
+            // input may require a different transcription sample rate.
+            self.state.report_error(
+                "Audio capture stopped. Press the record shortcut to keep dictating.",
+            );
         }
     }
 
@@ -365,6 +387,8 @@ impl AudioController {
     }
 
     fn rebuild_stream(&self, mic_config: &MicConfig) -> Result<(), String> {
+        #[cfg(target_os = "macos")]
+        let hardware_generation = DEVICE_CHANGES.generation();
         let prefer_built_in = self.update_built_in_preference(mic_config);
         let built = build_input_stream(
             self.state.clone(),
@@ -376,15 +400,14 @@ impl AudioController {
         self.state.set_microphone_available(microphone_found(&built));
         let handle = built?;
 
-        #[cfg(target_os = "macos")]
-        core_audio_listener::HARDWARE_CHANGED.store(false, Ordering::SeqCst);
-
         self.transcription_controller.set_sample_rate(handle.sample_rate);
         let mut active_stream = self
             .active_stream
             .lock()
             .map_err(|_| "audio stream lock poisoned".to_owned())?;
         *active_stream = Some(ActiveAudioStream::new(handle, mic_config));
+        #[cfg(target_os = "macos")]
+        self.hardware_generation.store(hardware_generation, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -668,6 +691,32 @@ mod tests {
     }
 
     #[test]
+    fn missing_stream_interrupts_recording_without_discarding_the_transcript() {
+        let state = crate::state::AppState::new();
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from(".tmp/audio-reconnect/config.toml"),
+        );
+        let controller = AudioController::inactive(
+            state.clone(),
+            crate::transcription::TranscriptionController::without_worker(),
+            config_store,
+        );
+        state.set_overlay_text("words captured before disconnecting".to_owned());
+        state.set_state(crate::state::STATE_RECORDING);
+
+        controller.sync_stream_state();
+
+        assert!(!state.is_recording());
+        assert_eq!(state.get_state(), crate::state::STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "words captured before disconnecting");
+        assert!(!state.overlay_error_text().is_empty());
+        assert!(controller.should_rebuild_stream());
+    }
+
+    #[test]
     fn config_change_requests_rebuild() {
         let state = crate::state::AppState::new();
         let mut config = crate::config::Config::default();
@@ -717,10 +766,6 @@ mod tests {
 #[cfg(target_os = "macos")]
 #[allow(non_snake_case)]
 mod core_audio_listener {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    pub static HARDWARE_CHANGED: AtomicBool = AtomicBool::new(false);
-
     pub fn register_hardware_listeners() {
         extern "C" {
             fn AudioObjectAddPropertyListener(
@@ -751,7 +796,7 @@ mod core_audio_listener {
             _in_addresses: *const AudioObjectPropertyAddress,
             _in_client_data: *mut std::ffi::c_void,
         ) -> i32 {
-            HARDWARE_CHANGED.store(true, Ordering::SeqCst);
+            super::DEVICE_CHANGES.notify();
             0
         }
 
