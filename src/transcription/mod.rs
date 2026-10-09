@@ -28,7 +28,7 @@ const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
 enum Command {
     SetSampleRate(u32),
-    StartSession,
+    StartSession { recording_prefix: String },
     StartCorrectionSession,
     PushAudio(Bytes),
     StopSessionAndPaste,
@@ -62,9 +62,17 @@ impl TranscriptionController {
         let _ = self.command_tx.send(Command::SetSampleRate(sample_rate));
     }
 
-    pub fn start_session(&self) -> Result<(), String> {
+    pub fn start_session(&self, state: &AppState) -> Result<(), String> {
+        // Capture the editable annotation before the hotkey changes the state
+        // to recording; the worker may receive this command afterwards.
+        let recording_prefix = if state.get_state() == STATE_BUFFER_READY {
+            state.overlay_text().to_string()
+        } else {
+            String::new()
+        };
+        state.set_state(STATE_RECORDING);
         self.command_tx
-            .send(Command::StartSession)
+            .send(Command::StartSession { recording_prefix })
             .map_err(|_| "transcription worker thread is not running".to_owned())
     }
 
@@ -153,7 +161,7 @@ pub fn spawn_transcription_thread(
                 Command::SetSampleRate(sample_rate) => {
                     thread_worker_sample_rate.store(sample_rate, Ordering::Relaxed);
                 }
-                Command::StartSession => {
+                Command::StartSession { recording_prefix: requested_prefix } => {
                     if let Some(old_session) = active_session.take() {
                         log::info!("cleaning up previous active session before starting new session");
                         if matches!(finish_session(old_session, &state), Ok(None)) {
@@ -164,11 +172,7 @@ pub fn spawn_transcription_thread(
                         }
                     }
 
-                    if state.get_state() == STATE_BUFFER_READY {
-                        recording_prefix = buffered_text.clone();
-                    } else {
-                        recording_prefix.clear();
-                    }
+                    recording_prefix = requested_prefix;
 
                     let current_config = config_store.current();
                     let deepgram_config = match resolved_deepgram_config(&current_config) {
@@ -478,6 +482,10 @@ pub fn spawn_transcription_thread(
                     let should_resume_after_correction = resume_after_correction;
                     resume_after_correction = false;
 
+                    // Also clear the hotkey's pending resume intent if the
+                    // correction connection failed and there is no session.
+                    let _resuming =
+                        ResumingDictation::new(&state, should_resume_after_correction);
                     if let Some(session) = active_session.take() {
                         let correction_request = match finish_session(session, &state) {
                             Ok(None) => {
@@ -498,120 +506,57 @@ pub fn spawn_transcription_thread(
                             }
                         };
 
-                        state.set_overlay_correction_active(false);
-                        state.clear_overlay_correction_text();
-
-                        if correction_request.trim().is_empty() {
-                            log::info!("ignoring empty correction request");
-                            state.set_overlay_text(buffered_text.clone());
-                            state.set_overlay_text_opacity(1.0);
-                            state.set_state(STATE_BUFFER_READY);
-                            continue;
-                        }
-
-                        if state.consume_abort_request() {
-                            log::info!("discarding correction transformation because abort was requested");
-                            state.set_overlay_text(buffered_text.clone());
-                            state.set_overlay_text_opacity(1.0);
-                            state.set_state(STATE_BUFFER_READY);
-                            continue;
-                        }
-
                         let current_config = config_store.current();
-                        let transformation_config =
-                            match resolve_transformation_config(&current_config) {
-                                Ok(config) => config,
-                                Err(error) => {
-                                    log::error!(
-                                        "failed to resolve transformation config for correction: {}",
-                                        error
-                                    );
-                                    state.set_overlay_text(buffered_text.clone());
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.report_error(error.to_string());
-                                    continue;
-                                }
-                            };
-
-                        // Dictation that resumes after the correction keeps
-                        // capturing while it is applied; its audio waits in
-                        // this worker's queue for the resumed session.
-                        let _resuming =
-                            ResumingDictation::new(&state, should_resume_after_correction);
-                        state.set_state(STATE_TRANSFORMING);
-                        let correction_config =
-                            transformation_correction_runtime_config(&transformation_config);
-                        let prompt_input = build_correction_transform_input(
-                            buffered_text.as_str(),
-                            correction_request.as_str(),
-                        );
-
-                        match runtime.block_on(transform_text(
-                            state.clone(),
-                            &correction_config,
-                            &prompt_input,
-                            TransformationPreviewMode::ReplaceOverlay,
-                        )) {
-                            Ok(transformed_text) => {
-                                log::info!(
-                                    "correction transformation completed: chars={}",
-                                    transformed_text.chars().count()
-                                );
-                                buffered_text = transformed_text;
-                                state.set_overlay_text(buffered_text.clone());
-                                state.set_overlay_text_opacity(1.0);
-
-                                if should_resume_after_correction {
-                                    recording_prefix = buffered_text.clone();
-                                    if !recording_prefix.is_empty()
-                                        && !recording_prefix.ends_with(|c: char| c.is_whitespace())
-                                    {
-                                        recording_prefix.push(' ');
-                                    }
-                                    state.set_overlay_text(recording_prefix.clone());
-
-                                    let current_sample_rate =
-                                        thread_worker_sample_rate.load(Ordering::Relaxed);
-                                    let deepgram_config =
-                                        match resolved_deepgram_config(&current_config) {
-                                            Ok(config) => config,
-                                            Err(error) => {
-                                                log::error!(
-                                                    "failed to resolve Deepgram config for resume after correction: {}",
-                                                    error
-                                                );
-                                                state.set_state(STATE_BUFFER_READY);
-                                                state.report_error(error.to_string());
-                                                continue;
-                                            }
-                                        };
-
-                                    match start_session(
-                                        state.clone(),
-                                        &deepgram_config,
-                                        current_sample_rate,
-                                        SessionKind::Dictation,
-                                        recording_prefix.clone(),
-                                    ) {
-                                        Ok(session) => {
-                                            state.set_state(STATE_RECORDING);
-                                            active_session = Some(session);
-                                        }
-                                        Err(SessionError::Cancelled) => {
-                                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
-                                        }
+                        match apply_correction_request(
+                            &runtime,
+                            &state,
+                            &current_config,
+                            &mut buffered_text,
+                            &correction_request,
+                            should_resume_after_correction,
+                        ) {
+                            Ok(Some(prefix)) => {
+                                recording_prefix = prefix;
+                                let current_sample_rate =
+                                    thread_worker_sample_rate.load(Ordering::Relaxed);
+                                let deepgram_config =
+                                    match resolved_deepgram_config(&current_config) {
+                                        Ok(config) => config,
                                         Err(error) => {
                                             log::error!(
-                                                "failed to resume session after correction: {}",
+                                                "failed to resolve Deepgram config for resume after correction: {}",
                                                 error
                                             );
+                                            state.set_state(STATE_BUFFER_READY);
                                             state.report_error(error.to_string());
+                                            continue;
                                         }
+                                    };
+
+                                match start_session(
+                                    state.clone(),
+                                    &deepgram_config,
+                                    current_sample_rate,
+                                    SessionKind::Dictation,
+                                    recording_prefix.clone(),
+                                ) {
+                                    Ok(session) => {
+                                        state.set_state(STATE_RECORDING);
+                                        active_session = Some(session);
                                     }
-                                } else {
-                                    state.set_state(STATE_BUFFER_READY);
+                                    Err(SessionError::Cancelled) => {
+                                        complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                                    }
+                                    Err(error) => {
+                                        log::error!(
+                                            "failed to resume session after correction: {}",
+                                            error
+                                        );
+                                        state.report_error(error.to_string());
+                                    }
                                 }
                             }
+                            Ok(None) => {}
                             Err(error) => {
                                 log::error!("correction transformation failed: {}", error);
                                 state.set_overlay_text(buffered_text.clone());
@@ -891,6 +836,58 @@ pub fn spawn_transcription_thread(
     TranscriptionController { command_tx }
 }
 
+/// Apply spoken changes, if any, then prepare the original dictation to
+/// resume. `None` leaves the annotation buffered without starting a session.
+fn apply_correction_request(
+    runtime: &Runtime,
+    state: &Arc<AppState>,
+    config: &Config,
+    buffered_text: &mut String,
+    correction_request: &str,
+    resume_dictation: bool,
+) -> Result<Option<String>, String> {
+    state.set_overlay_correction_active(false);
+    state.clear_overlay_correction_text();
+    if state.consume_abort_request() {
+        state.set_overlay_text(buffered_text.clone());
+        state.set_overlay_text_opacity(1.0);
+        state.set_state(STATE_BUFFER_READY);
+        return Ok(None);
+    }
+
+    // Only the correction field received speech while the key was held.
+    // The annotation may have received keyboard edits since its checkpoint.
+    *buffered_text = state.overlay_text().to_string();
+    if correction_request.trim().is_empty() {
+        log::info!("ignoring empty correction request");
+    } else {
+        let transformation_config = resolve_transformation_config(config)?;
+        let correction_config = transformation_correction_runtime_config(&transformation_config);
+        let prompt_input = build_correction_transform_input(buffered_text, correction_request);
+        state.set_state(STATE_TRANSFORMING);
+        *buffered_text = runtime.block_on(transform_text(
+            state.clone(),
+            &correction_config,
+            &prompt_input,
+            TransformationPreviewMode::ReplaceOverlay,
+        ))?;
+    }
+
+    state.set_overlay_text(buffered_text.clone());
+    state.set_overlay_text_opacity(1.0);
+    if resume_dictation {
+        let mut prefix = buffered_text.clone();
+        if !prefix.is_empty() && !prefix.ends_with(|c: char| c.is_whitespace()) {
+            prefix.push(' ');
+        }
+        state.set_overlay_text(prefix.clone());
+        Ok(Some(prefix))
+    } else {
+        state.set_state(STATE_BUFFER_READY);
+        Ok(None)
+    }
+}
+
 /// Settle cancellation before any caller can paste, transform, or resume.
 /// `None` means the recording was discarded, not an empty transcript.
 fn finish_session(session: ActiveSession, state: &AppState) -> Result<Option<String>, String> {
@@ -984,6 +981,88 @@ impl Drop for ResumingDictation<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resuming_dictation_captures_the_editable_annotation_before_the_state_changes() {
+        let state = crate::state::AppState::new();
+        state.set_overlay_text("The annotation, including keyboard edits.");
+        state.set_state(crate::state::STATE_BUFFER_READY);
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        let controller = super::TranscriptionController { command_tx };
+
+        controller.start_session(&state).unwrap();
+        state.set_state(crate::state::STATE_RECORDING);
+        state.set_overlay_text("A later UI update");
+
+        let super::Command::StartSession { recording_prefix } = command_rx.recv().unwrap() else {
+            panic!("expected a dictation start");
+        };
+        assert_eq!(recording_prefix, "The annotation, including keyboard edits.");
+    }
+
+    #[test]
+    fn an_empty_correction_resumes_dictation_without_requiring_an_llm() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for request in ["", " \n\t "] {
+            let state = crate::state::AppState::new();
+            state.set_state(crate::state::STATE_PROCESSING);
+            state.set_overlay_correction_active(true);
+            state.set_overlay_correction_text("provisional correction");
+            state.set_overlay_text_opacity(0.25);
+            let mut annotation = "Keep the entire narration.".to_owned();
+            state.set_overlay_text(annotation.clone());
+            let _resuming = super::ResumingDictation::new(&state, true);
+
+            let prefix = super::apply_correction_request(
+                &runtime, &state, &crate::config::Config::default(),
+                &mut annotation, request, true,
+            ).unwrap();
+
+            assert_eq!(prefix, Some("Keep the entire narration. ".to_owned()));
+            assert_eq!(&*state.overlay_text(), "Keep the entire narration. ");
+            assert!(state.is_capturing_audio());
+            assert!(!state.is_overlay_correction_active());
+            assert!(state.overlay_correction_text().is_empty());
+            assert_eq!(state.overlay_text_opacity(), 1.0);
+            assert!(state.overlay_error_text().is_empty());
+        }
+    }
+
+    #[test]
+    fn an_empty_correction_of_a_buffer_preserves_it_without_starting_dictation() {
+        let state = crate::state::AppState::new();
+        state.set_state(crate::state::STATE_PROCESSING);
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut annotation = "A buffered annotation.".to_owned();
+        state.set_overlay_text(annotation.clone());
+
+        assert_eq!(super::apply_correction_request(
+            &runtime, &state, &crate::config::Config::default(),
+            &mut annotation, "", false,
+        ).unwrap(), None);
+
+        assert_eq!(state.get_state(), crate::state::STATE_BUFFER_READY);
+        assert_eq!(&*state.overlay_text(), "A buffered annotation.");
+        assert!(!state.is_capturing_audio());
+    }
+
+    #[test]
+    fn an_empty_correction_preserves_edits_made_while_the_key_was_held() {
+        let state = crate::state::AppState::new();
+        state.set_state(crate::state::STATE_PROCESSING);
+        state.set_overlay_text("The edited narration.");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let mut annotation = "The earlier narration.".to_owned();
+
+        let prefix = super::apply_correction_request(
+            &runtime, &state, &crate::config::Config::default(),
+            &mut annotation, "", true,
+        ).unwrap();
+
+        assert_eq!(prefix, Some("The edited narration. ".to_owned()));
+        assert_eq!(annotation, "The edited narration.");
+        assert_eq!(&*state.overlay_text(), "The edited narration. ");
+    }
+
     #[test]
     fn cancelling_a_dictation_connection_returns_to_idle_without_reopening_the_overlay() {
         use crate::state::{AppState, STATE_IDLE, STATE_PROCESSING};
@@ -1110,7 +1189,7 @@ mod tests {
         let state = AppState::new();
         state.set_state(STATE_RECORDING);
         state.request_abort();
-        worker(&state).start_session().unwrap();
+        worker(&state).start_session(&state).unwrap();
 
         wait_for_state(&state, STATE_IDLE);
         // Left set, it would skip every later start as well.
@@ -1129,5 +1208,22 @@ mod tests {
 
         wait_for_state(&state, STATE_BUFFER_READY);
         assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn a_queued_correction_finish_clears_capture_when_the_connection_failed() {
+        let state = crate::state::AppState::new();
+        state.report_error("correction connection failed");
+        state.set_overlay_text("Keep the annotation");
+        state.set_dictation_resuming(true);
+        worker(&state).stop_correction_session_and_apply().unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while state.is_capturing_audio() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(!state.is_capturing_audio());
+        assert_eq!(state.get_state(), crate::state::STATE_ERROR);
+        assert_eq!(&*state.overlay_text(), "Keep the annotation");
     }
 }

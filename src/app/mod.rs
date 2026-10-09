@@ -1972,7 +1972,7 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<Hold Cmd> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Alt> correction <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
@@ -2004,7 +2004,7 @@ mod tests {
 
         assert_eq!(
             style.shortcut_hint.as_deref(),
-            Some("<Hold Cmd> correction <F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
+            Some("<Hold Alt> correction <F6> transform <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
@@ -2025,6 +2025,7 @@ mod tests {
     fn validate_settings_rejects_correction_key_that_overlaps_record_hotkey() {
         let mut config = Config::default();
         config.ui.hotkey = "Cmd+F5".to_owned();
+        config.ui.correction_key = "LeftMeta".to_owned();
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),

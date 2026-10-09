@@ -272,7 +272,7 @@ impl AudioController {
             return Ok(AudioConfigApplyEffect::AppliedNow);
         }
 
-        if self.state.is_recording() {
+        if self.state.is_capturing_audio() {
             if let Ok(mut pending_config) = self.pending_config.lock() {
                 *pending_config = Some(mic_config.clone());
             }
@@ -295,9 +295,7 @@ impl AudioController {
 
     pub fn sync_stream_state(&self) {
         let mic_config = self.effective_mic_config();
-        let is_recording = self.state.is_recording();
-        let is_preview = self.state.is_settings_window_visible();
-        let should_play = mic_config.always_on || is_recording || is_preview;
+        let should_play = stream_should_play(mic_config.always_on, &self.state);
 
         let mut active_stream = match self.active_stream.lock() {
             Ok(guard) => guard,
@@ -341,7 +339,7 @@ impl AudioController {
     }
 
     pub fn apply_pending_if_idle(&self) {
-        if self.state.is_recording() {
+        if self.state.is_capturing_audio() {
             return;
         }
 
@@ -442,6 +440,10 @@ impl AudioController {
     }
 }
 
+fn stream_should_play(always_on: bool, state: &AppState) -> bool {
+    always_on || state.is_capturing_audio() || state.is_settings_window_visible()
+}
+
 /// Whether building a stream found a microphone: anything but the no
 /// microphone error counts, so another failure is reported as itself.
 fn microphone_found<T>(built: &Result<T, String>) -> bool {
@@ -457,6 +459,23 @@ mod tests {
         InputDeviceDescriptor, StreamErrorResponse,
     };
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+
+    #[test]
+    fn a_paused_microphone_keeps_playing_through_correction_and_dictation_resume() {
+        let state = crate::state::AppState::new();
+        assert!(!super::stream_should_play(false, &state));
+        state.set_state(crate::state::STATE_RECORDING);
+        assert!(super::stream_should_play(false, &state));
+        state.set_dictation_resuming(true);
+        state.set_state(crate::state::STATE_PROCESSING);
+        assert!(super::stream_should_play(false, &state));
+        state.set_state(crate::state::STATE_TRANSFORMING);
+        assert!(super::stream_should_play(false, &state));
+        state.set_dictation_resuming(false);
+        assert!(!super::stream_should_play(false, &state));
+        state.set_settings_window_visible(true);
+        assert!(super::stream_should_play(false, &state));
+    }
 
     #[test]
     fn stream_errors_that_keep_the_stream_running_are_ignored() {

@@ -19,9 +19,10 @@ hotkey = "F5"
 
 # Single key used for correction. Hold this while dictating or while a
 # buffered annotation is visible to speak a correction request for the current text.
-# Use a specific supported key name such as LeftMeta, RightMeta, LeftAlt, RightAlt,
-# Escape, or F7. The Settings window capture button is the easiest way to set it.
-correction_key = "LeftMeta"
+# Left Alt (Option on macOS) leaves Command available for Cmd+C and Cmd+V.
+# Other supported keys include RightAlt, F7, LeftMeta, and RightMeta.
+# Use Settings to capture a key.
+correction_key = "LeftAlt"
 
 # Optional. Overlay font family. Omit to use the monospaced system font.
 # font_name = "Menlo"

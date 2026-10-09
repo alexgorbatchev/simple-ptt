@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-03 09:21
-last_modified: 2026-10-07 12:49
+last_modified: 2026-10-08 12:47
 status: current
 ---
 
@@ -26,6 +26,10 @@ The transcript reader accepts the final metadata (`TerminalResponse`) as complet
 
 ## Keyboard edits during live narration
 
+Dictation startup captures an owned snapshot of the editable annotation before publishing `STATE_RECORDING` and includes it in the queued start command. The worker uses that recording prefix; it does not infer resume intent from the later state or a stale worker buffer.
+
+An empty correction skips transformation and follows the same resume path as a spoken correction. A correction started during dictation resumes with the preserved annotation, including edits made while holding the key; a correction of a ready buffer leaves it ready. The key release publishes resume intent before queuing completion. The `ResumingDictation` guard covers finishing the correction, applying it, and connecting the replacement dictation session, and clears pending capture even if the correction connection failed. Audio play and deferred rebuild decisions use `is_capturing_audio`, including this guard, so `mic.always_on = false` does not pause capture during a resume.
+
 The session keeps its speech source separate from the editable overlay. `AppState` merges each speech revision with the current text while holding the text lock, using `similar`'s Unicode word differences. Keyboard replacements win where both writers revise the same word; independent additions and punctuation remain intact. The provisional boundary moves with edits so its byte offset still belongs to the displayed text.
 
 `OverlayWindow` keeps the last rendered text as the keyboard edit's baseline. `AppDelegate::text_did_change` publishes through `OverlayWindow::apply_text_edit`, which merges against the latest state rather than overwriting speech received between UI ticks. Editing the overlay does not reset the session's recording prefix or finalized transcript parts.
@@ -49,5 +53,6 @@ The status poll compares `deepgram_waiting` as part of `UiSnapshot`. Recording a
 - `src/transcription/session.rs` tests terminal metadata without EOF, incomplete disconnection, final audio draining, cancellation during finishing, runtime transport teardown after cancellation and timeout, and dropping a quiet session.
 - Its keyboard-edit regressions cover finalized-word edits, interim-word revisions, and partial final results. `src/state.rs` covers stale rendered text, successive edits, and provisional offsets; `src/text_edit.rs` covers replacements, deletion, simultaneous additions, punctuation, and Unicode.
 - `src/transcription/mod.rs` tests cancellation state and annotation ownership. `src/app/mod.rs` tests status polling and title changes, including a dismissed overlay.
+- Correction regressions cover an empty request with no LLM configured, retaining keyboard edits, resuming dictation or retaining a ready buffer, and clearing queued capture after connection failure. Hotkey tests cover the Left Alt default, Command shortcut handling, and resume intent before the worker runs; audio tests cover pause decisions through correction and resume.
 - `--overlay-snapshot` captures live and finishing notices over light and dark backdrops. The overlay skill's `references/findings.md` records native geometry and selection measurements.
 - A native status item using the app's active microphone icon expands from 34 to 96 points when the waiting title is assigned, then returns to 34 points when cleared. A bitmap cached from the native button verifies that the icon and title render together.

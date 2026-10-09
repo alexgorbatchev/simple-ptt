@@ -26,6 +26,12 @@ enum RecordHotkeyAction {
     StopAndTransformAndPaste,
 }
 
+#[derive(Clone, Copy)]
+enum CorrectionOrigin {
+    Dictation,
+    Buffer,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum HotkeyEvent {
     /// A key went down, with the modifiers held as it did (for a modifier
@@ -55,7 +61,7 @@ pub fn spawn_hotkey_thread(
             log::info!("hotkey thread started");
             let press_time: Cell<Option<Instant>> = Cell::new(None);
             let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
-            let correction_key_is_down: Cell<bool> = Cell::new(false);
+            let correction_key_origin: Cell<Option<CorrectionOrigin>> = Cell::new(None);
             let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
             let clipboard_insert_is_down: Cell<bool> = Cell::new(false);
 
@@ -76,7 +82,7 @@ pub fn spawn_hotkey_thread(
                                 &controller,
                                 &press_time,
                                 &record_hotkey_action,
-                                &correction_key_is_down,
+                                &correction_key_origin,
                                 &transform_hotkey_is_down,
                                 &clipboard_insert_is_down,
                             )
@@ -95,7 +101,7 @@ pub fn spawn_hotkey_thread(
                                 &controller,
                                 &press_time,
                                 &record_hotkey_action,
-                                &correction_key_is_down,
+                                &correction_key_origin,
                                 &transform_hotkey_is_down,
                                 &clipboard_insert_is_down,
                             )
@@ -117,7 +123,7 @@ fn handle_key_press(
     controller: &TranscriptionController,
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
-    correction_key_is_down: &Cell<bool>,
+    correction_key_origin: &Cell<Option<CorrectionOrigin>>,
     transform_hotkey_is_down: &Cell<bool>,
     clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
@@ -152,7 +158,7 @@ fn handle_key_press(
         state.set_overlay_text_opacity(1.0);
         press_time.set(None);
         record_hotkey_action.set(None);
-        correction_key_is_down.set(false);
+        correction_key_origin.set(None);
         transform_hotkey_is_down.set(false);
         clipboard_insert_is_down.set(false);
 
@@ -189,19 +195,19 @@ fn handle_key_press(
     }
 
     if hotkey_config.correction_key == Some(key) {
-        if correction_key_is_down.replace(true) {
+        if correction_key_origin.get().is_some() {
             return true;
         }
 
         let current_state = state.get_state();
         if matches!(current_state, STATE_PROCESSING | STATE_TRANSFORMING) {
-            correction_key_is_down.set(false);
+            correction_key_origin.set(None);
             log::info!("ignoring correction while background work is still running");
             return false;
         }
 
         if is_modifier_key(key) && current_modifiers.any() {
-            correction_key_is_down.set(false);
+            correction_key_origin.set(None);
             return false;
         }
 
@@ -209,32 +215,38 @@ fn handle_key_press(
 
         match current_state {
             STATE_RECORDING if state.is_overlay_correction_active() => {
+                correction_key_origin.set(Some(CorrectionOrigin::Dictation));
                 return true;
             }
             STATE_RECORDING | STATE_BUFFER_READY if !has_annotation_text => {
-                correction_key_is_down.set(false);
+                correction_key_origin.set(None);
                 log::info!("ignoring correction because no narrated annotation is available");
                 return false;
             }
             STATE_RECORDING | STATE_BUFFER_READY => {
+                correction_key_origin.set(Some(if current_state == STATE_RECORDING {
+                    CorrectionOrigin::Dictation
+                } else {
+                    CorrectionOrigin::Buffer
+                }));
                 state.restore_overlay();
                 state.set_overlay_correction_active(true);
                 state.clear_overlay_correction_text();
                 state.set_overlay_text_opacity(1.0);
+                state.set_state(STATE_RECORDING);
                 match controller.start_correction_session() {
                     Ok(()) => {
-                        state.set_state(STATE_RECORDING);
                         log::info!("correction recording started");
                     }
                     Err(start_error) => {
-                        correction_key_is_down.set(false);
+                        correction_key_origin.set(None);
                         log::error!("failed to start correction: {}", start_error);
                         state.report_error(start_error.to_string());
                     }
                 }
             }
             _ => {
-                correction_key_is_down.set(false);
+                correction_key_origin.set(None);
                 log::info!("ignoring correction because no buffered annotation is available");
                 return false;
             }
@@ -345,26 +357,29 @@ fn handle_key_release(
     controller: &TranscriptionController,
     press_time: &Cell<Option<Instant>>,
     record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
-    correction_key_is_down: &Cell<bool>,
+    correction_key_origin: &Cell<Option<CorrectionOrigin>>,
     transform_hotkey_is_down: &Cell<bool>,
     clipboard_insert_is_down: &Cell<bool>,
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
 
     if hotkey_config.correction_key == Some(key) {
-        let was_down = correction_key_is_down.replace(false);
-        if !was_down {
+        let Some(origin) = correction_key_origin.replace(None) else {
             return false;
-        }
+        };
 
         if state.is_overlay_correction_active() {
+            // Publish the resume intent before the worker can finish. It
+            // keeps capture active while this command waits in the queue.
+            state.set_dictation_resuming(matches!(origin, CorrectionOrigin::Dictation));
+            state.set_overlay_correction_active(false);
+            state.set_state(STATE_PROCESSING);
             match controller.stop_correction_session_and_apply() {
                 Ok(()) => {
-                    state.set_overlay_correction_active(false);
-                    state.set_state(STATE_PROCESSING);
                     log::info!("stopping correction and applying it");
                 }
                 Err(error) => {
+                    state.set_dictation_resuming(false);
                     log::error!("failed to stop correction: {}", error);
                     state.report_error(error.to_string());
                 }
@@ -547,10 +562,9 @@ fn start_recording(
         state.report_error(NO_MICROPHONE_MESSAGE);
         return None;
     }
-    match controller.start_session() {
+    match controller.start_session(state) {
         Ok(()) => {
             state.restore_overlay();
-            state.set_state(STATE_RECORDING);
             log::info!("recording started");
             Some(RecordHotkeyAction::StartRecording)
         }
@@ -666,7 +680,7 @@ mod tests {
             &controller,
             &Cell::new(None),
             &Cell::new(None),
-            &Cell::new(false),
+            &Cell::new(None),
             &Cell::new(false),
             &Cell::new(false),
         );
@@ -769,6 +783,55 @@ mod tests {
         assert_eq!(parse_correction_key("RightMeta"), Some(Key::MetaRight));
         assert_eq!(parse_correction_key("F7"), Some(Key::F7));
         assert_eq!(parse_correction_key("Cmd"), None);
+    }
+
+    #[test]
+    fn default_correction_leaves_command_shortcuts_available_and_uses_left_alt() {
+        let state = crate::state::AppState::new();
+        state.set_state(crate::state::STATE_RECORDING);
+        state.set_overlay_text("Keep this narration");
+        let config = crate::config::Config::default();
+        let store = crate::settings::LiveConfigStore::new(
+            config.clone(), config,
+            std::path::PathBuf::from(".tmp/correction/config.toml"),
+        );
+        let controller = crate::transcription::TranscriptionController::without_worker();
+        let pressed_at = std::cell::Cell::new(None);
+        let record_action = std::cell::Cell::new(None);
+        let correction_down = std::cell::Cell::new(None);
+        let transform_down = std::cell::Cell::new(false);
+        let clipboard_down = std::cell::Cell::new(false);
+        let press = |key, modifiers| super::handle_key_press(
+            key, modifiers, &store, &state, &controller, &pressed_at,
+            &record_action, &correction_down, &transform_down, &clipboard_down,
+        );
+        let release = |key| super::handle_key_release(
+            key, &store, &state, &controller, &pressed_at,
+            &record_action, &correction_down, &transform_down, &clipboard_down,
+        );
+        let command = HotkeyModifiers { meta: true, ..HotkeyModifiers::default() };
+
+        assert!(!press(Key::MetaLeft, HotkeyModifiers::default()));
+        assert!(!state.is_overlay_correction_active());
+        assert!(!press(Key::KeyC, command));
+        assert!(press(Key::KeyV, command));
+        assert!(clipboard_down.get());
+        assert!(release(Key::KeyV));
+        assert!(!release(Key::MetaLeft));
+        assert!(press(Key::AltLeft, HotkeyModifiers::default()));
+        assert!(state.is_overlay_correction_active());
+        assert!(release(Key::AltLeft));
+        assert!(!state.is_overlay_correction_active());
+        assert_eq!(state.get_state(), crate::state::STATE_PROCESSING);
+        assert!(state.is_capturing_audio());
+        assert_eq!(&*state.overlay_text(), "Keep this narration");
+
+        state.set_dictation_resuming(false);
+        state.set_state(crate::state::STATE_BUFFER_READY);
+        assert!(press(Key::AltLeft, HotkeyModifiers::default()));
+        assert!(release(Key::AltLeft));
+        assert!(!state.is_capturing_audio());
+        assert_eq!(&*state.overlay_text(), "Keep this narration");
     }
 
     #[test]
