@@ -909,13 +909,19 @@ impl AppDelegate {
                 }
             }
             SettingsPresentationStep::RequestActivation => {
-                log::info!(
-                    "requested app activation; Settings opens once macOS activates simple-ptt"
-                );
-                // Request process activation, even if the nonactivating overlay
-                // has already made NSApplication report itself as active.
-                objc2_app_kit::NSRunningApplication::currentApplication()
-                    .activateWithOptions(NSApplicationActivationOptions::empty());
+                let Some(settings_window) = self.ivars().settings_window.get() else {
+                    return;
+                };
+                settings_window.order_front();
+                log::info!("requested app activation for Settings");
+                // This follows an explicit Settings request. On macOS 26.6.2,
+                // activate() leaves the key nonactivating overlay active only
+                // inside AppKit, and NSRunningApplication rejects activation.
+                // Order a regular window first, then request foreground focus.
+                // Keep this public API until its replacement handles that case.
+                #[allow(deprecated)]
+                NSApplication::sharedApplication(MainThreadMarker::from(self))
+                    .activateIgnoringOtherApps(true);
             }
             SettingsPresentationStep::Present => {
                 let Some(settings_window) = self.ivars().settings_window.get() else {

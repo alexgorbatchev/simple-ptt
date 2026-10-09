@@ -4,11 +4,13 @@
 //! will be active immediately after sending this message. The framework also
 //! does not guarantee that the app will be activated at all"
 //! (`NSApplication.h`). A key window in an inactive app does not open
-//! `NSPopUpButton` menus (#16), so the Settings window is ordered front only
-//! once the app is active.
+//! `NSPopUpButton` menus (#16), so Settings takes key focus only after activation.
 //! A key nonactivating overlay can make `NSApplication::isActive` true while
 //! another process is frontmost. Check `NSRunningApplication::isActive` too,
-//! and request activation through that process object before showing Settings.
+//! order Settings front without making it key, then explicitly request foreground
+//! activation. `NSRunningApplication::activateWithOptions` rejects this request
+//! on macOS 26.6.2; the delegate uses `activateIgnoringOtherApps(true)` for the
+//! user's explicit Settings action.
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum SettingsPresentation {
@@ -18,8 +20,8 @@ pub(super) enum SettingsPresentation {
     /// default mode while a menu is tracked, so the turn runs only after the
     /// status item menu that sent "Settings…" has been dismissed.
     AwaitingDefaultModeTurn,
-    /// Activation was requested; the window waits for
-    /// `applicationDidBecomeActive:`.
+    /// The window is ordered front and activation was requested; key focus
+    /// waits for `applicationDidBecomeActive:`.
     AwaitingActivation,
 }
 
@@ -27,7 +29,9 @@ pub(super) enum SettingsPresentation {
 pub(super) enum SettingsPresentationStep {
     Wait,
     ScheduleDefaultModeTurn,
+    /// Order the window front without making it key, then request activation.
     RequestActivation,
+    /// Make Settings key and enable its keyboard handling.
     Present,
 }
 
@@ -45,7 +49,7 @@ impl SettingsPresentation {
     }
 
     /// Runs on the scheduled default-mode turn: an active, frontmost app
-    /// presents at once; otherwise request activation and keep the window hidden.
+    /// focuses Settings at once; otherwise order it front and request activation.
     pub(super) fn default_mode_turn(
         &mut self,
         app_is_active: bool,
@@ -117,7 +121,7 @@ mod tests {
     }
 
     #[test]
-    fn inactive_app_requests_activation_and_does_not_present() {
+    fn inactive_app_requests_activation_without_taking_key_focus() {
         let mut presentation = SettingsPresentation::default();
         presentation.request();
 
@@ -134,6 +138,27 @@ mod tests {
         presentation.request();
         presentation.default_mode_turn(false, false);
 
+        assert_eq!(
+            presentation.app_did_become_active(),
+            SettingsPresentationStep::Present
+        );
+        assert!(!presentation.is_pending());
+    }
+
+    #[test]
+    fn process_activation_before_appkit_still_waits_for_the_activation_callback() {
+        let mut presentation = SettingsPresentation::default();
+        presentation.request();
+
+        assert_eq!(
+            presentation.default_mode_turn(false, true),
+            SettingsPresentationStep::RequestActivation
+        );
+        assert!(presentation.is_awaiting_activation());
+        assert_eq!(
+            presentation.default_mode_turn(false, true),
+            SettingsPresentationStep::Wait
+        );
         assert_eq!(
             presentation.app_did_become_active(),
             SettingsPresentationStep::Present

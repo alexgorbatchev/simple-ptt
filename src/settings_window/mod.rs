@@ -218,22 +218,28 @@ impl SettingsWindow {
         self.window.isVisible()
     }
 
-    /// Orders the window front as the key window. `AppDelegate` calls this
-    /// only while the app is active: a key window in an inactive app does not
-    /// open its pop-up button menus (#16). A window that is already on screen
-    /// keeps its pane and focus: a request that waited for activation can be
-    /// presented by the user's click into that window.
-    pub fn show(&self) {
+    /// Provides a visible activation target without taking key focus from the
+    /// nonactivating narration panel. The delegate focuses it after activation.
+    /// An already visible window keeps its pane and first responder.
+    pub fn order_front(&self) {
         let opening = !self.window.isVisible();
         if opening {
             self.tab_view_controller.setSelectedTabViewItemIndex(0);
         }
-        self.window.makeKeyAndOrderFront(None);
+        self.window.orderFront(None);
         if opening {
             let _ = self
                 .window
                 .makeFirstResponder(Some(&*self.general.hotkey_field));
         }
+    }
+
+    /// Orders the window front as the key window. `AppDelegate` calls this only
+    /// while the app is active: a key window in an inactive app does not open
+    /// its pop-up button menus (#16).
+    pub fn show(&self) {
+        self.order_front();
+        self.window.makeKeyAndOrderFront(None);
     }
 
     pub fn update_meter(&self, meter: Option<MicMeterSnapshot>) {
