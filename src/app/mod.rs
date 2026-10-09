@@ -1338,8 +1338,10 @@ impl AppDelegate {
         let ivars = self.ivars();
         ivars.audio_controller.sync_stream_state();
 
+        let settings_requested = ivars.state.take_settings_request();
         let snapshot = UiSnapshot::capture(&ivars.state);
-        let controller_updates_pending = ivars.hotkey_capture_controller.has_pending_ui_update()
+        let controller_updates_pending = settings_requested
+            || ivars.hotkey_capture_controller.has_pending_ui_update()
             || ivars
                 .transformation_models_controller
                 .has_pending_ui_update()
@@ -1381,6 +1383,12 @@ impl AppDelegate {
             snapshot.mic_meter,
             snapshot.capturing_audio,
         );
+        if settings_requested {
+            self.ivars()
+                .permissions_dialog_returns_in_front_of_settings
+                .set(false);
+            self.present_settings_window(None);
+        }
     }
 
     pub fn update_ui(

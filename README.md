@@ -46,6 +46,7 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 - **Transform hotkey (`F6` by default):** transform the current transcript without auto-pasting it. If you press `F6` while dictating, you can keep talking — recording carries on and the meter keeps running while the LLM works, and what you say is appended to the transformed text once it finishes.
 - **Resume dictation:** If you have transformed text (or manually stopped recording), pressing `F5` again will seamlessly resume dictating onto the end of your existing text.
 - **`Escape`:** abort recording, cancel background work, or discard a ready buffer.
+- **`Cmd+,` while the overlay is visible:** discard the dictation and open Settings without transforming or pasting it.
 - **`Cmd+V` while recording:** splice the current plain-text clipboard contents into the active transcript.
 
 ### Microphones and Instant Recording

@@ -129,21 +129,30 @@ fn handle_key_press(
 ) -> bool {
     let hotkey_config = current_hotkey_config(config_store);
 
-    if key == Key::Escape
+    let open_settings = key == Key::Comma
+        && current_modifiers.meta
+        && !current_modifiers.shift
+        && !current_modifiers.control
+        && !current_modifiers.alt
+        && state.is_overlay_window_visible()
+        && !state.is_overlay_dismissed();
+    let escape_abort = key == Key::Escape
         && !hotkey_config
             .record_hotkey
             .map(|binding| binding.matches_press(Key::Escape, current_modifiers))
-            .unwrap_or(false)
-    {
+            .unwrap_or(false);
+    if open_settings || escape_abort {
         let current_state = state.get_state();
-        if !matches!(
-            current_state,
-            STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
-        ) {
+        if !open_settings
+            && !matches!(
+                current_state,
+                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
+            )
+        {
             return false;
         }
 
-        if current_state == STATE_ERROR {
+        if matches!(current_state, STATE_IDLE | STATE_ERROR) {
             state.set_state(STATE_IDLE);
             state.clear_overlay_error_text();
         } else {
@@ -177,7 +186,7 @@ fn handle_key_press(
                         state,
                         controller,
                         hotkey_config.auto_transform_enabled,
-                        "escape abort",
+                        "overlay cancellation",
                     );
                 }
             }
@@ -191,6 +200,9 @@ fn handle_key_press(
             _ => {}
         }
 
+        if open_settings {
+            state.request_settings();
+        }
         return true;
     }
 
@@ -692,6 +704,114 @@ mod tests {
         // Nothing runs that would use the abort up, so a request left set
         // would make the transcription worker skip the next recording start.
         assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn command_comma_discards_the_overlay_and_requests_settings() {
+        use super::{AppState, Cell, Instant, LiveConfigStore, TranscriptionController,
+            STATE_RECORDING, STATE_BUFFER_READY, STATE_PROCESSING, STATE_TRANSFORMING,
+            STATE_ERROR, STATE_IDLE};
+        for (current_state, correcting) in [
+            (STATE_RECORDING, false), (STATE_RECORDING, true),
+            (STATE_BUFFER_READY, false), (STATE_PROCESSING, false),
+            (STATE_TRANSFORMING, false), (STATE_ERROR, false), (STATE_IDLE, false),
+        ] {
+            let state = AppState::new();
+            state.set_state(current_state);
+            state.set_overlay_correction_active(correcting);
+            state.set_overlay_window_visible(true);
+            state.set_overlay_text("Do not paste or transform this narration");
+            let config = crate::config::Config::default();
+            let store = LiveConfigStore::new(config.clone(), config,
+                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
+            let controller = TranscriptionController::without_worker();
+            let pressed_at = Cell::new(Some(Instant::now()));
+            let record_action = Cell::new(Some(super::RecordHotkeyAction::StopAndTransformAndPaste));
+            let correction_origin = Cell::new(Some(super::CorrectionOrigin::Dictation));
+            let transform_down = Cell::new(true);
+            let clipboard_down = Cell::new(true);
+
+            assert!(super::handle_key_press(Key::Comma,
+                HotkeyModifiers { meta: true, ..HotkeyModifiers::default() },
+                &store, &state, &controller, &pressed_at, &record_action,
+                &correction_origin, &transform_down, &clipboard_down));
+
+            assert!(state.is_overlay_dismissed());
+            assert!(state.overlay_text().is_empty());
+            assert!(state.take_settings_request());
+            assert!(!state.take_settings_request(), "present Settings once per request");
+            assert!(pressed_at.get().is_none());
+            assert!(record_action.get().is_none());
+            assert!(correction_origin.get().is_none());
+            assert!(!transform_down.get());
+            assert!(!clipboard_down.get());
+            assert_eq!(state.is_abort_requested(),
+                !matches!(current_state, STATE_IDLE | STATE_ERROR));
+
+            // Releasing held record, transform, or correction keys after the
+            // shortcut must not trigger another operation.
+            for key in [Key::F5, Key::F6, Key::AltLeft] {
+                super::handle_key_release(key, &store, &state, &controller,
+                    &pressed_at, &record_action, &correction_origin,
+                    &transform_down, &clipboard_down);
+            }
+            assert!(state.overlay_text().is_empty());
+            assert!(state.is_overlay_dismissed());
+        }
+    }
+
+    #[test]
+    fn command_comma_leaves_other_apps_and_other_comma_chords_alone() {
+        use super::{AppState, Cell, LiveConfigStore, TranscriptionController, STATE_RECORDING};
+        let command = HotkeyModifiers { meta: true, ..HotkeyModifiers::default() };
+        for (visible, dismissed, modifiers) in [
+            (false, false, command), (true, true, command),
+            (true, false, HotkeyModifiers::default()),
+            (true, false, HotkeyModifiers { shift: true, ..command }),
+            (true, false, HotkeyModifiers { alt: true, ..command }),
+            (true, false, HotkeyModifiers { control: true, ..command }),
+        ] {
+            let state = AppState::new();
+            state.set_state(STATE_RECORDING);
+            state.set_overlay_window_visible(visible);
+            state.set_overlay_text("Keep this narration");
+            if dismissed { state.dismiss_overlay(); }
+            let config = crate::config::Config::default();
+            let store = LiveConfigStore::new(config.clone(), config,
+                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
+            assert!(!super::handle_key_press(Key::Comma, modifiers, &store, &state,
+                &TranscriptionController::without_worker(), &Cell::new(None),
+                &Cell::new(None), &Cell::new(None), &Cell::new(false), &Cell::new(false)));
+            assert_eq!(&*state.overlay_text(), "Keep this narration");
+            assert!(!state.is_abort_requested());
+            assert!(!state.take_settings_request());
+        }
+    }
+
+    #[test]
+    fn command_comma_discards_an_empty_worker_buffer_without_leaving_an_abort() {
+        use super::{AppState, Cell, Instant, LiveConfigStore, STATE_BUFFER_READY, STATE_IDLE};
+        let state = AppState::new();
+        state.set_state(STATE_BUFFER_READY);
+        state.set_overlay_window_visible(true);
+        state.set_overlay_text("Only the editable overlay holds this text");
+        let config = crate::config::Config::default();
+        let store = LiveConfigStore::new(config.clone(), config,
+            std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
+        let controller = crate::transcription::spawn_transcription_thread(state.clone(), store.clone());
+        assert!(super::handle_key_press(Key::Comma,
+            HotkeyModifiers { meta: true, ..HotkeyModifiers::default() },
+            &store, &state, &controller, &Cell::new(None), &Cell::new(None),
+            &Cell::new(None), &Cell::new(false), &Cell::new(false)));
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while state.get_state() != STATE_IDLE && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(state.overlay_text().is_empty());
+        assert!(state.is_overlay_dismissed());
+        assert!(!state.is_abort_requested());
+        assert!(state.take_settings_request());
     }
 
     #[test]

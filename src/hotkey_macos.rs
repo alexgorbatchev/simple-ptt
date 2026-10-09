@@ -26,6 +26,7 @@ const RIGHT_CONTROL_BIT: u64 = 0x0000_2000;
 
 const BACKSPACE: u16 = 51;
 const CAPS_LOCK: u16 = 57;
+const COMMA: u16 = 0x2B; // kVK_ANSI_Comma in HIToolbox/Events.h.
 const CONTROL_LEFT: u16 = 59;
 const CONTROL_RIGHT: u16 = 62;
 const DOWN_ARROW: u16 = 125;
@@ -363,6 +364,7 @@ fn key_from_code(code: u16) -> Option<Key> {
         SHIFT_RIGHT => Some(Key::ShiftRight),
         SPACE => Some(Key::Space),
         TAB => Some(Key::Tab),
+        COMMA => Some(Key::Comma),
         UP_ARROW => Some(Key::UpArrow),
         _ => None,
     }
@@ -386,6 +388,22 @@ mod tests {
 
     use super::{hotkey_event, META_LEFT, META_RIGHT, F5, SHIFT_LEFT};
     use crate::hotkey::HotkeyEvent;
+
+    #[test]
+    fn command_comma_is_reported_with_its_modifier_and_roundtrips() {
+        let event = hotkey_event(CGEventType::KeyDown, 0x2B, CGEventFlags::MaskCommand);
+        assert!(event.is_some(), "the event tap must report the comma key");
+        let Some(HotkeyEvent::KeyPress(key, modifiers)) = event else {
+            panic!("expected a key press");
+        };
+        let binding = HotkeyBinding { key, modifiers };
+        assert_eq!(format_hotkey_binding(binding).as_deref(), Some("Cmd+,"));
+        assert_eq!(parse_hotkey_binding("Cmd+,").unwrap(), binding);
+        assert_eq!(
+            hotkey_event(CGEventType::KeyUp, 0x2B, CGEventFlags::MaskCommand),
+            Some(HotkeyEvent::KeyRelease(key)),
+        );
+    }
 
     /// Left Command held, as a hardware keyboard reports it: the Command mask
     /// and the left-Command device bit (`NX_DEVICELCMDKEYMASK`).

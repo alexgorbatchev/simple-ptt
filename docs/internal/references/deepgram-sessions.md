@@ -1,6 +1,6 @@
 ---
 created_on: 2026-10-03 09:21
-last_modified: 2026-10-08 12:47
+last_modified: 2026-10-09 09:10
 status: current
 ---
 
@@ -23,6 +23,10 @@ Runtime destruction happens outside the async execution context and uses Tokio's
 The transcript reader accepts the final metadata (`TerminalResponse`) as completion after finishing starts. It does not wait for socket EOF. EOF without final metadata and metadata received during active recording are errors, so an incomplete result does not enter the normal paste path. Deepgram documents final results followed by metadata on [CloseStream](https://developers.deepgram.com/docs/close-stream).
 
 `AppState::wait_for_abort` registers its notification before checking the abort latch. The session does not consume the latch: `finish_session` and `settle_session_finish` in the transcription worker consume it before any paste, transformation, or resume. This also catches an abort racing a successful result or a timeout. Finishing cancellation discards the recording and returns to idle. Cancellation during connection startup clears dictation, or retains the base annotation when starting a correction. Both paths clear the waiting indication and retain an overlay dismissed by the hotkey.
+
+`Cmd+,` while the overlay is visible uses the global hotkey cancellation path, clears held hotkey actions, and hands a Settings request to the main-thread UI poll. The poll updates the dismissed overlay before calling `present_settings_window`, which retains the normal activation flow. The shortcut is omitted from the overlay hints. Discarding an empty worker buffer still consumes cancellation, so the next recording is not skipped.
+
+`finish_transformation` races the entire LLM future against `wait_for_abort`, including connection startup and quiet streams. Cancellation settles through `settle_session_finish` before callers can paste or resume. It clears the annotation and correction, keeps the overlay dismissed, and takes precedence over a concurrent result or error.
 
 ## Keyboard edits during live narration
 
@@ -54,5 +58,6 @@ The status poll compares `deepgram_waiting` as part of `UiSnapshot`. Recording a
 - Its keyboard-edit regressions cover finalized-word edits, interim-word revisions, and partial final results. `src/state.rs` covers stale rendered text, successive edits, and provisional offsets; `src/text_edit.rs` covers replacements, deletion, simultaneous additions, punctuation, and Unicode.
 - `src/transcription/mod.rs` tests cancellation state and annotation ownership. `src/app/mod.rs` tests status polling and title changes, including a dismissed overlay.
 - Correction regressions cover an empty request with no LLM configured, retaining keyboard edits, resuming dictation or retaining a ready buffer, and clearing queued capture after connection failure. Hotkey tests cover the Left Alt default, Command shortcut handling, and resume intent before the worker runs; audio tests cover pause decisions through correction and resume.
+- Settings shortcut regressions cover the native comma event and binding round trip, overlay visibility and modifiers, cleared held actions, empty-buffer cancellation, a quiet transformation, and cancellation racing completion or an error.
 - `--overlay-snapshot` captures live and finishing notices over light and dark backdrops. The overlay skill's `references/findings.md` records native geometry and selection measurements.
 - A native status item using the app's active microphone icon expands from 34 to 96 points when the waiting title is assigned, then returns to 34 points when cleared. A bitmap cached from the native button verifies that the icon and title render together.

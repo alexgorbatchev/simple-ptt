@@ -103,6 +103,7 @@ pub struct AppState {
     overlay_correction_text: Mutex<OverlayText>,
     overlay_window_visible: AtomicBool,
     settings_window_visible: AtomicBool,
+    settings_requested: AtomicBool,
     overlay_text: Mutex<OverlayText>,
     overlay_error_text: Mutex<Arc<str>>,
     overlay_text_opacity: AtomicU8,
@@ -138,6 +139,7 @@ impl AppState {
             overlay_correction_text: Mutex::new(OverlayText::default()),
             overlay_window_visible: AtomicBool::new(false),
             settings_window_visible: AtomicBool::new(false),
+            settings_requested: AtomicBool::new(false),
             overlay_text: Mutex::new(OverlayText::default()),
             overlay_error_text: Mutex::new(Arc::from("")),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
@@ -325,6 +327,15 @@ impl AppState {
 
     pub fn is_settings_window_visible(&self) -> bool {
         self.settings_window_visible.load(Ordering::Relaxed)
+    }
+
+    /// Hand a hotkey request to the main-thread UI poll.
+    pub fn request_settings(&self) {
+        self.settings_requested.store(true, Ordering::Release);
+    }
+
+    pub fn take_settings_request(&self) -> bool {
+        self.settings_requested.swap(false, Ordering::AcqRel)
     }
 
     pub fn set_overlay_text(&self, overlay_text: impl Into<String>) {

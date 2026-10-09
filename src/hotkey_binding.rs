@@ -249,6 +249,7 @@ pub fn key_name(key: Key) -> &'static str {
         Key::F11 => "F11",
         Key::F12 => "F12",
         Key::Escape => "Escape",
+        Key::Comma => ",",
         Key::Space => "Space",
         Key::Tab => "Tab",
         Key::CapsLock => "CapsLock",
@@ -314,6 +315,7 @@ pub fn parse_key(name: &str) -> Option<Key> {
             '7' => Some(Key::Num7),
             '8' => Some(Key::Num8),
             '9' => Some(Key::Num9),
+            ',' => Some(Key::Comma),
             _ => None,
         };
     }

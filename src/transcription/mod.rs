@@ -605,13 +605,13 @@ pub fn spawn_transcription_thread(
 
                                 if let Some(transformation_config) = transformation_config {
                                     state.set_state(STATE_TRANSFORMING);
-                                    match runtime.block_on(transform_text(
+                                    match runtime.block_on(finish_transformation(&state, transform_text(
                                         state.clone(),
                                         &transformation_config,
                                         &buffered_text,
                                         TransformationPreviewMode::PreserveOverlay,
-                                    )) {
-                                        Ok(transformed_text) => {
+                                    ))) {
+                                        Ok(Some(transformed_text)) => {
                                             log::info!(
                                                 "transformation completed: chars={}",
                                                 transformed_text.chars().count()
@@ -622,6 +622,11 @@ pub fn spawn_transcription_thread(
                                                 &mut buffered_text,
                                                 true,
                                             );
+                                        }
+                                        Ok(None) => {
+                                            buffered_text.clear();
+                                            recording_prefix.clear();
+                                            continue;
                                         }
                                         Err(error) => {
                                             log::error!("transformation failed: {}", error);
@@ -690,18 +695,23 @@ pub fn spawn_transcription_thread(
 
                                 if let Some(transformation_config) = transformation_config {
                                     state.set_state(STATE_TRANSFORMING);
-                                    match runtime.block_on(transform_text(
+                                    match runtime.block_on(finish_transformation(&state, transform_text(
                                         state.clone(),
                                         &transformation_config,
                                         &buffered_text,
                                         TransformationPreviewMode::ReplaceOverlay,
-                                    )) {
-                                        Ok(transformed_text) => {
+                                    ))) {
+                                        Ok(Some(transformed_text)) => {
                                             log::info!(
                                                 "transformation completed: chars={}",
                                                 transformed_text.chars().count()
                                             );
                                             buffered_text = transformed_text;
+                                        }
+                                        Ok(None) => {
+                                            buffered_text.clear();
+                                            recording_prefix.clear();
+                                            continue;
                                         }
                                         Err(error) => {
                                             log::error!("transformation failed: {}", error);
@@ -791,13 +801,13 @@ pub fn spawn_transcription_thread(
                         }
                     };
 
-                    match runtime.block_on(transform_text(
+                    match runtime.block_on(finish_transformation(&state, transform_text(
                         state.clone(),
                         &transformation_config,
                         &buffered_text,
                         TransformationPreviewMode::ReplaceOverlay,
-                    )) {
-                        Ok(transformed_text) => {
+                    ))) {
+                        Ok(Some(transformed_text)) => {
                             log::info!(
                                 "transformation completed: chars={}",
                                 transformed_text.chars().count()
@@ -805,6 +815,10 @@ pub fn spawn_transcription_thread(
                             buffered_text = transformed_text;
                             state.set_overlay_text(buffered_text.clone());
                             state.set_state(STATE_BUFFER_READY);
+                        }
+                        Ok(None) => {
+                            buffered_text.clear();
+                            recording_prefix.clear();
                         }
                         Err(error) => {
                             log::error!("transformation failed: {}", error);
@@ -819,7 +833,7 @@ pub fn spawn_transcription_thread(
                         buffered_text = state.overlay_text().to_string();
                     }
 
-                    if buffered_text.trim().is_empty() {
+                    if buffered_text.trim().is_empty() && !state.is_abort_requested() {
                         log::info!("ignoring paste_buffer command because buffer is empty");
                         state.clear_overlay_text();
                         state.set_overlay_text_opacity(1.0);
@@ -865,12 +879,17 @@ fn apply_correction_request(
         let correction_config = transformation_correction_runtime_config(&transformation_config);
         let prompt_input = build_correction_transform_input(buffered_text, correction_request);
         state.set_state(STATE_TRANSFORMING);
-        *buffered_text = runtime.block_on(transform_text(
+        let transformed = runtime.block_on(finish_transformation(state, transform_text(
             state.clone(),
             &correction_config,
             &prompt_input,
             TransformationPreviewMode::ReplaceOverlay,
-        ))?;
+        )))?;
+        let Some(transformed) = transformed else {
+            buffered_text.clear();
+            return Ok(None);
+        };
+        *buffered_text = transformed;
     }
 
     state.set_overlay_text(buffered_text.clone());
@@ -886,6 +905,20 @@ fn apply_correction_request(
         state.set_state(STATE_BUFFER_READY);
         Ok(None)
     }
+}
+
+/// Cancel an LLM request even while its connection or stream is quiet, and
+/// settle it through the same discard path as cancelled transcription.
+async fn finish_transformation(
+    state: &AppState,
+    transformation: impl std::future::Future<Output = Result<String, String>>,
+) -> Result<Option<String>, String> {
+    let result = tokio::select! {
+        biased;
+        _ = state.wait_for_abort() => Err(SessionError::Cancelled),
+        result = transformation => result.map_err(SessionError::Failed),
+    };
+    settle_session_finish(result, state)
 }
 
 /// Settle cancellation before any caller can paste, transform, or resume.
@@ -981,6 +1014,55 @@ impl Drop for ResumingDictation<'_> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn settings_cancellation_interrupts_a_quiet_transformation() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let state = crate::state::AppState::new();
+        state.set_state(crate::state::STATE_TRANSFORMING);
+        state.set_dictation_resuming(true);
+        state.set_overlay_text("A partial rewrite");
+        state.set_overlay_correction_active(true);
+        state.set_overlay_correction_text("A correction");
+        state.dismiss_overlay();
+        let request = async {
+            state.request_abort();
+            std::future::pending::<Result<String, String>>().await
+        };
+        let result = runtime.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(1),
+                super::finish_transformation(&state, request)).await
+        }).expect("cancellation must not wait for another LLM response");
+        assert_eq!(result.unwrap(), None);
+        assert_eq!(state.get_state(), crate::state::STATE_IDLE);
+        assert!(state.is_overlay_dismissed());
+        assert!(state.overlay_text().is_empty());
+        assert!(state.overlay_correction_text().is_empty());
+        assert!(!state.is_overlay_correction_active());
+        assert!(!state.is_capturing_audio());
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn settings_cancellation_wins_a_transformation_result_or_error() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        for result in [Ok("Discard this rewrite".to_owned()), Err("A late error".to_owned())] {
+            let state = crate::state::AppState::new();
+            state.set_state(crate::state::STATE_TRANSFORMING);
+            state.dismiss_overlay();
+            assert_eq!(runtime.block_on(super::finish_transformation(&state, async {
+                state.request_abort();
+                result
+            })).unwrap(), None);
+            assert!(state.is_overlay_dismissed());
+            assert!(state.overlay_error_text().is_empty());
+            assert_eq!(state.get_state(), crate::state::STATE_IDLE);
+            // The abort is consumed, so subsequent work can finish normally.
+            assert_eq!(runtime.block_on(super::finish_transformation(&state,
+                async { Ok("The next rewrite".to_owned()) })).unwrap(),
+                Some("The next rewrite".to_owned()));
+        }
+    }
+
     #[test]
     fn resuming_dictation_captures_the_editable_annotation_before_the_state_changes() {
         let state = crate::state::AppState::new();
