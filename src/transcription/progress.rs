@@ -50,6 +50,7 @@ struct Progress {
     processed_seconds: f64,
     pending_since: Option<Instant>,
     finishing_since: Option<Instant>,
+    notice_visible: bool,
 }
 
 pub struct SessionProgress {
@@ -107,6 +108,9 @@ impl SessionProgress {
         } else {
             None
         };
+        if progress.pending_since.is_none() && progress.finishing_since.is_none() {
+            progress.notice_visible = false;
+        }
         self.changed.notify_waiters();
     }
 
@@ -132,9 +136,9 @@ impl SessionProgress {
         use tokio_stream::StreamExt;
         loop {
             let changed = self.changed.notified();
-            let (notice_since, timeout_at, phase) = {
-                let progress = self.progress.lock().unwrap();
-                match progress.finishing_since {
+            let (notice_since, timeout_at, phase, waiting) = {
+                let mut progress = self.progress.lock().unwrap();
+                let (notice_since, timeout_at, phase) = match progress.finishing_since {
                     Some(since) => (
                         Some(
                             progress
@@ -149,9 +153,14 @@ impl SessionProgress {
                         None,
                         "waiting for live transcription",
                     ),
-                }
+                };
+                // Partial replies can make progress without resolving the delay.
+                // Once shown, retain the notice until live audio catches up or
+                // the session's WaitingIndicator clears it on completion.
+                progress.notice_visible |=
+                    notice_since.is_some_and(|since| since.elapsed() >= self.limits.notice);
+                (notice_since, timeout_at, phase, progress.notice_visible)
             };
-            let waiting = notice_since.is_some_and(|since| since.elapsed() >= self.limits.notice);
             state.set_deepgram_waiting(waiting);
             tokio::select! {
                 biased;
@@ -253,6 +262,75 @@ mod tests {
         progress.transcript_received(0.02);
         tx.send(2).await.unwrap();
         assert_eq!(progress.next(&mut stream, &state).await.unwrap(), Some(2));
+        assert!(!state.is_deepgram_waiting());
+    }
+
+    fn delayed_live_progress() -> Arc<SessionProgress> {
+        let progress = SessionProgress::new(16000, SessionLimits::default());
+        progress.audio_queued(&voice());
+        progress.audio_queued(&voice());
+        // Advance the pending interval without making the test wait five seconds.
+        progress.progress.lock().unwrap().pending_since =
+            Some(Instant::now() - progress.limits.notice);
+        progress
+    }
+
+    async fn poll_waiting(progress: &SessionProgress, state: &AppState) {
+        let mut stream = tokio_stream::iter([()]);
+        assert_eq!(progress.next(&mut stream, state).await.unwrap(), Some(()));
+    }
+
+    #[tokio::test]
+    async fn live_wait_notice_stays_visible_until_all_pending_audio_is_acknowledged() {
+        let state = AppState::new();
+        let progress = delayed_live_progress();
+        poll_waiting(&progress, &state).await;
+        assert!(state.is_deepgram_waiting());
+
+        for audio_end in [0.01, 0.02, 0.02, 0.01, 0.03] {
+            progress.transcript_received(audio_end);
+            poll_waiting(&progress, &state).await;
+            assert!(state.is_deepgram_waiting(), "partial reply at {audio_end}");
+        }
+
+        progress.audio_queued(&voice());
+        poll_waiting(&progress, &state).await;
+        assert!(
+            state.is_deepgram_waiting(),
+            "recording continues while waiting"
+        );
+        progress.transcript_received(0.06);
+        poll_waiting(&progress, &state).await;
+        assert!(!state.is_deepgram_waiting());
+
+        progress.audio_queued(&voice());
+        poll_waiting(&progress, &state).await;
+        assert!(
+            !state.is_deepgram_waiting(),
+            "new audio gets a fresh grace period"
+        );
+        progress.progress.lock().unwrap().pending_since =
+            Some(Instant::now() - progress.limits.notice);
+        poll_waiting(&progress, &state).await;
+        assert!(state.is_deepgram_waiting());
+    }
+
+    #[tokio::test]
+    async fn a_live_wait_notice_stays_visible_through_finishing_replies() {
+        let state = AppState::new();
+        let indicator = WaitingIndicator(state.clone());
+        let progress = delayed_live_progress();
+        poll_waiting(&progress, &state).await;
+        assert!(state.is_deepgram_waiting());
+
+        progress.finish();
+        for audio_end in [0.02, 0.04] {
+            progress.transcript_received(audio_end);
+            poll_waiting(&progress, &state).await;
+            assert!(state.is_deepgram_waiting(), "finishing reply at {audio_end}");
+        }
+
+        drop(indicator);
         assert!(!state.is_deepgram_waiting());
     }
 

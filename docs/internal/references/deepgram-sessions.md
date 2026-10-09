@@ -50,7 +50,7 @@ A final response may cover less audio than the preceding interim result, as docu
 
 `SessionLimits` in `src/transcription/progress.rs` gives connection and finishing waits a 15-second limit. Each displays an indication after 5 seconds. Finishing uses an absolute deadline; additional responses do not extend it.
 
-During live recording, accepted Linear16 audio above the microphone meter's existing floor starts a pending-response interval. Results acknowledge audio through `start + duration`, including results with empty transcripts. Progress resets the interval; acknowledging all pending audible audio clears it. Digital silence and audio below that floor do not start the interval. A live notice already displayed remains visible when finishing begins.
+During live recording, accepted Linear16 audio above the microphone meter's existing floor starts a pending-response interval. Results acknowledge audio through `start + duration`, including results with empty transcripts. Before a notice is visible, responses reset that interval. Once displayed, the notice remains visible through partial replies until all pending audible audio is acknowledged. Catching up clears it, and newly queued audible audio gets a fresh notice interval. Digital silence and audio below that floor do not start the interval. A live notice already displayed remains visible through finishing replies until the session completes, fails, or is cancelled.
 
 Live waiting is informational and does not stop recording. Audio level is not a speech classifier, so background sound can trigger the notice. Deepgram explicitly [sends no response to KeepAlive](https://developers.deepgram.com/docs/audio-keep-alive); absence of a keep-alive reply cannot diagnose a failed connection.
 
@@ -59,7 +59,7 @@ The status poll compares `deepgram_waiting` as part of `UiSnapshot`. Recording a
 ## Verification
 
 - The fork's `tests/websocket_shutdown_local.rs` uses real local WebSockets to exercise delayed final responses past the three-second timer, disabled keep-alives, and dropping quiet handles and streams.
-- `src/transcription/progress.rs` tests live delays, recovery, quiet audio, absolute finishing deadlines, connection timeout, and cancellation of concurrent waits.
+- `src/transcription/progress.rs` tests live delays, partial replies retaining the notice, full catch-up and fresh notice intervals, quiet audio, retaining a live notice through finishing replies, absolute finishing deadlines, connection timeout, and cancellation of concurrent waits.
 - `src/transcription/session.rs` tests terminal metadata without EOF, incomplete disconnection, final audio draining, cancellation during finishing, runtime transport teardown after cancellation and timeout, and dropping a quiet session.
 - Its keyboard-edit regressions cover finalized-word edits, interim-word revisions, and partial final results. `src/state.rs` covers stale rendered text, successive edits, and provisional offsets; `src/text_edit.rs` covers replacements, deletion, simultaneous additions, punctuation, and Unicode.
 - `src/transcription/mod.rs` tests cancellation state and annotation ownership. `src/app/mod.rs` tests status polling and title changes, including a dismissed overlay.
