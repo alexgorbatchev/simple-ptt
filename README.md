@@ -102,7 +102,7 @@ Replace `YOUR_DEEPGRAM_API_KEY` with your Deepgram API key. A non-empty `deepgra
 
 ## Development
 
-For the repo-local development config (`./config.toml`, gitignored; `just run` creates it from `config.example.toml` when it is missing):
+For the repo-local development config (`./config.toml`, gitignored; `just setup` creates it from `config.example.toml` when it is missing):
 
 ```bash
 just run

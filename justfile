@@ -1,17 +1,16 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
 run:
-    if [ ! -f config.toml ]; then cp config.example.toml config.toml && echo "Created config.toml from config.example.toml"; fi
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-config config_path="config.toml":
-    SIMPLE_PTT_CONFIG="{{config_path}}" cargo run
+    SIMPLE_PTT_CONFIG="{{ config_path }}" cargo run
 
 run-local:
     SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-simulated-error error_msg="deepgram connection failed":
-    SIMPLE_PTT_SIMULATE_ERROR="{{error_msg}}" SIMPLE_PTT_CONFIG="./config.toml" cargo run
+    SIMPLE_PTT_SIMULATE_ERROR="{{ error_msg }}" SIMPLE_PTT_CONFIG="./config.toml" cargo run
 
 run-xdg:
     cargo run
@@ -30,17 +29,23 @@ bundle-dmg:
 
 install-app app_dir="$HOME/Applications":
     just bundle-release
-    mkdir -p "{{app_dir}}"
-    rm -rf "{{app_dir}}/simple-ptt.app"
-    ditto "dist/simple-ptt.app" "{{app_dir}}/simple-ptt.app"
+    mkdir -p "{{ app_dir }}"
+    rm -rf "{{ app_dir }}/simple-ptt.app"
+    ditto "dist/simple-ptt.app" "{{ app_dir }}/simple-ptt.app"
 
 start app_path="$HOME/Applications/simple-ptt.app":
-    test -d "{{app_path}}"
-    open -g "{{app_path}}"
+    test -d "{{ app_path }}"
+    open -g "{{ app_path }}"
 
 test-update:
     ./scripts/test-sparkle-update.sh
 
 list-devices app_path="$HOME/Applications/simple-ptt.app":
-    test -x "{{app_path}}/Contents/MacOS/simple-ptt"
-    "{{app_path}}/Contents/MacOS/simple-ptt" --list-devices
+    test -x "{{ app_path }}/Contents/MacOS/simple-ptt"
+    "{{ app_path }}/Contents/MacOS/simple-ptt" --list-devices
+
+# Prepare dependencies for local development.
+setup:
+    test "$(uname -s)" = Darwin && test "$(uname -m)" = arm64 || { echo 'simple-ptt requires macOS 26 or later on Apple Silicon' >&2; exit 1; }
+    cargo fetch --locked
+    if [ ! -f config.toml ]; then cp config.example.toml config.toml; fi
