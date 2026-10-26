@@ -15,7 +15,7 @@ concurrency:
 jobs:
   release:
     name: Build and publish macOS arm64 release
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 30
     env:
       APP_BUNDLE_NAME: simple-ptt.app
@@ -24,7 +24,7 @@ jobs:
       TARGET_TRIPLE: aarch64-apple-darwin
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install stable Rust toolchain
         shell: bash

@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     name: Check, test, and build macOS app
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
@@ -27,7 +27,7 @@ jobs:
       RUSTFLAGS: "-D warnings"
     steps:
       - name: Check out repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install stable Rust toolchain
         shell: bash
