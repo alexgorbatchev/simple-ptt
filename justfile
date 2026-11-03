@@ -25,6 +25,11 @@ bundle-dmg:
     just bundle-release
     ./scripts/build-macos-dmg.sh "dist/simple-ptt.app" "dist/simple-ptt.dmg"
 
+# Developer ID distribution; requires signing and notarization environment.
+bundle-notarized dmg_path evidence_dir:
+    cargo build --locked --release --target aarch64-apple-darwin
+    ./scripts/build-notarized-dmg.sh "target/aarch64-apple-darwin/release/simple-ptt" "{{ dmg_path }}" "{{ evidence_dir }}"
+
 install-app app_dir="$HOME/Applications":
     just bundle-release
     mkdir -p "{{ app_dir }}"

@@ -54,17 +54,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sparkle_version="2.9.5"
-sparkle_vendor_dir="${repo_root}/vendor/Sparkle.framework"
-if [[ ! -d "$sparkle_vendor_dir" ]]; then
-  echo "downloading Sparkle.framework ${sparkle_version}..."
+sparkle_version="2.10.1"
+sparkle_sha256="1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27"
+sparkle_archive="${repo_root}/vendor/Sparkle-${sparkle_version}.tar.xz"
+if [[ ! -f "$sparkle_archive" ]]; then
+  echo "downloading Sparkle ${sparkle_version}..."
   mkdir -p "${repo_root}/vendor"
-  curl -sL "https://github.com/sparkle-project/Sparkle/releases/download/${sparkle_version}/Sparkle-${sparkle_version}.tar.xz" | tar -xJ -C "${repo_root}/vendor" Sparkle.framework
+  curl --fail --location --show-error \
+    "https://github.com/sparkle-project/Sparkle/releases/download/${sparkle_version}/Sparkle-${sparkle_version}.tar.xz" \
+    --output "${iconset_root_dir}/Sparkle.tar.xz"
+  mv "${iconset_root_dir}/Sparkle.tar.xz" "$sparkle_archive"
 fi
+printf '%s  %s\n' "$sparkle_sha256" "$sparkle_archive" | shasum -a 256 --check
+tar -xJf "$sparkle_archive" -C "$iconset_root_dir" ./Sparkle.framework
 
 rm -rf "$app_bundle_path"
 mkdir -p "$app_macos_path" "$app_frameworks_path" "$app_resources_path" "$iconset_dir"
-cp -R "$sparkle_vendor_dir" "${app_frameworks_path}/Sparkle.framework"
+ditto "${iconset_root_dir}/Sparkle.framework" "${app_frameworks_path}/Sparkle.framework"
 cp "$binary_path" "${app_macos_path}/${binary_name}"
 chmod 755 "${app_macos_path}/${binary_name}"
 "${app_macos_path}/${binary_name}" --write-app-iconset "$iconset_dir"
@@ -109,12 +115,6 @@ cat > "${app_contents_path}/Info.plist" <<EOF
 </plist>
 EOF
 
-if [[ "${ADHOC_SIGN_APP:-1}" == "1" ]]; then
-  if [[ -d "${app_frameworks_path}/Sparkle.framework" ]]; then
-    codesign --force --options runtime --sign - "${app_frameworks_path}/Sparkle.framework"
-  fi
-  codesign --force --deep --options runtime --sign - "$app_bundle_path"
-  codesign --verify --deep --strict --verbose=2 "$app_bundle_path" >/dev/null
-fi
+"${repo_root}/scripts/sign-macos-app.sh" "$app_bundle_path"
 
 echo "created app bundle: $app_bundle_path"

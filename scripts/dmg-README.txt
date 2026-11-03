@@ -6,6 +6,6 @@ Install:
 3. If Settings opens, select the Deepgram pane, enter your Deepgram API key, and click Save.
 
 Notes:
-- This app is ad-hoc signed but not notarized. If macOS blocks it, allow it in Privacy & Security or run:
-  xattr -dr com.apple.quarantine /Applications/simple-ptt.app
+- Official release downloads are signed with Developer ID and notarized by Apple.
+- Local development bundles are ad-hoc signed and are not distribution builds.
 - Grant Microphone and Accessibility/Input Monitoring permissions when prompted.

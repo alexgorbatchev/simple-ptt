@@ -1,6 +1,6 @@
 ---
 created_on: 2026-11-03 01:22
-last_modified: 2026-11-03 01:22
+last_modified: 2026-11-03 06:25
 status: current
 ---
 
@@ -12,7 +12,7 @@ The signing private key must already exist in the maintainer's login Keychain, u
 
 Version 1.6.0 predates the bundled updater and requires manual installation to upgrade. Its DMG is not an update-feed entry. An empty channel is intentional until a verified Sparkle-enabled release is published.
 
-1. Confirm the release tag/version has the user's approval and its GitHub release is published, with a successful packaging workflow. Start from a clean checkout of current `main`. Set `release_tag` to that existing tag, `sparkle_account` to the matching Keychain account, and `sparkle_tools` to an absolute directory containing the `bin` tools from the official Sparkle release matching `sparkle_version` in `scripts/build-macos-app.sh` (currently 2.9.5). These tools are included in the [official Sparkle archive](https://github.com/sparkle-project/Sparkle/releases); the packaging script extracts only the framework. Do not create a version bump or tag as part of this procedure.
+1. Confirm the release tag/version has the user's approval and its GitHub release is published, with a successful packaging workflow. Start from a clean checkout of current `main`. Set `release_tag` to that existing tag, `sparkle_account` to the matching Keychain account, and `sparkle_tools` to an absolute directory containing the `bin` tools from the official Sparkle release matching `sparkle_version` in `scripts/build-macos-app.sh` (currently 2.10.1). These tools are included in the [official Sparkle archive](https://github.com/sparkle-project/Sparkle/releases); the packaging script extracts only the framework. Do not create a version bump or tag as part of this procedure.
 2. Create a fresh staging directory under `.tmp/`, then download the actual published DMG. Do not substitute a local rebuild. Keep the variables in the same shell throughout the procedure:
 
    ```sh
@@ -25,6 +25,7 @@ Version 1.6.0 predates the bundled updater and requires manual installation to u
    ```
 
 3. Inspect the downloaded app without launching it. Mount the DMG read-only with `hdiutil attach -readonly -nobrowse -mountpoint "$feed_stage/mount" "$archive"` after creating that mount directory. Read `simple-ptt.app/Contents/Info.plist` with `/usr/libexec/PlistBuddy -c 'Print :KEY'`, substituting each key: `CFBundleVersion`, `CFBundleShortVersionString`, `LSMinimumSystemVersion`, `SUFeedURL`, and `SUPublicEDKey`. Require the approved release version, macOS 26.0 minimum, the feed URL above, and the packaging script's public key; require `Contents/Frameworks/Sparkle.framework` to exist. Compare the public key with `"$sparkle_tools/generate_keys" --account "$sparkle_account" -p` (public-key lookup only). Stop on a missing key, framework, metadata, or mismatch. Detach the mount with `hdiutil detach "$feed_stage/mount"`, including on failure, before continuing.
+   Before detaching, also require `xcrun stapler validate` and `codesign --verify --deep --strict` on the mounted app, and `spctl --assess --type execute --verbose=4` reporting `Notarized Developer ID`. Require `xcrun stapler validate "$archive"` and `spctl --assess --type open --context context:primary-signature --verbose=4 "$archive"` for the DMG. See [Apple signing](apple-signing.md) for the distribution pipeline and evidence.
 4. Copy the current checked-in feed into the staging directory, then let Sparkle generate the new entry from the downloaded DMG. Preserve existing entries and avoid creating unuploaded delta files:
 
    ```sh

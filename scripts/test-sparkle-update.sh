@@ -14,7 +14,7 @@ app_bundle_path="dist/simple-ptt.app"
 binary_path="target/release/simple-ptt"
 
 echo "building app bundle..."
-./scripts/build-macos-app.sh "$binary_path" "$app_bundle_path"
+APPLE_SIGNING_IDENTITY=- ./scripts/build-macos-app.sh "$binary_path" "$app_bundle_path"
 
 feed_url="https://raw.githubusercontent.com/alexgorbatchev/simple-ptt/main/appcast.xml"
 feed_xml="$(curl -sL "$feed_url" || true)"
@@ -54,7 +54,7 @@ echo "setting test bundle version to $test_version (lower than $feed_version)...
 plutil -replace CFBundleVersion -string "$test_version" "${app_bundle_path}/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$test_version" "${app_bundle_path}/Contents/Info.plist"
 
-codesign --force --deep --options runtime --sign - "$app_bundle_path"
+APPLE_SIGNING_IDENTITY=- ./scripts/sign-macos-app.sh "$app_bundle_path"
 
 echo "launching test app bundle ($app_bundle_path)..."
 open -n "$app_bundle_path"

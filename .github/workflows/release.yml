@@ -1,6 +1,7 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
       - "v*"
@@ -14,14 +15,17 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish macOS arm64 release
+    name: Sign and notarize macOS arm64 release
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 90
     env:
-      APP_BUNDLE_NAME: simple-ptt.app
       BINARY_NAME: simple-ptt
       CARGO_TERM_COLOR: always
       TARGET_TRIPLE: aarch64-apple-darwin
+      RUSTFLAGS: "-D warnings"
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_NOTARY_PROFILE: simple-ptt-release
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -33,6 +37,7 @@ jobs:
           rustup toolchain install --no-self-update
 
       - name: Validate tag matches Cargo.toml version
+        if: github.event_name == 'push'
         shell: bash
         env:
           TAG: ${{ github.ref_name }}
@@ -51,35 +56,83 @@ jobs:
             exit 1
           fi
 
-      - name: Build release binary
+      - name: Check, test, and build release binary
         shell: bash
         run: |
           set -euo pipefail
+          cargo check --locked --all-targets
+          cargo test --locked
           cargo build --locked --release --target "$TARGET_TRIPLE"
 
-      - name: Package release archive
+      - name: Import Developer ID signing identity
+        uses: Apple-Actions/import-codesign-certs@288b8ec97b82c66b6f2a6baaf7acc8dfbcbe331c # v7.2.0
+        with:
+          p12-file-base64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+          keychain-password: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+
+      - name: Authenticate notarization
+        shell: bash
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_NOTARY_PASSWORD: ${{ secrets.APPLE_NOTARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_ID:?missing APPLE_ID}"
+          : "${APPLE_TEAM_ID:?missing APPLE_TEAM_ID}"
+          : "${APPLE_SIGNING_IDENTITY:?missing APPLE_SIGNING_IDENTITY}"
+          : "${APPLE_NOTARY_PASSWORD:?missing APPLE_NOTARY_PASSWORD}"
+          keychain_path="$HOME/Library/Keychains/signing_temp.keychain-db"
+          xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_NOTARY_PASSWORD" --keychain "$keychain_path"
+          echo "APPLE_SIGNING_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+          echo "APPLE_NOTARY_KEYCHAIN=$keychain_path" >> "$GITHUB_ENV"
+
+      - name: Sign, notarize, staple, and verify distribution
         id: package
         shell: bash
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || format('verification-{0}', github.run_id) }}
         run: |
           set -euo pipefail
 
           asset_basename="${BINARY_NAME}-${TAG}-macos-arm64"
-          app_bundle_path="${RUNNER_TEMP}/${APP_BUNDLE_NAME}"
           archive_path="${RUNNER_TEMP}/${asset_basename}.dmg"
           checksum_path="${RUNNER_TEMP}/${asset_basename}.sha256"
 
-          ./scripts/build-macos-app.sh \
+          ./scripts/build-notarized-dmg.sh \
             "target/${TARGET_TRIPLE}/release/${BINARY_NAME}" \
-            "$app_bundle_path"
-          ./scripts/build-macos-dmg.sh "$app_bundle_path" "$archive_path"
-          shasum -a 256 "$archive_path" > "$checksum_path"
+            "$archive_path" "${RUNNER_TEMP}/notarization"
 
           echo "archive_path=$archive_path" >> "$GITHUB_OUTPUT"
           echo "checksum_path=$checksum_path" >> "$GITHUB_OUTPUT"
 
-      - name: Create or update GitHub release
+      - name: Retain notarization evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notarization-evidence
+          path: |
+            ${{ runner.temp }}/notarization/*-notary/*.json
+            ${{ runner.temp }}/notarization/*-notary/sha256
+            ${{ runner.temp }}/notarization/app-signature.txt
+            ${{ runner.temp }}/notarization/app-entitlements.plist
+          retention-days: 14
+
+      - name: Retain verification build
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: notarized-verification-build
+          path: |
+            ${{ steps.package.outputs.archive_path }}
+            ${{ steps.package.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub release
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,10 +142,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" --clobber
-          else
-            gh release create "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
-              --title "$TAG" \
-              --generate-notes
-          fi
+          # Existing assets may be referenced by Sparkle. Never replace them.
+          gh release create "$TAG" "$ARCHIVE_PATH" "$CHECKSUM_PATH" \
+            --verify-tag --title "$TAG" --generate-notes

@@ -38,6 +38,13 @@ jobs:
           set -euo pipefail
           rustup toolchain install --no-self-update
 
+      - name: Check packaging scripts and notarization recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh scripts/tests/*.sh; do bash -n "$script"; done
+          bash scripts/tests/notarization.sh
+
       # Must run after toolchain setup: the cache key includes the rustc version.
       - name: Cache cargo registry and target directory
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
