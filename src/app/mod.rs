@@ -1585,7 +1585,7 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
 fn settings_deepgram_api_key_problem(resolved_key: Result<String, String>) -> Option<String> {
     resolved_key.err().map(|_| {
         format!(
-            "{}: required; enter a key, or export DEEPGRAM_API_KEY before launching simple-ptt",
+            "{}: required; enter your Deepgram API key",
             labels::DEEPGRAM_API_KEY
         )
     })
@@ -2048,7 +2048,7 @@ mod tests {
         assert_eq!(
             settings_deepgram_api_key_problem(Err("Deepgram API key is missing.".to_owned()))
                 .as_deref(),
-            Some("Deepgram > API key: required; enter a key, or export DEEPGRAM_API_KEY before launching simple-ptt")
+            Some("Deepgram > API key: required; enter your Deepgram API key")
         );
     }
 

@@ -290,7 +290,7 @@ pub fn mic_gain_label(gain_db: f32) -> String {
 }
 
 fn required_text(value: &str, field: SettingsField) -> Result<String, String> {
-    optional_text(value).ok_or_else(|| format!("{} is required", field))
+    optional_text(value).ok_or_else(|| format!("{}: required", field))
 }
 
 fn required_popup_title(selected_title: Option<&str>, field: SettingsField) -> Result<String, String> {
@@ -298,7 +298,7 @@ fn required_popup_title(selected_title: Option<&str>, field: SettingsField) -> R
 }
 
 fn required_number(value: Option<f64>, field: SettingsField) -> Result<f64, String> {
-    value.ok_or_else(|| format!("{} is required", field))
+    value.ok_or_else(|| format!("{}: required", field))
 }
 
 fn required_integer<T>(value: Option<u64>, field: SettingsField) -> Result<T, String>
@@ -306,8 +306,8 @@ where
     T: TryFrom<u64>,
     T::Error: std::fmt::Display,
 {
-    let value = value.ok_or_else(|| format!("{} is required", field))?;
-    T::try_from(value).map_err(|error| format!("{} must be an unsigned integer: {}", field, error))
+    let value = value.ok_or_else(|| format!("{}: required", field))?;
+    T::try_from(value).map_err(|error| format!("{}: must be an unsigned integer: {}", field, error))
 }
 
 fn parse_keyterms(value: &str) -> Vec<String> {
@@ -327,7 +327,7 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
         .map(|(style, _)| *style)
         .ok_or_else(|| {
             format!(
-                "{} must be one of: {} (got '{}')",
+                "{}: must be one of: {} (got \"{}\")",
                 METER_STYLE,
                 METER_STYLE_TITLES
                     .iter()
@@ -624,22 +624,22 @@ mod tests {
     #[test]
     fn blank_required_text_values_are_rejected_with_field_names() {
         let cases: [(&str, fn(&mut SettingsForm)); 6] = [
-            ("General > Dictation shortcut is required", |form| {
+            ("General > Dictation shortcut: required", |form| {
                 form.general.hotkey = " ".to_owned()
             }),
-            ("General > Correction key is required", |form| {
+            ("General > Correction key: required", |form| {
                 form.general.correction_key = "".to_owned()
             }),
-            ("General > Meter style is required", |form| {
+            ("General > Meter style: required", |form| {
                 form.general.meter_style_title = None
             }),
-            ("Deepgram > Language is required", |form| {
+            ("Deepgram > Language: required", |form| {
                 form.deepgram.language = "\t".to_owned()
             }),
-            ("Deepgram > Model is required", |form| {
+            ("Deepgram > Model: required", |form| {
                 form.deepgram.model_title = Some(" ".to_owned())
             }),
-            ("Transformation > Transform shortcut is required", |form| {
+            ("Transformation > Transform shortcut: required", |form| {
                 form.transformation.hotkey = "".to_owned()
             }),
         ];
@@ -655,17 +655,17 @@ mod tests {
     #[test]
     fn empty_required_numbers_are_rejected_with_field_names() {
         let cases: [(&str, fn(&mut SettingsForm)); 5] = [
-            ("General > Font size is required", |form| {
+            ("General > Font size: required", |form| {
                 form.general.font_size = None
             }),
-            ("Microphone > Sample rate is required", |form| {
+            ("Microphone > Sample rate: required", |form| {
                 form.microphone.sample_rate = None
             }),
-            ("General > Hold threshold (ms) is required", |form| form.general.hold_ms = None),
-            ("Deepgram > Endpointing (ms) is required", |form| {
+            ("General > Hold threshold (ms): required", |form| form.general.hold_ms = None),
+            ("Deepgram > Endpointing (ms): required", |form| {
                 form.deepgram.endpointing_ms = None
             }),
-            ("Deepgram > Utterance end (ms) is required", |form| {
+            ("Deepgram > Utterance end (ms): required", |form| {
                 form.deepgram.utterance_end_ms = None
             }),
         ];
@@ -681,13 +681,13 @@ mod tests {
     #[test]
     fn integers_outside_the_config_type_range_are_rejected() {
         let cases: [(&str, fn(&mut SettingsForm)); 3] = [
-            ("Microphone > Sample rate must be an unsigned integer", |form| {
+            ("Microphone > Sample rate: must be an unsigned integer", |form| {
                 form.microphone.sample_rate = Some(u64::from(u32::MAX) + 1)
             }),
-            ("Deepgram > Endpointing (ms) must be an unsigned integer", |form| {
+            ("Deepgram > Endpointing (ms): must be an unsigned integer", |form| {
                 form.deepgram.endpointing_ms = Some(u64::from(u16::MAX) + 1)
             }),
-            ("Deepgram > Utterance end (ms) must be an unsigned integer", |form| {
+            ("Deepgram > Utterance end (ms): must be an unsigned integer", |form| {
                 form.deepgram.utterance_end_ms = Some(u64::from(u16::MAX) + 1)
             }),
         ];
@@ -732,8 +732,8 @@ mod tests {
 
         let error = form.to_config().unwrap_err();
 
-        assert!(error.starts_with("General > Meter style must be one of: "), "{error}");
-        assert!(error.ends_with(" (got 'sparkles')"), "{error}");
+        assert!(error.starts_with("General > Meter style: must be one of: "), "{error}");
+        assert!(error.ends_with(" (got \"sparkles\")"), "{error}");
         for (_, title) in METER_STYLE_TITLES {
             assert!(error.contains(title), "{title} missing from {error}");
         }
