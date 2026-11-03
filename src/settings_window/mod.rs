@@ -69,6 +69,8 @@ pub struct SettingsWindow {
     deepgram: DeepgramPane,
     transformation: TransformationPane,
     status_text_field: Retained<NSTextField>,
+    cancel_button: Retained<NSButton>,
+    save_button: Retained<NSButton>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
 }
 
@@ -208,6 +210,8 @@ impl SettingsWindow {
             deepgram,
             transformation,
             status_text_field,
+            cancel_button,
+            save_button,
             hotkey_capture_restore_value: RefCell::new(None),
         };
 
@@ -425,6 +429,18 @@ impl SettingsWindow {
     }
 
     fn set_hotkey_capture_state(&self, active_target: Option<HotkeyCaptureTarget>) {
+        // Captured keys belong to the shortcut editor, including Return and
+        // Escape. Restore the dialog equivalents only after capture ends.
+        self.cancel_button.setKeyEquivalent(if active_target.is_none() {
+            ns_string!("\u{1b}")
+        } else {
+            ns_string!("")
+        });
+        self.save_button.setKeyEquivalent(if active_target.is_none() {
+            ns_string!("\r")
+        } else {
+            ns_string!("")
+        });
         for (target, button) in [
             (
                 HotkeyCaptureTarget::Record,
