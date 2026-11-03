@@ -112,23 +112,28 @@ pub fn build_audio_input_device_choices(
         }
     }
 
+    // A unique name is saved as the device's identity, because macOS
+    // renumbers inputs when one is connected or removed. Only devices that
+    // share a name, or have none, fall back to their position.
     devices
         .iter()
         .map(|device| {
-            let label = match device.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                Some(name) => {
-                    if name_counts.get(name).copied().unwrap_or(0) > 1 {
-                        format!("{} (#{})", name, device.index + 1)
-                    } else {
-                        name.to_owned()
+            match device.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(name) if name_counts.get(name).copied().unwrap_or(0) <= 1 => {
+                    AudioInputDeviceChoice {
+                        label: name.to_owned(),
+                        value: name.to_owned(),
                     }
                 }
-                None => format!("{} (#{})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index + 1),
-            };
-
-            let value = device.index.to_string();
-
-            AudioInputDeviceChoice { label, value }
+                Some(name) => AudioInputDeviceChoice {
+                    label: format!("{} (#{})", name, device.index + 1),
+                    value: device.index.to_string(),
+                },
+                None => AudioInputDeviceChoice {
+                    label: format!("{} (#{})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index + 1),
+                    value: device.index.to_string(),
+                },
+            }
         })
         .collect()
 }

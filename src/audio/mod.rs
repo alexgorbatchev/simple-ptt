@@ -610,11 +610,11 @@ mod tests {
             vec![
                 AudioInputDeviceChoice {
                     label: "External Microphone".to_owned(),
-                    value: "0".to_owned(),
+                    value: "External Microphone".to_owned(),
                 },
                 AudioInputDeviceChoice {
                     label: "MacBook Pro Microphone".to_owned(),
-                    value: "1".to_owned(),
+                    value: "MacBook Pro Microphone".to_owned(),
                 },
             ]
         );
