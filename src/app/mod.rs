@@ -1244,10 +1244,20 @@ impl AppDelegate {
             return;
         }
 
-        crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
-
-        if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
-            updater.set_automatically_checks_for_updates(runtime_config.ui.auto_check_updates);
+        // Save is all or nothing: the fallible steps run first and each
+        // failure undoes the steps before it, so the updater setting and the
+        // live config change only once everything else has been applied.
+        let previous_start_on_login = self.ivars().config_store.current().ui.start_on_login;
+        let start_on_login_changed = runtime_config.ui.start_on_login != previous_start_on_login;
+        if start_on_login_changed {
+            if let Err(error) =
+                crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login)
+            {
+                let error = settings_rollback_error(error, config_file_snapshot.restore(), None);
+                settings_window.set_status(&error);
+                show_modal_alert("Couldn't apply settings", &error);
+                return;
+            }
         }
 
         self.ivars().audio_controller.clear_preview_audio_device();
@@ -1255,18 +1265,19 @@ impl AppDelegate {
         let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
             Ok(effect) => effect,
             Err(error) => {
-                let error = match config_file_snapshot.restore() {
-                    Ok(()) => error,
-                    Err(restore_error) => format!(
-                        "{}; also failed to restore the previous config file, so it keeps the settings that failed to apply: {}",
-                        error, restore_error
-                    ),
-                };
+                let login_item_restore = start_on_login_changed
+                    .then(|| crate::auto_launch::apply_auto_launch_config(previous_start_on_login));
+                let error =
+                    settings_rollback_error(error, config_file_snapshot.restore(), login_item_restore);
                 settings_window.set_status(&error);
                 show_modal_alert("Couldn't apply audio settings", &error);
                 return;
             }
         };
+
+        if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
+            updater.set_automatically_checks_for_updates(runtime_config.ui.auto_check_updates);
+        }
 
         let audio_message = match audio_apply_effect {
             AudioConfigApplyEffect::AppliedNow => "audio changes applied now",
@@ -1479,6 +1490,28 @@ fn config_file_is_missing(path: &Path) -> bool {
 // `concat!` accepts only literals, and `format!` cannot implicitly capture
 // `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
 // title is passed as an explicit named argument.
+/// The error of a Save step that failed, followed by any step that could
+/// not be undone: the config file restore and, when the login item had
+/// already changed, its restore.
+fn settings_rollback_error(
+    error: String,
+    config_file_restore: Result<(), String>,
+    login_item_restore: Option<Result<(), String>>,
+) -> String {
+    let mut message = error;
+    if let Err(restore_error) = config_file_restore {
+        message.push_str(&format!(
+            "; also failed to restore the previous config file, so it keeps the settings that failed to apply: {restore_error}"
+        ));
+    }
+    if let Some(Err(restore_error)) = login_item_restore {
+        message.push_str(&format!(
+            "; also failed to restore the previous start-on-login setting: {restore_error}"
+        ));
+    }
+    message
+}
+
 fn missing_config_alert_text(config_path: &Path) -> String {
     format!(
         concat!(
@@ -1910,7 +1943,7 @@ mod tests {
     use super::{
         audio_startup_failure_alert_text, config_file_is_missing, config_problems_alert_text,
         deepgram_status_title, missing_config_alert_text, overlay_style_from_config,
-        settings_deepgram_api_key_problem, settings_presentation_turn_selector, status_poll_selector,
+        settings_deepgram_api_key_problem, settings_presentation_turn_selector, settings_rollback_error, status_poll_selector,
         validate_settings_config,
         AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
@@ -2039,6 +2072,28 @@ mod tests {
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
             "General > Correction key: \"LeftMeta\" shares a key with General > Dictation shortcut \"Cmd+F5\"; they must be different"
+        );
+    }
+
+    #[test]
+    fn a_failed_save_step_reports_every_step_it_could_not_undo() {
+        assert_eq!(
+            settings_rollback_error("audio failed".to_owned(), Ok(()), Some(Ok(()))),
+            "audio failed"
+        );
+        assert_eq!(
+            settings_rollback_error("audio failed".to_owned(), Ok(()), None),
+            "audio failed"
+        );
+        assert_eq!(
+            settings_rollback_error(
+                "audio failed".to_owned(),
+                Err("disk full".to_owned()),
+                Some(Err("launchd refused".to_owned())),
+            ),
+            "audio failed; also failed to restore the previous config file, so it keeps the settings \
+             that failed to apply: disk full; also failed to restore the previous start-on-login \
+             setting: launchd refused"
         );
     }
 

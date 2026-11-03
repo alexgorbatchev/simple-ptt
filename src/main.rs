@@ -80,7 +80,9 @@ fn run_graphical_application() -> Result<(), String> {
     let runtime_config = config::materialize_runtime_config(&loaded_config);
     let config_path = config::config_path()?;
 
-    crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login);
+    if let Err(error) = crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login) {
+        log::error!("{}", error);
+    }
 
     log::info!(
         "config loaded (ui.start_on_login={}, ui.hotkey={}, mic.audio_device={:?}, mic.sample_rate={}Hz, mic.gain={}, mic.hold_ms={}, ui.font_name={:?}, ui.font_size={}, ui.footer_font_size={:?}, ui.meter_style={:?}, deepgram.endpointing_ms={}, deepgram.utterance_end_ms={}, deepgram.model={}, deepgram.language={}, deepgram.api_key_configured={}, transformation.enabled={}, transformation.hotkey={:?}, transformation.auto={}, transformation.provider={:?}, transformation.model={:?}, transformation.api_key_configured={}, transformation.system_prompt_configured={}, transformation.correction_system_prompt_configured={})",

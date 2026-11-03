@@ -203,12 +203,18 @@ impl AudioController {
     }
 
     pub fn should_rebuild_stream(&self) -> bool {
+        self.should_rebuild_stream_for(&self.effective_mic_config())
+    }
+
+    /// Whether the running stream cannot serve `mic_config`: it is missing,
+    /// unhealthy, stalled, opened for another device or rate, or the
+    /// hardware changed since it was opened.
+    fn should_rebuild_stream_for(&self, mic_config: &MicConfig) -> bool {
         let active_stream = match self.active_stream.lock() {
             Ok(guard) => guard,
             Err(_) => return true,
         };
 
-        let mic_config = self.effective_mic_config();
         let Some(active) = active_stream.as_ref() else {
             return true;
         };
@@ -217,9 +223,11 @@ impl AudioController {
             return true;
         }
 
-        if active.requested_sample_rate != mic_config.sample_rate
-            || active.configured_audio_device != mic_config.audio_device
-        {
+        if stream_opened_for_another_config(
+            active.requested_sample_rate,
+            active.configured_audio_device.as_deref(),
+            mic_config,
+        ) {
             return true;
         }
 
@@ -262,11 +270,14 @@ impl AudioController {
         false
     }
 
+    /// Rebuilds the stream for `mic_config`, the config being saved, when
+    /// the running one cannot serve it. The live config still holds the
+    /// previous one at this point.
     pub fn apply_mic_config(
         &self,
         mic_config: &MicConfig,
     ) -> Result<AudioConfigApplyEffect, String> {
-        let needs_stream_rebuild = self.should_rebuild_stream();
+        let needs_stream_rebuild = self.should_rebuild_stream_for(mic_config);
 
         if !needs_stream_rebuild {
             return Ok(AudioConfigApplyEffect::AppliedNow);
@@ -442,6 +453,17 @@ impl AudioController {
         }
         preference.is_active()
     }
+}
+
+/// Whether a stream opened at `requested_sample_rate` for the configured
+/// `configured_audio_device` was opened for a config other than `mic_config`.
+fn stream_opened_for_another_config(
+    requested_sample_rate: u32,
+    configured_audio_device: Option<&str>,
+    mic_config: &MicConfig,
+) -> bool {
+    requested_sample_rate != mic_config.sample_rate
+        || configured_audio_device != mic_config.audio_device.as_deref()
 }
 
 fn stream_should_play(always_on: bool, state: &AppState) -> bool {
@@ -713,6 +735,18 @@ mod tests {
         assert_eq!(&*state.overlay_text(), "words captured before disconnecting");
         assert!(!state.overlay_error_text().is_empty());
         assert!(controller.should_rebuild_stream());
+    }
+
+    #[test]
+    fn a_stream_is_rebuilt_for_a_changed_sample_rate_or_device() {
+        let mut mic_config = crate::config::Config::default().mic;
+        mic_config.audio_device = Some("Shure MV7".to_owned());
+        let rate = mic_config.sample_rate;
+
+        assert!(!super::stream_opened_for_another_config(rate, Some("Shure MV7"), &mic_config));
+        assert!(super::stream_opened_for_another_config(rate + 1, Some("Shure MV7"), &mic_config));
+        assert!(super::stream_opened_for_another_config(rate, Some("Built-in"), &mic_config));
+        assert!(super::stream_opened_for_another_config(rate, None, &mic_config));
     }
 
     #[test]
