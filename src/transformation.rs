@@ -717,6 +717,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "calls the live Gemini API; run explicitly with --ignored"]
     async fn test_gemini_streaming_items() {
         let api_key = std::env::var("GEMINI_API_KEY")
             .or_else(|_| std::env::var("GOOGLE_API_KEY"))
@@ -739,7 +740,7 @@ mod tests {
         let text = transform_text(
             Arc::clone(&state),
             &config,
-            "Write a 300 word essay about Apple.",
+            "Reply with OK.",
             TransformationPreviewMode::ReplaceOverlay,
         )
         .await
