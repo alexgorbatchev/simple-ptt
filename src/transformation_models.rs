@@ -48,18 +48,21 @@ pub struct TransformationProviderRequest {
 
 impl TransformationProviderRequest {
     /// Parses the provider before recording its account and selected model.
-    /// Unsupported names return the shared provider parser's error.
+    /// Unsupported names return the shared provider parser's error. A blank
+    /// model stands for the provider's default model, and stays blank for a
+    /// provider without one.
     pub fn new(
         provider: String,
         resolved_api_key: Option<String>,
         selected_model: String,
     ) -> Result<Self, String> {
+        let provider: TransformationProvider = provider.parse()?;
         Ok(Self {
-            provider: provider.parse()?,
+            provider,
             resolved_api_key: resolved_api_key
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()),
-            selected_model: selected_model.trim().to_owned(),
+            selected_model: provider.resolve_model(&selected_model).unwrap_or_default(),
         })
     }
 

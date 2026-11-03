@@ -364,6 +364,7 @@ impl SettingsWindow {
 
     pub fn set_transformation_model_controls_enabled(&self, enabled: bool) {
         self.transformation.set_model_controls_enabled(enabled);
+        self.transformation.sync_model_placeholder();
     }
 
     pub fn set_transformation_check_result(&self, success: bool) {

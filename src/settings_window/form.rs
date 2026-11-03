@@ -230,11 +230,23 @@ impl SettingsForm {
                 })
                 .transpose()?,
                 api_key: optional_text(&transformation.api_key),
-                model: required_text(&transformation.model, "Transformation model")?,
+                model: transformation.model.trim().to_owned(),
                 system_prompt: self.prompts.system_prompt.clone(),
                 correction_system_prompt: self.prompts.correction_system_prompt.clone(),
             },
         })
+    }
+}
+
+/// Placeholder of the model field for the provider popup's value: the model
+/// a blank field stands for, or that the provider needs one.
+pub fn transformation_model_placeholder(provider: Option<&str>) -> String {
+    match provider.map(str::parse::<TransformationProvider>) {
+        Some(Ok(provider)) => match provider.default_model() {
+            Some(model) => format!("Default: {model}"),
+            None => format!("Required for {provider}"),
+        },
+        Some(Err(_)) | None => String::new(),
     }
 }
 
@@ -597,7 +609,7 @@ mod tests {
 
     #[test]
     fn blank_required_text_values_are_rejected_with_field_names() {
-        let cases: [(&str, fn(&mut SettingsForm)); 7] = [
+        let cases: [(&str, fn(&mut SettingsForm)); 6] = [
             ("Record hotkey is required", |form| {
                 form.general.hotkey = " ".to_owned()
             }),
@@ -615,9 +627,6 @@ mod tests {
             }),
             ("Transform hotkey is required", |form| {
                 form.transformation.hotkey = "".to_owned()
-            }),
-            ("Transformation model is required", |form| {
-                form.transformation.model = "  ".to_owned()
             }),
         ];
 
@@ -760,5 +769,23 @@ mod tests {
         assert_eq!(mic_gain_label(4.0), "4.0 dB");
         assert_eq!(mic_gain_label(4.5), "4.5 dB");
         assert_eq!(mic_gain_label(10.0), "10.0 dB");
+    }
+
+    #[test]
+    fn a_blank_model_is_saved_blank_so_the_provider_default_applies() {
+        let mut form = SettingsForm::from_config(&customized_config());
+        form.transformation.model = "  ".to_owned();
+
+        assert_eq!(form.to_config().unwrap().transformation.model, "");
+    }
+
+    #[test]
+    fn the_model_placeholder_names_the_providers_default_or_requires_a_model() {
+        use super::transformation_model_placeholder;
+
+        assert_eq!(transformation_model_placeholder(Some("anthropic")), "Default: claude-haiku-4-5");
+        assert_eq!(transformation_model_placeholder(Some("ollama")), "Required for ollama");
+        assert_eq!(transformation_model_placeholder(Some("galadriel")), "");
+        assert_eq!(transformation_model_placeholder(None), "");
     }
 }

@@ -5,6 +5,7 @@ use objc2_app_kit::{
     NSButton, NSComboBox, NSLayoutAttribute, NSPopUpButton, NSStackView, NSTextField,
     NSUserInterfaceLayoutOrientation, NSView,
 };
+use objc2_foundation::NSString;
 
 use super::prompt_editors::PromptEditors;
 use super::{activate, pane_view, PaneContentHeight};
@@ -15,7 +16,8 @@ use crate::settings_window::controls::{
     text_field, text_value, FIELD_MIN_WIDTH,
 };
 use crate::settings_window::form::{
-    optional_popup_value, optional_text, TransformationForm, TRANSFORMATION_PROVIDER_DISABLED_LABEL,
+    optional_popup_value, optional_text, transformation_model_placeholder, TransformationForm,
+    TRANSFORMATION_PROVIDER_DISABLED_LABEL,
 };
 use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow, RowAlignment};
 use crate::settings_window::popups::{
@@ -136,6 +138,7 @@ impl TransformationPane {
         self.api_key_env_hint.set_text(api_key_env_hint.as_deref());
         populate_combo_box_with_values(&self.model_combo_box, &[], &form.model);
         self.set_model_controls_enabled(self.provider_value().is_some());
+        self.sync_model_placeholder();
     }
 
     pub fn read(&self) -> TransformationForm {
@@ -170,6 +173,14 @@ impl TransformationPane {
     pub fn populate_model_values(&self, models: &[String]) {
         let selected_model = self.model_value();
         populate_combo_box_with_values(&self.model_combo_box, models, selected_model.as_str());
+    }
+
+    /// Shows in the empty model field the model it stands for with the
+    /// selected provider.
+    pub fn sync_model_placeholder(&self) {
+        let placeholder = transformation_model_placeholder(self.provider_value().as_deref());
+        self.model_combo_box
+            .setPlaceholderString(Some(&NSString::from_str(&placeholder)));
     }
 
     pub fn set_model_controls_enabled(&self, enabled: bool) {

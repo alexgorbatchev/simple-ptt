@@ -1,7 +1,7 @@
 mod problems;
 mod provider;
 
-pub use problems::{mic_gain_problem, problems, ConfigProblem};
+pub use problems::{mic_gain_problem, missing_model_problem, problems, ConfigProblem};
 pub use provider::TransformationProvider;
 
 use serde::Deserialize;
@@ -158,7 +158,8 @@ pub struct TransformationConfig {
 
     pub api_key: Option<String>,
 
-    #[serde(default = "default_transformation_model")]
+    /// Blank when unset: the provider's `default_model` is used then.
+    #[serde(default)]
     pub model: String,
 
     #[serde(default = "default_transformation_system_prompt")]
@@ -178,7 +179,7 @@ impl Default for TransformationConfig {
             auto: default_transformation_auto(),
             provider: None,
             api_key: None,
-            model: default_transformation_model(),
+            model: String::new(),
             system_prompt: default_transformation_system_prompt(),
             correction_system_prompt: default_transformation_correction_system_prompt(),
         }
@@ -256,10 +257,6 @@ fn default_transformation_hotkey() -> String {
 
 fn default_transformation_auto() -> bool {
     true
-}
-
-pub(crate) fn default_transformation_model() -> String {
-    "gpt-5.4-mini".into()
 }
 
 pub(crate) fn default_transformation_system_prompt() -> String {
@@ -418,10 +415,9 @@ impl Config {
             })?
             .parse::<TransformationProvider>()?;
 
-        let model = match self.transformation.model.trim() {
-            "" => default_transformation_model(),
-            model => model.to_owned(),
-        };
+        let model = provider
+            .resolve_model(&self.transformation.model)
+            .ok_or_else(|| missing_model_problem(provider).to_string())?;
 
         let api_key =
             resolve_transformation_api_key(self.transformation.api_key.as_deref(), provider);
@@ -821,14 +817,13 @@ fn write_transformation_table(
     *table.entry("auto").or_insert(Item::None) = value(transformation.auto);
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
-    set_defaulted_string_key(
-        table,
-        "model",
-        &[],
-        &transformation.model,
-        &default_transformation_model(),
-        false,
-    );
+    let default_model = transformation
+        .provider
+        .as_deref()
+        .and_then(|provider| provider.parse::<TransformationProvider>().ok())
+        .and_then(TransformationProvider::default_model)
+        .unwrap_or_default();
+    set_defaulted_string_key(table, "model", &[], &transformation.model, default_model, false);
     set_defaulted_string_key(
         table,
         "system_prompt",
@@ -938,8 +933,16 @@ pub fn materialize_runtime_config(config: &Config) -> Config {
             config.transformation.api_key.as_deref(),
         );
     }
-    if runtime_config.transformation.model.trim().is_empty() {
-        runtime_config.transformation.model = default_transformation_model();
+    if let Some(model) = runtime_config
+        .transformation
+        .provider
+        .as_deref()
+        .unwrap_or_default()
+        .parse::<TransformationProvider>()
+        .ok()
+        .and_then(|provider| provider.resolve_model(&config.transformation.model))
+    {
+        runtime_config.transformation.model = model;
     }
     if runtime_config
         .transformation
@@ -1371,6 +1374,37 @@ mod tests {
     }
 
     #[test]
+    fn save_config_compares_the_model_with_the_configured_providers_default() {
+        let mut config = Config::default();
+        config.transformation.provider = Some("anthropic".to_owned());
+        config.transformation.model = "claude-haiku-4-5".to_owned();
+        let table =
+            saved_transformation_table("provider-default", None, &config, PromptResets::default());
+        assert!(!table.contains_key("model"), "model was written:\n{table}");
+
+        config.transformation.model = "gpt-5.4-mini".to_owned();
+        let table =
+            saved_transformation_table("other-default", None, &config, PromptResets::default());
+        assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn an_unset_model_resolves_per_provider_or_is_required() {
+        let mut config = Config::default();
+        config.transformation.provider = Some("anthropic".to_owned());
+        assert_eq!(config.resolve_transformation_config().unwrap().model, "claude-haiku-4-5");
+        assert_eq!(materialize_runtime_config(&config).transformation.model, "claude-haiku-4-5");
+
+        config.transformation.provider = Some("ollama".to_owned());
+        let error = config.resolve_transformation_config().unwrap_err();
+        assert_eq!(
+            error,
+            "transformation.model: is required for provider 'ollama', which has no built-in default model"
+        );
+        assert_eq!(materialize_runtime_config(&config).transformation.model, "");
+    }
+
+    #[test]
     fn save_config_writes_customized_prompts_and_model() {
         let mut config = Config::default();
         config.transformation.model = "claude-test".to_owned();
@@ -1397,23 +1431,22 @@ mod tests {
     #[test]
     fn save_config_keeps_default_valued_keys_the_file_already_has() {
         let initial_contents = format!(
-            "[transformation]\nmodel = {:?}\nsystem_prompt = {:?}\ninstruction_system_prompt = {:?}\n",
-            super::default_transformation_model(),
+            "[transformation]\nprovider = \"openai\"\nmodel = \"gpt-5.4-mini\"\nsystem_prompt = {:?}\ninstruction_system_prompt = {:?}\n",
             default_transformation_system_prompt(),
             default_transformation_correction_system_prompt(),
         );
+        let mut config = Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+        config.transformation.model = "gpt-5.4-mini".to_owned();
 
         let table = saved_transformation_table(
             "defaults-present",
             Some(&initial_contents),
-            &Config::default(),
+            &config,
             PromptResets::default(),
         );
 
-        assert_eq!(
-            table["model"].as_str(),
-            Some(super::default_transformation_model().as_str())
-        );
+        assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
         assert_eq!(
             table["system_prompt"].as_str(),
             Some(default_transformation_system_prompt().as_str())

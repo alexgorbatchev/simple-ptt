@@ -62,6 +62,38 @@ impl TransformationProvider {
         }
     }
 
+    /// Model used when `transformation.model` is unset. Only providers with
+    /// a stable small model have one; the others need `transformation.model`.
+    pub const fn default_model(self) -> Option<&'static str> {
+        match self {
+            Self::Anthropic => Some("claude-haiku-4-5"),
+            Self::Gemini => Some("gemini-3.5-flash-lite"),
+            Self::Openai => Some("gpt-5.4-mini"),
+            Self::Cohere
+            | Self::Deepseek
+            | Self::Groq
+            | Self::Huggingface
+            | Self::Hyperbolic
+            | Self::Mira
+            | Self::Mistral
+            | Self::Moonshot
+            | Self::Ollama
+            | Self::Openrouter
+            | Self::Perplexity
+            | Self::Together
+            | Self::Xai => None,
+        }
+    }
+
+    /// The model for `configured_model`, which is blank when unset, or
+    /// `None` when it is unset and this provider has no default.
+    pub fn resolve_model(self, configured_model: &str) -> Option<String> {
+        match configured_model.trim() {
+            "" => self.default_model().map(str::to_owned),
+            model => Some(model.to_owned()),
+        }
+    }
+
     pub const fn api_key_env_vars(self) -> &'static [&'static str] {
         match self {
             Self::Anthropic => &["ANTHROPIC_API_KEY"],
@@ -111,6 +143,41 @@ impl fmt::Display for TransformationProvider {
 #[cfg(test)]
 mod tests {
     use super::TransformationProvider;
+
+    #[test]
+    fn an_unset_model_resolves_to_the_providers_own_default() {
+        assert_eq!(TransformationProvider::Openai.resolve_model(""), Some("gpt-5.4-mini".to_owned()));
+        assert_eq!(
+            TransformationProvider::Anthropic.resolve_model("  "),
+            Some("claude-haiku-4-5".to_owned())
+        );
+        assert_eq!(
+            TransformationProvider::Gemini.resolve_model(""),
+            Some("gemini-3.5-flash-lite".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_provider_without_a_default_requires_a_model() {
+        assert_eq!(TransformationProvider::Ollama.resolve_model(""), None);
+        assert_eq!(
+            TransformationProvider::Ollama.resolve_model(" llama3.2 "),
+            Some("llama3.2".to_owned())
+        );
+    }
+
+    #[test]
+    fn no_provider_defaults_to_another_providers_model() {
+        for provider in TransformationProvider::ALL {
+            if let Some(model) = provider.default_model() {
+                for other in TransformationProvider::ALL {
+                    if other != provider {
+                        assert_ne!(other.default_model(), Some(model), "{provider} and {other}");
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn provider_parser_canonicalizes_supported_names_and_rejects_unknown_names() {

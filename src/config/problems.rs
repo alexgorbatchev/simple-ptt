@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use super::{Config, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
+use super::{Config, TransformationProvider, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
 use crate::correction_binding::CorrectionBinding;
 use crate::hotkey_binding::parse_hotkey_binding;
 
@@ -87,8 +87,19 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         .as_deref()
         .is_some_and(|provider| !provider.trim().is_empty());
     if transformation_enabled {
-        if let Err(error) = config.resolve_transformation_config() {
-            problems.push(ConfigProblem::new("transformation.provider", error));
+        let provider = config
+            .transformation
+            .provider
+            .as_deref()
+            .unwrap_or_default()
+            .parse::<TransformationProvider>();
+        match provider {
+            Ok(provider) => {
+                if provider.resolve_model(&config.transformation.model).is_none() {
+                    problems.push(missing_model_problem(provider));
+                }
+            }
+            Err(error) => problems.push(ConfigProblem::new("transformation.provider", error)),
         }
         match parse_hotkey_binding(&config.transformation.hotkey) {
             Ok(transform_hotkey) => {
@@ -137,6 +148,18 @@ pub fn mic_gain_problem(gain_db: f32) -> Option<ConfigProblem> {
             ),
         )
     })
+}
+
+/// The problem with an unset `transformation.model` for a provider that has
+/// no default model.
+pub fn missing_model_problem(provider: TransformationProvider) -> ConfigProblem {
+    ConfigProblem::new(
+        "transformation.model",
+        format!(
+            "is required for provider '{}', which has no built-in default model",
+            provider
+        ),
+    )
 }
 
 fn is_positive(value: f64) -> bool {
@@ -255,6 +278,25 @@ mod tests {
             "{}",
             problems[0].message
         );
+    }
+
+    #[test]
+    fn an_unset_model_is_a_problem_only_for_a_provider_without_a_default() {
+        let mut config = Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+        assert_eq!(keys(&config), Vec::<&str>::new());
+
+        config.transformation.provider = Some("ollama".to_owned());
+        assert_eq!(
+            problems(&config)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["transformation.model: is required for provider 'ollama', which has no built-in default model"]
+        );
+
+        config.transformation.model = "llama3.2".to_owned();
+        assert_eq!(keys(&config), Vec::<&str>::new());
     }
 
     #[test]
