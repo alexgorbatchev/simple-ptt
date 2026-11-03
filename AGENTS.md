@@ -52,6 +52,15 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - **Version Authority:** The ultimate authority on the current version depends on the deployment destination. For projects with external registries (like NPM or Crates.io), the published registry is the authority, not just GitHub tags. Since this app compiles binaries directly to GitHub Releases with no external registry, **GitHub Releases are the absolute authority** for its version.
 - **Failed Releases:** If a GitHub release action fails to compile or attach binaries, it is acceptable to delete the tag/release and republish the exact same version number to retry the process.
 
+The release workflow uploads the DMG; complete Sparkle feed publication manually using the exact commands and failure handling in `docs/internal/references/sparkle-publication.md`:
+
+1. Confirm the approved tag is published and download its actual DMG with `gh release download`; never sign a local rebuild instead.
+2. Inspect the DMG read-only without launching the app. Verify its version, macOS minimum, bundled framework, feed URL, and public key against packaging metadata. Compare the key with Sparkle's `generate_keys --account <existing-account> -p`; stop if the matching private key is unavailable. Do not generate a replacement key.
+3. Copy the current feed to staging and run the matching Sparkle version's `generate_appcast --account <existing-account>` with the published download URL prefix, `--maximum-versions 0`, and `--maximum-deltas 0`.
+4. Require the generated entry's URL, versions, and minimum OS to match the release/bundle, its length to match both downloaded bytes and GitHub asset metadata, and `sign_update --account <existing-account> --verify <downloaded-DMG> <entry-signature>` to succeed.
+5. Independently review and publish only the verified `appcast.xml` change to current `main`. It goes live immediately; never publish an entry before its asset exists or replace an asset already referenced by the feed.
+6. Fetch the live feed and verify that its entry matches the reviewed version, URL, length, and signature before marking the release complete. Retain verification evidence and remove only reviewed staging files.
+
 ## Gotchas
 - LaunchServices-launched apps do not reliably inherit shell environment variables. For real app runs, prefer file-backed config in `~/.config/simple-ptt/config.toml`.
 - `just run` sets `SIMPLE_PTT_CONFIG=./config.toml`; `just run-xdg` does not. Use the right command when reproducing config-loading bugs.
