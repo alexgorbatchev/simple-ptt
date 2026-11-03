@@ -82,12 +82,12 @@ fn modifier_group_for_key(key: Key) -> Option<ModifierGroup> {
     }
 }
 
-pub fn format_hotkey_binding(binding: HotkeyBinding) -> Option<String> {
+pub fn format_hotkey_binding(binding: HotkeyBinding) -> String {
     let modifiers = format_modifiers(binding.modifiers);
     if modifiers.is_empty() {
-        return Some(key_name(binding.key).to_owned());
+        return key_name(binding.key).to_owned();
     }
-    Some(format!("{}+{}", modifiers, key_name(binding.key)))
+    format!("{}+{}", modifiers, key_name(binding.key))
 }
 
 pub fn format_modifiers(modifiers: HotkeyModifiers) -> String {
@@ -548,9 +548,8 @@ mod tests {
                     meta: true,
                 },
                 key: Key::KeyZ,
-            })
-            .as_deref(),
-            Some("Ctrl+Shift+Cmd+Z")
+            }),
+            "Ctrl+Shift+Cmd+Z"
         );
     }
 

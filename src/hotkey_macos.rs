@@ -201,7 +201,7 @@ fn hotkey_event(event_type: CGEventType, code: u16, flags: CGEventFlags) -> Opti
     match event_type {
         CGEventType::KeyDown => Some(HotkeyEvent::KeyPress(key, modifiers_held(flags, None))),
         CGEventType::KeyUp => Some(HotkeyEvent::KeyRelease(key, modifiers_held(flags, None))),
-        CGEventType::FlagsChanged if is_modifier_key(key) => {
+        CGEventType::FlagsChanged if is_flags_changed_key(key) => {
             Some(if modifier_is_down(key, flags) {
                 HotkeyEvent::KeyPress(key, modifiers_held(flags, Some(key)))
             } else {
@@ -279,19 +279,8 @@ fn event_type_mask(event_type: CGEventType) -> CGEventMask {
     1u64 << (event_type.0 as u64)
 }
 
-fn is_modifier_key(key: Key) -> bool {
-    matches!(
-        key,
-        Key::AltLeft
-            | Key::AltRight
-            | Key::CapsLock
-            | Key::ControlLeft
-            | Key::ControlRight
-            | Key::MetaLeft
-            | Key::MetaRight
-            | Key::ShiftLeft
-            | Key::ShiftRight
-    )
+fn is_flags_changed_key(key: Key) -> bool {
+    crate::hotkey_binding::is_modifier_key(key) || key == Key::CapsLock
 }
 
 fn key_from_code(code: u16) -> Option<Key> {
@@ -514,7 +503,7 @@ mod tests {
             panic!("expected a key press");
         };
         let binding = HotkeyBinding { key, modifiers };
-        assert_eq!(format_hotkey_binding(binding).as_deref(), Some("Cmd+,"));
+        assert_eq!(format_hotkey_binding(binding), "Cmd+,");
         assert_eq!(parse_hotkey_binding("Cmd+,").unwrap(), binding);
         assert_eq!(
             hotkey_event(CGEventType::KeyUp, 0x2B, CGEventFlags::MaskCommand),
@@ -567,6 +556,20 @@ mod tests {
             hotkey_event(CGEventType::KeyDown, F5, CGEventFlags::empty()),
             Some(HotkeyEvent::KeyPress(Key::F5, no_modifiers()))
         );
+    }
+
+    #[test]
+    fn caps_lock_flag_changes_are_keys_without_becoming_chord_modifiers() {
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, super::CAPS_LOCK, CGEventFlags::MaskAlphaShift),
+            Some(HotkeyEvent::KeyPress(Key::CapsLock, no_modifiers()))
+        );
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, super::CAPS_LOCK, CGEventFlags::empty()),
+            Some(HotkeyEvent::KeyRelease(Key::CapsLock, no_modifiers()))
+        );
+        assert_eq!(hotkey_event(CGEventType::FlagsChanged, F5, CGEventFlags::empty()), None);
+        assert!(!HotkeyModifiers::default().with_key_pressed(Key::CapsLock).any());
     }
 
     #[test]
@@ -652,8 +655,7 @@ mod tests {
                 modifiers: HotkeyModifiers::default(),
                 key,
             };
-            let formatted = format_hotkey_binding(binding)
-                .unwrap_or_else(|| panic!("{key:?} has no binding string"));
+            let formatted = format_hotkey_binding(binding);
             assert_eq!(
                 parse_hotkey_binding(&formatted),
                 Ok(binding),
