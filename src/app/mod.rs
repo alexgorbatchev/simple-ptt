@@ -1016,6 +1016,7 @@ impl AppDelegate {
         settings_window.sync_transformation_api_key_env_hint();
         let provider_selected = settings_window.transformation_provider_value().is_some();
         settings_window.set_transformation_model_controls_enabled(provider_selected);
+        settings_window.sync_transformation_model_placeholder();
         if !provider_selected {
             settings_window.populate_transformation_model_values(&[]);
             return Some(String::new());

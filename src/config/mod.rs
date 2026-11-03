@@ -1377,7 +1377,7 @@ mod tests {
     fn save_config_compares_the_model_with_the_configured_providers_default() {
         let mut config = Config::default();
         config.transformation.provider = Some("anthropic".to_owned());
-        config.transformation.model = "claude-haiku-4-5".to_owned();
+        config.transformation.model = "claude-haiku-5-5".to_owned();
         let table =
             saved_transformation_table("provider-default", None, &config, PromptResets::default());
         assert!(!table.contains_key("model"), "model was written:\n{table}");
@@ -1392,8 +1392,8 @@ mod tests {
     fn an_unset_model_resolves_per_provider_or_is_required() {
         let mut config = Config::default();
         config.transformation.provider = Some("anthropic".to_owned());
-        assert_eq!(config.resolve_transformation_config().unwrap().model, "claude-haiku-4-5");
-        assert_eq!(materialize_runtime_config(&config).transformation.model, "claude-haiku-4-5");
+        assert_eq!(config.resolve_transformation_config().unwrap().model, "claude-haiku-5-5");
+        assert_eq!(materialize_runtime_config(&config).transformation.model, "claude-haiku-5-5");
 
         config.transformation.provider = Some("ollama".to_owned());
         let error = config.resolve_transformation_config().unwrap_err();

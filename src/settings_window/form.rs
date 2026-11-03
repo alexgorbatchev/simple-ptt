@@ -783,7 +783,7 @@ mod tests {
     fn the_model_placeholder_names_the_providers_default_or_requires_a_model() {
         use super::transformation_model_placeholder;
 
-        assert_eq!(transformation_model_placeholder(Some("anthropic")), "Default: claude-haiku-4-5");
+        assert_eq!(transformation_model_placeholder(Some("anthropic")), "Default: claude-haiku-5-5");
         assert_eq!(transformation_model_placeholder(Some("ollama")), "Required for ollama");
         assert_eq!(transformation_model_placeholder(Some("galadriel")), "");
         assert_eq!(transformation_model_placeholder(None), "");

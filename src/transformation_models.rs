@@ -1040,6 +1040,19 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_model_field_checks_the_providers_default_model() {
+        let request = |provider: &str, model: &str| {
+            TransformationProviderRequest::new(provider.to_owned(), None, model.to_owned())
+                .unwrap()
+                .selected_model
+        };
+
+        assert_eq!(request("anthropic", "  "), "claude-haiku-5-5");
+        assert_eq!(request("anthropic", " claude-test "), "claude-test");
+        assert_eq!(request("ollama", ""), "");
+    }
+
+    #[test]
     fn model_requests_share_canonical_provider_parsing() {
         let canonical = request("openai", Some("test-key"));
         let mixed_case = request(" OpenAI ", Some("test-key"));
