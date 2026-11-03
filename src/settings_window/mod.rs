@@ -25,19 +25,19 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSImage, NSLayoutAttribute,
-    NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultHigh,
-    NSLayoutPriorityDefaultLow, NSStackView, NSStackViewDistribution, NSTabViewController,
-    NSTabViewControllerTabStyle, NSTabViewItem, NSTextField, NSUserInterfaceLayoutOrientation,
-    NSView, NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowDelegate,
+    NSLayoutConstraintOrientation, NSLayoutPriorityDefaultHigh, NSLayoutPriorityDefaultLow,
+    NSStackView, NSStackViewDistribution, NSTabViewController, NSTabViewControllerTabStyle,
+    NSTabViewItem, NSTextField, NSTextView, NSUserInterfaceLayoutOrientation, NSView,
+    NSViewController, NSViewControllerTransitionOptions, NSWindow, NSWindowDelegate,
     NSWindowStyleMask, NSWindowToolbarStyle,
 };
-use objc2_foundation::{ns_string, MainThreadMarker, NSRect, NSSize, NSString};
+use objc2_foundation::{ns_string, MainThreadMarker, NSRange, NSRect, NSSize, NSString};
 
 use crate::config::{Config, PromptResets};
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
 use actions::SettingsAction;
-use controls::{for_auto_layout, push_button, set_capture_button_state, status_label};
+use controls::{for_auto_layout, push_button, set_capture_button_state, status_display};
 use form::{Prompt, SettingsForm};
 use helpers::environment_hint_message;
 use panes::activate;
@@ -58,7 +58,7 @@ pub const FETCH_MODELS_BUTTON_TITLE: &str = "Fetch models";
 
 const BUTTON_BAR_MARGIN: f64 = 20.0;
 const BUTTON_BAR_SPACING: f64 = 12.0;
-const STATUS_MAXIMUM_LINES: isize = 3;
+const STATUS_VISIBLE_LINES: usize = 6;
 
 #[derive(Debug)]
 pub struct SettingsWindow {
@@ -68,7 +68,7 @@ pub struct SettingsWindow {
     microphone: MicrophonePane,
     deepgram: DeepgramPane,
     transformation: TransformationPane,
-    status_text_field: Retained<NSTextField>,
+    status_text_view: Retained<NSTextView>,
     cancel_button: Retained<NSButton>,
     save_button: Retained<NSButton>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
@@ -117,10 +117,10 @@ impl SettingsWindow {
             tab_view_controller.addTabViewItem(&pane_tab_view_item(mtm, title, symbol_name, view));
         }
 
-        let status_text_field = status_label(mtm, STATUS_MAXIMUM_LINES);
+        let (status_scroll_view, status_text_view) = status_display(mtm, STATUS_VISIBLE_LINES);
         let cancel_button = push_button(mtm, "Cancel", target, SettingsAction::CancelSettings);
         let save_button = push_button(mtm, SAVE_BUTTON_TITLE, target, SettingsAction::SaveSettings);
-        let button_bar = button_bar(mtm, &status_text_field, &cancel_button, &save_button);
+        let button_bar = button_bar(mtm, &status_scroll_view, &cancel_button, &save_button);
 
         let root_view = NSView::new(mtm);
         let tab_view = for_auto_layout(tab_view_controller.view());
@@ -209,7 +209,7 @@ impl SettingsWindow {
             microphone,
             deepgram,
             transformation,
-            status_text_field,
+            status_text_view,
             cancel_button,
             save_button,
             hotkey_capture_restore_value: RefCell::new(None),
@@ -315,15 +315,8 @@ impl SettingsWindow {
     }
 
     pub fn set_status(&self, message: &str) {
-        self.status_text_field
-            .setStringValue(&NSString::from_str(message));
-        // The label truncates after `STATUS_MAXIMUM_LINES`; the tooltip keeps
-        // the whole message readable.
-        self.status_text_field.setToolTip(
-            (!message.is_empty())
-                .then(|| NSString::from_str(message))
-                .as_deref(),
-        );
+        self.status_text_view.setString(&NSString::from_str(message));
+        self.status_text_view.scrollRangeToVisible(NSRange::new(0, 0));
     }
 
     pub fn update_mic_gain_label(&self, gain_db: f32) {
@@ -504,11 +497,11 @@ fn pane_tab_view_item(
 /// Status text on the leading side and Cancel/Save on the trailing side. The
 /// bar fills its width, the buttons hug their titles, and the status takes the
 /// rest, so Cancel and Save stay at the trailing edge whatever the status says,
-/// including nothing. The bar is always tall enough for `STATUS_MAXIMUM_LINES`
-/// of status text, so a longer message does not resize the window.
+/// including nothing. The status view has a fixed viewport and scrolls longer
+/// messages without resizing the window.
 fn button_bar(
     mtm: MainThreadMarker,
-    status_text_field: &NSTextField,
+    status_scroll_view: &NSView,
     cancel_button: &NSButton,
     save_button: &NSButton,
 ) -> Retained<NSStackView> {
@@ -517,7 +510,7 @@ fn button_bar(
     bar.setAlignment(NSLayoutAttribute::CenterY);
     bar.setDistribution(NSStackViewDistribution::Fill);
     for view in [
-        status_text_field as &NSView,
+        status_scroll_view,
         cancel_button as &NSView,
         save_button as &NSView,
     ] {
@@ -529,16 +522,11 @@ fn button_bar(
             NSLayoutConstraintOrientation::Horizontal,
         );
     }
-    status_text_field.setContentHuggingPriority_forOrientation(
+    status_scroll_view.setContentHuggingPriority_forOrientation(
         NSLayoutPriorityDefaultLow,
         NSLayoutConstraintOrientation::Horizontal,
     );
 
-    let status_font = status_text_field.font().expect("labels always have a font");
-    let status_line_height = NSLayoutManager::new().defaultLineHeightForFont(&status_font);
-    bar.heightAnchor()
-        .constraintGreaterThanOrEqualToConstant(status_line_height * STATUS_MAXIMUM_LINES as f64)
-        .setActive(true);
     bar
 }
 

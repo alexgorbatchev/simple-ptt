@@ -7,10 +7,10 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSBorderType, NSButton, NSColor, NSComboBox, NSControlStateValueOff, NSControlStateValueOn,
-    NSFont, NSLayoutConstraintOrientation, NSLayoutManager, NSLayoutPriorityDefaultLow,
-    NSLayoutPriorityDragThatCannotResizeWindow, NSLineBreakMode, NSPopUpButton, NSScrollView,
-    NSSlider, NSTextField, NSTextView, NSView,
+    NSAccessibility, NSBorderType, NSButton, NSColor, NSComboBox, NSControlStateValueOff,
+    NSControlStateValueOn, NSFont, NSLayoutConstraintOrientation, NSLayoutManager,
+    NSLayoutPriorityDefaultLow, NSLayoutPriorityDragThatCannotResizeWindow, NSPopUpButton,
+    NSScrollView, NSSlider, NSTextField, NSTextView, NSView,
 };
 use objc2_foundation::{
     ns_string, NSAttributedString, NSDictionary, NSNumber, NSNumberFormatter,
@@ -289,6 +289,47 @@ pub fn prompt_editor(
     mtm: MainThreadMarker,
     minimum_visible_lines: usize,
 ) -> (Retained<NSScrollView>, Retained<NSTextView>) {
+    let (scroll_view, text_view) = scrollable_plain_text(mtm);
+    text_view.setAllowsUndo(true);
+    text_view.setAutomaticQuoteSubstitutionEnabled(false);
+    text_view.setAutomaticDashSubstitutionEnabled(false);
+    text_view.setAutomaticTextReplacementEnabled(false);
+    text_view.setAutomaticSpellingCorrectionEnabled(false);
+
+    // Below the priority at which the window keeps its size: when a hint row
+    // appears above the editors at the minimum window size, the editors give
+    // up its height instead of the window growing.
+    let minimum_height = scroll_view
+        .heightAnchor()
+        .constraintGreaterThanOrEqualToConstant(text_scroll_height(
+            mtm,
+            &scroll_view,
+            &text_view,
+            minimum_visible_lines,
+        ));
+    minimum_height.setPriority(NSLayoutPriorityDragThatCannotResizeWindow);
+    minimum_height.setActive(true);
+    (scroll_view, text_view)
+}
+
+/// A bounded, selectable status area. Long messages wrap and scroll instead
+/// of truncating, so every diagnostic can be read and copied from the window.
+pub fn status_display(
+    mtm: MainThreadMarker,
+    visible_lines: usize,
+) -> (Retained<NSScrollView>, Retained<NSTextView>) {
+    let (scroll_view, text_view) = scrollable_plain_text(mtm);
+    text_view.setEditable(false);
+    text_view.setSelectable(true);
+    text_view.setAccessibilityLabel(Some(ns_string!("Settings status")));
+    scroll_view
+        .heightAnchor()
+        .constraintEqualToConstant(text_scroll_height(mtm, &scroll_view, &text_view, visible_lines))
+        .setActive(true);
+    (scroll_view, text_view)
+}
+
+fn scrollable_plain_text(mtm: MainThreadMarker) -> (Retained<NSScrollView>, Retained<NSTextView>) {
     let scroll_view = for_auto_layout(NSTextView::scrollableTextView(mtm));
     scroll_view.setBorderType(NSBorderType::BezelBorder);
     scroll_view.setHasVerticalScroller(true);
@@ -300,16 +341,19 @@ pub fn prompt_editor(
         .and_then(|document_view| document_view.downcast::<NSTextView>().ok())
         .expect("scrollableTextView has an NSTextView document view");
     text_view.setRichText(false);
-    text_view.setAllowsUndo(true);
-    text_view.setAutomaticQuoteSubstitutionEnabled(false);
-    text_view.setAutomaticDashSubstitutionEnabled(false);
-    text_view.setAutomaticTextReplacementEnabled(false);
-    text_view.setAutomaticSpellingCorrectionEnabled(false);
-    let font = NSFont::systemFontOfSize(NSFont::systemFontSize());
-    text_view.setFont(Some(&font));
+    text_view.setFont(Some(&NSFont::systemFontOfSize(NSFont::systemFontSize())));
+    (scroll_view, text_view)
+}
 
+fn text_scroll_height(
+    mtm: MainThreadMarker,
+    scroll_view: &NSScrollView,
+    text_view: &NSTextView,
+    visible_lines: usize,
+) -> f64 {
+    let font = text_view.font().expect("plain text views have a system font");
     let text_height = NSLayoutManager::new().defaultLineHeightForFont(&font)
-        * minimum_visible_lines as f64
+        * visible_lines as f64
         + 2.0 * text_view.textContainerInset().height;
     let vertical_scroller = scroll_view
         .verticalScroller()
@@ -327,15 +371,7 @@ pub fn prompt_editor(
             mtm,
         )
     };
-    // Below the priority at which the window keeps its size: when a hint row
-    // appears above the editors at the minimum window size, the editors give
-    // up its height instead of the window growing.
-    let minimum_height = scroll_view
-        .heightAnchor()
-        .constraintGreaterThanOrEqualToConstant(minimum_size.height);
-    minimum_height.setPriority(NSLayoutPriorityDragThatCannotResizeWindow);
-    minimum_height.setActive(true);
-    (scroll_view, text_view)
+    minimum_size.height
 }
 
 pub fn set_capture_button_state(button: &NSButton, is_active: bool, is_enabled: bool) {
@@ -382,19 +418,6 @@ pub fn style_button_bezel_and_text(
         button.setTitle(&title_string);
         button.setBezelColor(None);
     }
-}
-
-/// Wrapping status label; `maximum_lines` limits the lines drawn before truncation.
-/// The button bar reserves a fixed height for that many lines.
-pub fn status_label(mtm: MainThreadMarker, maximum_lines: isize) -> Retained<NSTextField> {
-    let label = for_auto_layout(NSTextField::wrappingLabelWithString(ns_string!(""), mtm));
-    label.setMaximumNumberOfLines(maximum_lines);
-    label.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
-    if let Some(cell) = label.cell() {
-        cell.setTruncatesLastVisibleLine(true);
-    }
-    allow_horizontal_compression(&label);
-    label
 }
 
 #[cfg(test)]
