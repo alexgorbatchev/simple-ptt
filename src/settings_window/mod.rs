@@ -16,7 +16,7 @@ pub mod helpers;
 mod panes;
 mod popups;
 
-pub use controls::{settings_font, style_button_bezel_and_text};
+pub use controls::style_button_bezel_and_text;
 
 use std::cell::RefCell;
 

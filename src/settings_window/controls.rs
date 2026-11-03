@@ -24,9 +24,6 @@ extern "C" {
     static NSForegroundColorAttributeName: &'static objc2_foundation::NSAttributedStringKey;
 }
 
-const SETTINGS_FONT_SIZE: f64 = 12.0;
-const SETTINGS_FONT_WEIGHT: f64 = 0.0;
-
 /// Narrowest width of a text field that fills its grid cells; together with
 /// the labels it sets the minimum width of a pane.
 pub const FIELD_MIN_WIDTH: f64 = 320.0;
@@ -55,12 +52,6 @@ pub fn set_checked(checkbox: &NSButton, checked: bool) {
 
 pub fn is_checked(checkbox: &NSButton) -> bool {
     checkbox.state() == NSControlStateValueOn
-}
-
-/// Monospaced font of the permissions dialog. The settings window itself uses
-/// the system font of each native control.
-pub fn settings_font() -> Retained<NSFont> {
-    NSFont::monospacedSystemFontOfSize_weight(SETTINGS_FONT_SIZE, SETTINGS_FONT_WEIGHT)
 }
 
 pub fn for_auto_layout<V: AsRef<NSView>>(view: V) -> V {
@@ -358,6 +349,7 @@ pub fn set_capture_button_state(button: &NSButton, is_active: bool, is_enabled: 
 
 /// Tints a push button (for a check result) or restores its native look when
 /// both colors are `None`. The title keeps the button's own font.
+/// Shared with the permissions dialog for its permission-state buttons.
 pub fn style_button_bezel_and_text(
     button: &NSButton,
     title: &str,
@@ -392,8 +384,8 @@ pub fn style_button_bezel_and_text(
     }
 }
 
-/// Wrapping status label; `maximum_lines` bounds how tall a long message can
-/// make the button bar.
+/// Wrapping status label; `maximum_lines` limits the lines drawn before truncation.
+/// The button bar reserves a fixed height for that many lines.
 pub fn status_label(mtm: MainThreadMarker, maximum_lines: isize) -> Retained<NSTextField> {
     let label = for_auto_layout(NSTextField::wrappingLabelWithString(ns_string!(""), mtm));
     label.setMaximumNumberOfLines(maximum_lines);

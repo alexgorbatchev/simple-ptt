@@ -1,6 +1,6 @@
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{sel, MainThreadOnly};
+use objc2::MainThreadOnly;
 use objc2_app_kit::{
     NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor,
     NSEventModifierFlags, NSFont, NSTextAlignment, NSTextField, NSView, NSWindow,
@@ -8,8 +8,9 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
+use crate::app::actions::ApplicationAction;
 use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
-use crate::settings_window::{settings_font, style_button_bezel_and_text};
+use crate::settings_window::style_button_bezel_and_text;
 
 const WINDOW_HEIGHT: f64 = 250.0;
 const WINDOW_WIDTH: f64 = 570.0;
@@ -24,9 +25,15 @@ const THREE_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - (BUTTON_GAP * 2.0)) / 3.0;
 const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
 const BODY_FONT_SIZE: f64 = 12.0;
+const BUTTON_FONT_SIZE: f64 = 12.0;
+const BUTTON_FONT_WEIGHT: f64 = 0.0;
 const RESET_BUTTON_TITLE: &str = "Reset and Relaunch";
 const RECHECK_BUTTON_TITLE: &str = "Re-check";
 const RELAUNCH_BUTTON_TITLE: &str = "Quit and Reopen";
+
+fn permissions_dialog_font() -> Retained<NSFont> {
+    NSFont::monospacedSystemFontOfSize_weight(BUTTON_FONT_SIZE, BUTTON_FONT_WEIGHT)
+}
 
 #[derive(Debug)]
 pub struct PermissionsDialog {
@@ -99,11 +106,11 @@ impl PermissionsDialog {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Request Accessibility"),
                 Some(target),
-                Some(sel!(requestAccessibilityPermission:)),
+                Some(ApplicationAction::RequestAccessibility.selector()),
                 mtm,
             )
         };
-        accessibility_button.setFont(Some(&settings_font()));
+        accessibility_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
             &*accessibility_button,
             HORIZONTAL_PADDING,
@@ -117,11 +124,11 @@ impl PermissionsDialog {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Request Microphone"),
                 Some(target),
-                Some(sel!(requestMicrophonePermission:)),
+                Some(ApplicationAction::RequestMicrophone.selector()),
                 mtm,
             )
         };
-        microphone_button.setFont(Some(&settings_font()));
+        microphone_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
             &*microphone_button,
             HORIZONTAL_PADDING + TWO_BUTTON_ROW_WIDTH + BUTTON_GAP,
@@ -135,11 +142,11 @@ impl PermissionsDialog {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str(RESET_BUTTON_TITLE),
                 Some(target),
-                Some(sel!(resetHotkeyPermissions:)),
+                Some(ApplicationAction::ResetPermissions.selector()),
                 mtm,
             )
         };
-        reset_button.setFont(Some(&settings_font()));
+        reset_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
             &*reset_button,
             HORIZONTAL_PADDING,
@@ -153,11 +160,11 @@ impl PermissionsDialog {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str(RECHECK_BUTTON_TITLE),
                 Some(target),
-                Some(sel!(recheckHotkeyPermissions:)),
+                Some(ApplicationAction::RecheckPermissions.selector()),
                 mtm,
             )
         };
-        recheck_button.setFont(Some(&settings_font()));
+        recheck_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
             &*recheck_button,
             HORIZONTAL_PADDING + THREE_BUTTON_ROW_WIDTH + BUTTON_GAP,
@@ -171,11 +178,11 @@ impl PermissionsDialog {
             NSButton::buttonWithTitle_target_action(
                 ns_string!("Quit"),
                 Some(target),
-                Some(sel!(quitFromPermissionsDialog:)),
+                Some(ApplicationAction::CompletePermissions.selector()),
                 mtm,
             )
         };
-        quit_button.setFont(Some(&settings_font()));
+        quit_button.setFont(Some(&permissions_dialog_font()));
         quit_button.setKeyEquivalent(ns_string!("q"));
         quit_button.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
         set_view_frame(

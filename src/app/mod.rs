@@ -18,9 +18,11 @@ use objc2_foundation::{
     NSObjectProtocol, NSRunLoop, NSRunLoopCommonModes, NSString, NSTimer, NSURL,
 };
 
+pub(crate) mod actions;
 mod settings_presentation;
 mod startup_windows;
 
+use actions::ApplicationAction;
 use settings_presentation::{SettingsPresentation, SettingsPresentationStep};
 use startup_windows::StartupWindows;
 
@@ -147,7 +149,7 @@ define_class!(
                         APP_DISPLAY_NAME,
                         env!("CARGO_PKG_VERSION")
                     )),
-                    Some(sel!(openGitHubRepo:)),
+                    Some(ApplicationAction::OpenGitHubRepo.selector()),
                     ns_string!(""),
                 )
             };
@@ -160,7 +162,7 @@ define_class!(
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
                     ns_string!("Settings…"),
-                    Some(sel!(openSettings:)),
+                    Some(ApplicationAction::OpenSettings.selector()),
                     ns_string!("")
                 )
             };
@@ -192,7 +194,7 @@ define_class!(
                 NSMenuItem::initWithTitle_action_keyEquivalent(
                     NSMenuItem::alloc(mtm),
                     ns_string!("Application Permissions…"),
-                    Some(sel!(openPermissions:)),
+                    Some(ApplicationAction::OpenPermissions.selector()),
                     ns_string!("")
                 )
             };
@@ -1584,7 +1586,7 @@ fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retai
         NSMenuItem::initWithTitle_action_keyEquivalent(
             NSMenuItem::alloc(mtm),
             &NSString::from_str(&format!("About {}", APP_DISPLAY_NAME)),
-            Some(sel!(openGitHubRepo:)),
+            Some(ApplicationAction::OpenGitHubRepo.selector()),
             ns_string!(""),
         )
     };
@@ -2049,6 +2051,21 @@ mod tests {
         assert!(
             missing.is_empty(),
             "AppDelegate does not implement settings actions: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn app_delegate_implements_every_application_action() {
+        let delegate_class = AppDelegate::class();
+        let missing: Vec<_> = super::ApplicationAction::ALL
+            .iter()
+            .filter(|action| !delegate_class.responds_to(action.selector()))
+            .map(|action| (*action, action.selector()))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "AppDelegate does not implement application actions: {missing:?}"
         );
     }
 
