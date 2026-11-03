@@ -49,6 +49,7 @@ use panes::transformation::TransformationPane;
 /// Title of the button that saves every pane to the config file. Startup
 /// alerts name this button, so they build their text from this constant.
 pub const SAVE_BUTTON_TITLE: &str = "Save";
+const DEEPGRAM_PANE_TITLE: &str = "Deepgram";
 
 /// Title of the Transformation pane button that fetches the provider's models.
 /// Status messages name this button, so they build their text from this
@@ -104,7 +105,7 @@ impl SettingsWindow {
         let pane_views = [
             ("General", "gearshape", general_view),
             ("Microphone", "mic", microphone_view),
-            ("Deepgram", "waveform", deepgram_view),
+            (DEEPGRAM_PANE_TITLE, "waveform", deepgram_view),
             ("Transformation", "wand.and.stars", transformation_view),
         ];
 
@@ -523,4 +524,19 @@ fn button_bar(
         .constraintGreaterThanOrEqualToConstant(status_line_height * STATUS_MAXIMUM_LINES as f64)
         .setActive(true);
     bar
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DEEPGRAM_PANE_TITLE, SAVE_BUTTON_TITLE};
+
+    #[test]
+    fn installer_instructions_match_settings_controls() {
+        let instructions = include_str!("../../scripts/dmg-README.txt");
+        assert!(instructions.contains(&format!("select the {DEEPGRAM_PANE_TITLE} pane")));
+        assert!(instructions.contains(&format!("click {SAVE_BUTTON_TITLE}.")));
+        assert!(!instructions.contains("Save and Apply"));
+        assert!(instructions.contains("open /Applications/simple-ptt.app"));
+        assert!(!instructions.contains("open -g"));
+    }
 }
