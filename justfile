@@ -31,6 +31,11 @@ install-app app_dir="$HOME/Applications":
     rm -rf "{{ app_dir }}/simple-ptt.app"
     ditto "dist/simple-ptt.app" "{{ app_dir }}/simple-ptt.app"
 
+# Stop the app, reset its macOS permissions, and reinstall without launching.
+reinstall-and-reset app_dir="$HOME/Applications":
+    ./scripts/clear-macos-permissions.sh
+    just install-app "{{ app_dir }}"
+
 start app_path="$HOME/Applications/simple-ptt.app":
     test -d "{{ app_path }}"
     open -g "{{ app_path }}"

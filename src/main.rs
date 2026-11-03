@@ -197,11 +197,11 @@ fn startup_error_instructions(error: &str, config_path: &str, executable_path: &
         concat!(
             "{}\n\n",
             "What to check:\n",
-            "This config file must exist and contain valid TOML:\n{}\n",
-            "If it is missing, create its parent directory if needed and copy config.example.toml from the repository to that path. If you meant to use the normal home config, unset SIMPLE_PTT_CONFIG.\n",
+            "Configuration path:\n{}\n",
+            "If a configured file is missing, create its parent directory if needed and copy config.example.toml from the repository to that path. Check that its contents are valid TOML. To use normal config lookup instead of an explicit override, unset SIMPLE_PTT_CONFIG.\n",
             "- If mic.audio_device is configured, it matches a real input device\n\n",
             "For more detail, run this executable from Terminal (quote the path if it contains spaces):\n{}\n\n",
-            "Note: simple-ptt is a menu bar app. On successful launch it appears in the menu bar, not in the Dock."
+            "Note: simple-ptt runs from the menu bar. A Dock icon may appear while Settings or permission windows are open."
         ),
         error, config_path, executable_path
     )
