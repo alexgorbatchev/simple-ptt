@@ -308,6 +308,12 @@ pub fn prompt_editor(
         .documentView()
         .and_then(|document_view| document_view.downcast::<NSTextView>().ok())
         .expect("scrollableTextView has an NSTextView document view");
+    text_view.setRichText(false);
+    text_view.setAllowsUndo(true);
+    text_view.setAutomaticQuoteSubstitutionEnabled(false);
+    text_view.setAutomaticDashSubstitutionEnabled(false);
+    text_view.setAutomaticTextReplacementEnabled(false);
+    text_view.setAutomaticSpellingCorrectionEnabled(false);
     let font = NSFont::systemFontOfSize(NSFont::systemFontSize());
     text_view.setFont(Some(&font));
 
