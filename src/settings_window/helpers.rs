@@ -1,5 +1,5 @@
 use crate::audio::{
-    is_system_default_audio_device_value, AvailableAudioInputDevices,
+    configured_device_position, is_system_default_audio_device_value, AvailableAudioInputDevices,
     SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
 };
 use crate::settings_window::FETCH_MODELS_BUTTON_TITLE;
@@ -99,6 +99,11 @@ fn audio_device_options(
         title: default_audio_device_title.clone(),
         value: None,
     }];
+    let choice_names = available_audio_input_devices
+        .choices
+        .iter()
+        .map(|choice| choice.name.clone())
+        .collect::<Vec<_>>();
     audio_device_options.extend(
         available_audio_input_devices
             .choices
@@ -115,6 +120,16 @@ fn audio_device_options(
     else {
         return (audio_device_options, default_audio_device_title);
     };
+
+    // A configured index or name selects the connected device it resolves
+    // to, the same way the input stream finds it.
+    if !is_system_default_audio_device_value(configured_audio_device) {
+        let names = choice_names.iter().map(Option::as_deref).collect::<Vec<_>>();
+        if let Some(position) = configured_device_position(&names, configured_audio_device) {
+            let title = audio_device_options[position + 1].title.clone();
+            return (audio_device_options, title);
+        }
+    }
 
     if let Some(selected_audio_device_title) =
         find_mic_audio_device_option_title(&audio_device_options, configured_audio_device)
@@ -402,6 +417,7 @@ mod tests {
                 choices: vec![AudioInputDeviceChoice {
                     label: "Shure MV7".to_owned(),
                     value: "Shure MV7".to_owned(),
+                    name: Some("Shure MV7".to_owned()),
                 }],
             }),
             None,
@@ -435,6 +451,7 @@ mod tests {
                 choices: vec![AudioInputDeviceChoice {
                     label: "Shure MV7".to_owned(),
                     value: "Shure MV7".to_owned(),
+                    name: Some("Shure MV7".to_owned()),
                 }],
             }),
             Some("shure mv7"),
@@ -458,6 +475,31 @@ mod tests {
     }
 
     #[test]
+    fn mic_audio_device_popup_state_selects_the_device_a_configured_index_resolves_to() {
+        let state = mic_audio_device_popup_state(
+            Ok(AvailableAudioInputDevices {
+                default_device_name: None,
+                choices: vec![
+                    AudioInputDeviceChoice {
+                        label: "Shure MV7".to_owned(),
+                        value: "Shure MV7".to_owned(),
+                        name: Some("Shure MV7".to_owned()),
+                    },
+                    AudioInputDeviceChoice {
+                        label: "MacBook Pro Microphone".to_owned(),
+                        value: "MacBook Pro Microphone".to_owned(),
+                        name: Some("MacBook Pro Microphone".to_owned()),
+                    },
+                ],
+            }),
+            Some("1"),
+        );
+
+        assert_eq!(state.selected_title, "MacBook Pro Microphone");
+        assert_eq!(state.options.len(), 3);
+    }
+
+    #[test]
     fn mic_audio_device_popup_state_inserts_missing_configured_value() {
         let state = mic_audio_device_popup_state(
             Ok(AvailableAudioInputDevices {
@@ -465,6 +507,7 @@ mod tests {
                 choices: vec![AudioInputDeviceChoice {
                     label: "Shure MV7".to_owned(),
                     value: "Shure MV7".to_owned(),
+                    name: Some("Shure MV7".to_owned()),
                 }],
             }),
             Some("Missing Mic"),

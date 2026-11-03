@@ -611,13 +611,39 @@ mod tests {
                 AudioInputDeviceChoice {
                     label: "External Microphone".to_owned(),
                     value: "External Microphone".to_owned(),
+                    name: Some("External Microphone".to_owned()),
                 },
                 AudioInputDeviceChoice {
                     label: "MacBook Pro Microphone".to_owned(),
                     value: "MacBook Pro Microphone".to_owned(),
+                    name: Some("MacBook Pro Microphone".to_owned()),
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_device_is_saved_by_name_only_when_that_name_finds_it_again() {
+        let choices = build_audio_input_device_choices(&[
+            InputDeviceDescriptor { index: 0, name: Some("USB Mic".to_owned()) },
+            InputDeviceDescriptor { index: 1, name: Some(" usb mic ".to_owned()) },
+            InputDeviceDescriptor { index: 2, name: Some("2".to_owned()) },
+            InputDeviceDescriptor { index: 3, name: Some(" Shure MV7 ".to_owned()) },
+        ]);
+
+        let values = choices.iter().map(|choice| choice.value.as_str()).collect::<Vec<_>>();
+        assert_eq!(values, ["0", "1", "2", "Shure MV7"]);
+    }
+
+    #[test]
+    fn a_configured_device_is_found_by_index_or_by_its_trimmed_case_insensitive_name() {
+        let names = [Some("Shure MV7"), None, Some(" MacBook Pro Microphone ")];
+
+        assert_eq!(super::configured_device_position(&names, "1"), Some(1));
+        assert_eq!(super::configured_device_position(&names, "macbook pro microphone"), Some(2));
+        assert_eq!(super::configured_device_position(&names, " shure mv7 "), Some(0));
+        assert_eq!(super::configured_device_position(&names, "3"), None);
+        assert_eq!(super::configured_device_position(&names, "Missing Mic"), None);
     }
 
     #[test]
@@ -643,14 +669,17 @@ mod tests {
                 AudioInputDeviceChoice {
                     label: "Virtual Cable (#1)".to_owned(),
                     value: "0".to_owned(),
+                    name: Some("Virtual Cable".to_owned()),
                 },
                 AudioInputDeviceChoice {
                     label: "Virtual Cable (#2)".to_owned(),
                     value: "1".to_owned(),
+                    name: Some("Virtual Cable".to_owned()),
                 },
                 AudioInputDeviceChoice {
                     label: "<unknown> (#3)".to_owned(),
                     value: "2".to_owned(),
+                    name: None,
                 },
             ]
         );

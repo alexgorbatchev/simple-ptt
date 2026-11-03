@@ -24,6 +24,8 @@ const CLIP_DETECTION_THRESHOLD: f32 = 0.99;
 pub struct AudioInputDeviceChoice {
     pub label: String,
     pub value: String,
+    /// The device's name, which `configured_device_position` matches.
+    pub name: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -77,13 +79,15 @@ pub fn print_input_devices() -> Result<(), String> {
         return Ok(());
     }
 
-    println!("Available input devices:");
-    for device in devices {
-        println!(
-            "  {}: {}",
-            device.index + 1,
-            device.name.as_deref().unwrap_or(UNKNOWN_AUDIO_INPUT_DEVICE_LABEL)
-        );
+    // Each line starts with the value to put in `mic.audio_device`, the one
+    // Settings saves for that device.
+    println!("Available input devices (set mic.audio_device to the quoted value):");
+    for choice in build_audio_input_device_choices(&devices) {
+        if choice.value == choice.label {
+            println!("  {:?}", choice.value);
+        } else {
+            println!("  {:?}  {}", choice.value, choice.label);
+        }
     }
     Ok(())
 }
@@ -105,34 +109,31 @@ pub fn enumerate_input_devices(host: &Host) -> Result<Vec<InputDeviceDescriptor>
 pub fn build_audio_input_device_choices(
     devices: &[InputDeviceDescriptor],
 ) -> Vec<AudioInputDeviceChoice> {
-    let mut name_counts = std::collections::HashMap::new();
-    for device in devices {
-        if let Some(name) = normalized_configured_audio_device(device.name.as_deref()) {
-            *name_counts.entry(name.to_owned()).or_insert(0usize) += 1;
-        }
-    }
+    let names = devices
+        .iter()
+        .map(|device| device.name.as_deref())
+        .collect::<Vec<_>>();
 
-    // A unique name is saved as the device's identity, because macOS
-    // renumbers inputs when one is connected or removed. Only devices that
-    // share a name, or have none, fall back to their position.
+    // A device is saved by its name when that name finds it again, because
+    // macOS renumbers inputs when one is connected or removed. A device whose
+    // name another device shares, that reads as an index, or that has no
+    // name is saved by its position.
     devices
         .iter()
         .map(|device| {
-            match device.name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                Some(name) if name_counts.get(name).copied().unwrap_or(0) <= 1 => {
-                    AudioInputDeviceChoice {
-                        label: name.to_owned(),
-                        value: name.to_owned(),
-                    }
-                }
-                Some(name) => AudioInputDeviceChoice {
-                    label: format!("{} (#{})", name, device.index + 1),
-                    value: device.index.to_string(),
-                },
-                None => AudioInputDeviceChoice {
-                    label: format!("{} (#{})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index + 1),
-                    value: device.index.to_string(),
-                },
+            let name = device.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let (label, value) = match name {
+                Some(name) if name_identifies(&names, name) => (name.to_owned(), name.to_owned()),
+                Some(name) => (format!("{} (#{})", name, device.index + 1), device.index.to_string()),
+                None => (
+                    format!("{} (#{})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index + 1),
+                    device.index.to_string(),
+                ),
+            };
+            AudioInputDeviceChoice {
+                label,
+                value,
+                name: device.name.clone(),
             }
         })
         .collect()
@@ -178,17 +179,38 @@ pub fn resolve_input_device(
 
 /// The device `configured` names: by its index in `devices`, or by its name.
 fn find_configured_device(devices: &[cpal::Device], configured: &str) -> Option<cpal::Device> {
-    if let Some(device) = configured.parse::<usize>().ok().and_then(|index| devices.get(index)) {
-        return Some(device.clone());
+    let names = devices.iter().map(device_name).collect::<Vec<_>>();
+    let names = names.iter().map(Option::as_deref).collect::<Vec<_>>();
+    configured_device_position(&names, configured).map(|position| devices[position].clone())
+}
+
+/// Position, among devices with `names`, of the one a configured
+/// `mic.audio_device` names: an index within range, else the first device
+/// whose name matches, compared trimmed and ignoring case. Settings saves a
+/// name only when this finds that device again.
+pub fn configured_device_position(names: &[Option<&str>], configured: &str) -> Option<usize> {
+    let configured = configured.trim();
+    if let Some(index) = configured.parse::<usize>().ok().filter(|index| *index < names.len()) {
+        return Some(index);
     }
-    devices
+    names
         .iter()
-        .find(|device| {
-            device_name(device)
-                .map(|name| name.eq_ignore_ascii_case(configured))
-                .unwrap_or(false)
-        })
-        .cloned()
+        .position(|name| name.is_some_and(|name| same_device_name(name, configured)))
+}
+
+/// Whether `name` finds only its own device: it reads as no index, and no
+/// other device in `names` has a matching name.
+fn name_identifies(names: &[Option<&str>], name: &str) -> bool {
+    name.trim().parse::<usize>().is_err()
+        && names
+            .iter()
+            .filter(|other| other.is_some_and(|other| same_device_name(other, name)))
+            .count()
+            == 1
+}
+
+fn same_device_name(left: &str, right: &str) -> bool {
+    left.trim().to_lowercase() == right.trim().to_lowercase()
 }
 
 pub fn is_system_default_audio_device_value(value: &str) -> bool {

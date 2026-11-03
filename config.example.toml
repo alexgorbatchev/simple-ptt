@@ -38,7 +38,8 @@ font_size = 12.0
 meter_style = "pills"
 
 [mic]
-# Optional. Exact input device name or numeric index from `just list-devices`.
+# Optional. The quoted value `just list-devices` prints for the device: its
+# name, or its index when another device shares that name.
 # Omit to use the macOS system default input device.
 # audio_device = "MacBook Pro Microphone"
 
