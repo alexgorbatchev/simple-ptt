@@ -24,15 +24,13 @@ jobs:
       TARGET_TRIPLE: aarch64-apple-darwin
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install stable Rust toolchain
+      - name: Install repository Rust toolchain
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustup target add "$TARGET_TRIPLE"
+          rustup toolchain install --no-self-update
 
       - name: Validate tag matches Cargo.toml version
         shell: bash
