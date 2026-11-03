@@ -1561,8 +1561,8 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     }
 }
 
-/// Rejects a proposed config with any `config::problems`, named by their
-/// settings rows, a microphone that cannot be opened, or no Deepgram key.
+/// Rejects a proposed config with any `config::problems` or no Deepgram key,
+/// named by their settings rows, or a microphone that cannot be opened.
 fn validate_settings_config(config: &Config) -> Result<(), String> {
     let problems = config::problems(config);
     if !problems.is_empty() {
@@ -1573,9 +1573,22 @@ fn validate_settings_config(config: &Config) -> Result<(), String> {
             .join("\n"));
     }
 
+    if let Some(problem) = settings_deepgram_api_key_problem(config.resolve_deepgram_api_key()) {
+        return Err(problem);
+    }
     validate_mic_config(&config.mic)?;
-    config.resolve_deepgram_api_key()?;
     Ok(())
+}
+
+/// Save's message for a Deepgram key that did not resolve, naming the row to
+/// fill in rather than the config file the startup message names.
+fn settings_deepgram_api_key_problem(resolved_key: Result<String, String>) -> Option<String> {
+    resolved_key.err().map(|_| {
+        format!(
+            "{}: required; enter a key, or export DEEPGRAM_API_KEY before launching simple-ptt",
+            labels::DEEPGRAM_API_KEY
+        )
+    })
 }
 
 fn correction_key_hint_label(raw: &str) -> String {
@@ -1897,7 +1910,8 @@ mod tests {
     use super::{
         audio_startup_failure_alert_text, config_file_is_missing, config_problems_alert_text,
         deepgram_status_title, missing_config_alert_text, overlay_style_from_config,
-        settings_presentation_turn_selector, status_poll_selector, validate_settings_config,
+        settings_deepgram_api_key_problem, settings_presentation_turn_selector, status_poll_selector,
+        validate_settings_config,
         AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
@@ -2024,7 +2038,17 @@ mod tests {
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
-            "General > Correction key \"LeftMeta\" shares a key with General > Dictation shortcut \"Cmd+F5\"; they must be different"
+            "General > Correction key: \"LeftMeta\" shares a key with General > Dictation shortcut \"Cmd+F5\"; they must be different"
+        );
+    }
+
+    #[test]
+    fn a_missing_deepgram_key_on_save_names_its_settings_row() {
+        assert_eq!(settings_deepgram_api_key_problem(Ok("key".to_owned())), None);
+        assert_eq!(
+            settings_deepgram_api_key_problem(Err("Deepgram API key is missing.".to_owned()))
+                .as_deref(),
+            Some("Deepgram > API key: required; enter a key, or export DEEPGRAM_API_KEY before launching simple-ptt")
         );
     }
 
@@ -2036,7 +2060,7 @@ mod tests {
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
-            "General > Font size 0 is not a positive number\nMicrophone > Mic gain (dB) 10.5 dB is outside the 0 to 10 dB range"
+            "General > Font size: \"0\" is not a positive number\nMicrophone > Mic gain (dB): \"10.5 dB\" is outside the 0 to 10 dB range"
         );
     }
 
@@ -2053,8 +2077,8 @@ mod tests {
 
         assert!(
             text.starts_with(
-                "mic.gain 40 dB is outside the 0 to 10 dB range\n\
-                 transformation.provider \"galadriel\" is not supported"
+                "mic.gain: \"40 dB\" is outside the 0 to 10 dB range\n\
+                 transformation.provider: \"galadriel\" is not supported"
             ),
             "{text}"
         );

@@ -311,11 +311,11 @@ mod tests {
 
     #[test]
     fn settings_load_status_shows_a_repeated_message_once() {
-        let load_problems = ["mic.gain: 40 dB is outside the 0 to 10 dB range".to_owned()];
+        let load_problems = ["mic.gain: \"40 dB\" is outside the 0 to 10 dB range".to_owned()];
 
         assert_eq!(
             settings_load_status(Some(load_problems[0].as_str()), &load_problems, None),
-            "mic.gain: 40 dB is outside the 0 to 10 dB range"
+            "mic.gain: \"40 dB\" is outside the 0 to 10 dB range"
         );
     }
 

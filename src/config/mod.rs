@@ -1401,7 +1401,7 @@ mod tests {
         let error = config.resolve_transformation_config().unwrap_err();
         assert_eq!(
             error,
-            "transformation.model is required for provider 'ollama', which has no built-in default model"
+            "transformation.model: required for provider \"ollama\", which has no built-in default model"
         );
         assert_eq!(materialize_runtime_config(&config).transformation.model, "");
     }

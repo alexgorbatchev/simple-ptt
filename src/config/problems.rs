@@ -35,36 +35,37 @@ impl ConfigProblem {
         Self { key, kind }
     }
 
-    /// The problem as one sentence, with every config key named by `name`.
+    /// The problem as `name: what is wrong`, with every config key named by
+    /// `name` and every configured value in double quotes.
     pub fn describe(&self, name: impl Fn(&str) -> String) -> String {
-        let subject = name(self.key);
-        match &self.kind {
+        let detail = match &self.kind {
             ProblemKind::InvalidShortcut { value, error } => {
-                format!("{subject} \"{value}\" is not a valid shortcut: {error}")
+                format!("\"{value}\" is not a valid shortcut: {error}")
             }
             ProblemKind::InvalidCorrectionKey { value, error } => {
-                format!("{subject} \"{value}\" is not valid: {error}")
+                format!("\"{value}\" is not valid: {error}")
             }
             ProblemKind::SharesKeyWith { value, other_key, other_value } => format!(
-                "{subject} \"{value}\" shares a key with {} \"{other_value}\"; they must be different",
+                "\"{value}\" shares a key with {} \"{other_value}\"; they must be different",
                 name(other_key)
             ),
             ProblemKind::SameAs { value, other_key } => format!(
-                "{subject} \"{value}\" is also {}; they must be different",
+                "\"{value}\" is also {}; they must be different",
                 name(other_key)
             ),
-            ProblemKind::NotPositive(value) => format!("{subject} {value} is not a positive number"),
+            ProblemKind::NotPositive(value) => format!("\"{value}\" is not a positive number"),
             ProblemKind::GainOutOfRange(gain_db) => format!(
-                "{subject} {gain_db} dB is outside the {MIC_GAIN_MIN_DB} to {MIC_GAIN_MAX_DB} dB range"
+                "\"{gain_db} dB\" is outside the {MIC_GAIN_MIN_DB} to {MIC_GAIN_MAX_DB} dB range"
             ),
             ProblemKind::UnsupportedProvider { value } => format!(
-                "{subject} \"{value}\" is not supported; supported providers: {}",
+                "\"{value}\" is not supported; supported providers: {}",
                 TransformationProvider::ALL.map(TransformationProvider::as_str).join(", ")
             ),
             ProblemKind::MissingModel(provider) => format!(
-                "{subject} is required for provider '{provider}', which has no built-in default model"
+                "required for provider \"{provider}\", which has no built-in default model"
             ),
-        }
+        };
+        format!("{}: {detail}", name(self.key))
     }
 }
 
@@ -232,7 +233,7 @@ mod tests {
         let mut config = Config::default();
         config.mic.gain = 40.0;
 
-        assert_eq!(messages(&config), ["mic.gain 40 dB is outside the 0 to 10 dB range"]);
+        assert_eq!(messages(&config), ["mic.gain: \"40 dB\" is outside the 0 to 10 dB range"]);
     }
 
     #[test]
@@ -253,7 +254,7 @@ mod tests {
         let messages = messages(&config);
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(
-            messages[0].starts_with("ui.hotkey \"Ctrl+Banana\" is not a valid shortcut: "),
+            messages[0].starts_with("ui.hotkey: \"Ctrl+Banana\" is not a valid shortcut: "),
             "{}",
             messages[0]
         );
@@ -267,7 +268,7 @@ mod tests {
 
         assert_eq!(
             messages(&config),
-            ["ui.correction_key \"F5\" shares a key with ui.hotkey \"F5\"; they must be different"]
+            ["ui.correction_key: \"F5\" shares a key with ui.hotkey \"F5\"; they must be different"]
         );
     }
 
@@ -279,7 +280,7 @@ mod tests {
 
         assert_eq!(
             problems(&config)[0].describe(|key| key.to_ascii_uppercase()),
-            "UI.CORRECTION_KEY \"F5\" shares a key with UI.HOTKEY \"F5\"; they must be different"
+            "UI.CORRECTION_KEY: \"F5\" shares a key with UI.HOTKEY \"F5\"; they must be different"
         );
     }
 
@@ -302,8 +303,8 @@ mod tests {
         assert_eq!(
             messages(&config),
             [
-                "ui.font_size 0 is not a positive number",
-                "ui.footer_font_size NaN is not a positive number",
+                "ui.font_size: \"0\" is not a positive number",
+                "ui.footer_font_size: \"NaN\" is not a positive number",
             ]
         );
     }
@@ -317,7 +318,7 @@ mod tests {
         assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(
             messages[0].starts_with(
-                "transformation.provider \"galadriel\" is not supported; supported providers: anthropic,"
+                "transformation.provider: \"galadriel\" is not supported; supported providers: anthropic,"
             ),
             "{}",
             messages[0]
@@ -333,7 +334,7 @@ mod tests {
         config.transformation.provider = Some("ollama".to_owned());
         assert_eq!(
             messages(&config),
-            ["transformation.model is required for provider 'ollama', which has no built-in default model"]
+            ["transformation.model: required for provider \"ollama\", which has no built-in default model"]
         );
 
         config.transformation.model = "llama3.2".to_owned();
