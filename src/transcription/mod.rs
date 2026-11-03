@@ -995,11 +995,12 @@ fn complete_session_cancellation(state: &AppState, buffered_text: &mut String, k
 }
 
 fn resolved_deepgram_config(config: &Config) -> Result<DeepgramConfig, String> {
-    let runtime_config = crate::config::materialize_runtime_config(config);
-    runtime_config
+    let api_key = config
         .resolve_deepgram_api_key()
         .map_err(|error| format!("{error} You can also add it in Settings > Deepgram."))?;
-    Ok(runtime_config.deepgram)
+    let mut deepgram = config.deepgram.clone();
+    deepgram.api_key = Some(api_key);
+    Ok(deepgram)
 }
 
 fn resolve_transformation_config(
@@ -1496,6 +1497,31 @@ mod tests {
         assert!(error.contains("Settings > Deepgram"), "{error}");
         assert!(error.contains("deepgram.api_key"), "{error}");
         assert!(error.contains("DEEPGRAM_API_KEY"), "{error}");
+    }
+
+    #[test]
+    fn idle_dictation_without_deepgram_key_reports_guidance() {
+        if run_without_deepgram_key("idle_dictation_without_deepgram_key_reports_guidance") {
+            return;
+        }
+        let state = crate::state::AppState::new();
+        worker_with_config(&state, crate::config::Config::default())
+            .start_session(&state)
+            .unwrap();
+        wait_for_state(&state, crate::state::STATE_ERROR);
+        assert!(state.overlay_text().is_empty());
+        let error = state.overlay_error_text();
+        assert!(error.contains("Settings > Deepgram"), "{error}");
+        assert!(error.contains("deepgram.api_key"), "{error}");
+    }
+
+    #[test]
+    fn resolved_deepgram_config_uses_the_resolved_key() {
+        let mut config = crate::config::Config::default();
+        config.deepgram.api_key = Some("  configured-key  ".to_owned());
+        let resolved = super::resolved_deepgram_config(&config).unwrap();
+        assert_eq!(resolved.api_key.as_deref(), Some("configured-key"));
+        assert_eq!(resolved.model, config.deepgram.model);
     }
 
     // Run only the requested test in a child with no real credentials. Other
