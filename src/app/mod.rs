@@ -807,7 +807,7 @@ impl AppDelegate {
         result
     }
 
-    /// Loads the config file into Settings and presents the window. The
+    /// Loads the config file only when opening Settings and presents the window. The
     /// status area shows `status_message`, any load problem, and the
     /// transformation model list status.
     fn present_settings_window(&self, status_message: Option<&str>) {
@@ -815,18 +815,22 @@ impl AppDelegate {
             return;
         };
 
-        self.ivars().hotkey_capture_controller.cancel();
-        settings_window.cancel_hotkey_capture();
+        if !settings_window.is_visible() {
+            self.ivars().hotkey_capture_controller.cancel();
+            settings_window.cancel_hotkey_capture();
 
-        let current_file_config = self.ivars().config_store.current_file();
-        let load_problems = settings_window.load_from_config(&current_file_config);
-        let transformation_status =
-            self.sync_transformation_provider_controls(ModelListTrigger::Resync);
-        settings_window.set_status(&settings_load_status(
-            status_message,
-            &load_problems,
-            transformation_status.as_deref(),
-        ));
+            let current_file_config = self.ivars().config_store.current_file();
+            let load_problems = settings_window.load_from_config(&current_file_config);
+            let transformation_status =
+                self.sync_transformation_provider_controls(ModelListTrigger::Resync);
+            settings_window.set_status(&settings_load_status(
+                status_message,
+                &load_problems,
+                transformation_status.as_deref(),
+            ));
+        } else if let Some(message) = status_message {
+            settings_window.set_status(message);
+        }
 
         if self
             .ivars()
@@ -849,6 +853,10 @@ impl AppDelegate {
     /// Every way of leaving Settings (close button, Cancel, Save) ends here.
     fn settings_window_closed(&self) {
         self.disable_settings_window_hotkey_blocking();
+        self.ivars().state.set_settings_window_visible(false);
+        self.ivars().state.set_preview_mic_gain(None);
+        self.ivars().audio_controller.clear_preview_audio_device();
+        self.ivars().audio_controller.apply_pending_if_idle();
         self.cancel_pending_settings_presentation();
         self.restore_accessory_activation_policy_if_possible();
     }
@@ -913,6 +921,7 @@ impl AppDelegate {
                 let Some(settings_window) = self.ivars().settings_window.get() else {
                     return;
                 };
+                self.ivars().state.set_settings_window_visible(true);
                 settings_window.order_front();
                 log::info!("requested app activation for Settings");
                 // This follows an explicit Settings request. On macOS 26.6.2,
@@ -947,11 +956,6 @@ impl AppDelegate {
         self.ivars()
             .hotkey_capture_controller
             .set_settings_window_visible(false);
-        self.ivars().state.set_settings_window_visible(false);
-        self.ivars().state.set_preview_mic_gain(None);
-        self.ivars().audio_controller.clear_preview_audio_device();
-        self.ivars().audio_controller.apply_pending_if_idle();
-
         if let Some(settings_window) = self.ivars().settings_window.get() {
             settings_window.cancel_hotkey_capture();
         }
@@ -1177,9 +1181,6 @@ impl AppDelegate {
             return;
         };
 
-        let previous_file_config = self.ivars().config_store.current_file();
-        let load_problems = settings_window.load_from_config(&previous_file_config);
-        settings_window.set_status(&settings_load_status(None, &load_problems, None));
         settings_window.hide();
         self.settings_window_closed();
     }
