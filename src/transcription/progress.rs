@@ -229,7 +229,7 @@ mod tests {
         (0..320).flat_map(|_| 1000_i16.to_le_bytes()).collect()
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn quiet_audio_does_not_show_a_wait_notice() {
         let state = AppState::new();
         let progress = SessionProgress::new(16000, limits());
@@ -245,7 +245,7 @@ mod tests {
         assert_eq!(result.unwrap(), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn live_wait_notice_clears_when_transcripts_resume() {
         let state = AppState::new();
         let progress = SessionProgress::new(16000, limits());
@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(progress.next(&mut stream, state).await.unwrap(), Some(()));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn live_wait_notice_stays_visible_until_all_pending_audio_is_acknowledged() {
         let state = AppState::new();
         let progress = delayed_live_progress();
@@ -315,7 +315,7 @@ mod tests {
         assert!(state.is_deepgram_waiting());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_wait_notice_stays_visible_through_finishing_replies() {
         let state = AppState::new();
         let indicator = WaitingIndicator(state.clone());
@@ -334,7 +334,7 @@ mod tests {
         assert!(!state.is_deepgram_waiting());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn replies_do_not_extend_the_finishing_deadline() {
         let state = AppState::new();
         let progress = SessionProgress::new(16000, limits());
@@ -352,7 +352,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_quiet_period_after_a_transcript_does_not_start_another_wait() {
         let state = AppState::new();
         let progress = SessionProgress::new(16000, limits());
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(result.unwrap(), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_live_wait_notice_keeps_recording_until_the_user_finishes() {
         let state = AppState::new();
         state.set_state(crate::state::STATE_RECORDING);
@@ -388,7 +388,7 @@ mod tests {
         assert!(state.is_capturing_audio());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn connection_wait_is_visible_and_bounded_and_clears_on_timeout() {
         let state = AppState::new();
         let check = async {
@@ -405,7 +405,7 @@ mod tests {
         assert!(!state.is_deepgram_waiting());
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn abort_wakes_both_live_and_connect_waits() {
         let state = AppState::new();
         let progress = SessionProgress::new(16000, limits());

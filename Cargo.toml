@@ -101,3 +101,6 @@ block2 = "0.6"
 auto-launch = "0.6.0"
 realfft = "3.5"
 similar = { version = "3.2", features = ["unicode"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
