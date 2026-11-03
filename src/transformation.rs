@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use rig_core::client::{CompletionClient, ProviderClient, ProviderClientError};
-use rig_core::completion::CompletionModel;
+use rig_core::completion::{CompletionModel, FinishReason};
 use rig_core::message::{Reasoning, ReasoningContent, Text};
 use rig_core::providers::{
     anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, moonshot,
@@ -12,6 +12,10 @@ use tokio_stream::StreamExt;
 
 use crate::config::TransformationProvider;
 use crate::state::AppState;
+
+// Fits the output budget of older Claude models as well as current models.
+// A provider-reported cutoff is rejected instead of pasting incomplete text.
+const ANTHROPIC_MAX_OUTPUT_TOKENS: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransformationPreviewMode<'a> {
@@ -53,7 +57,7 @@ pub async fn transform_text(
             let model = $client.completion_model(config.model.as_str());
             stream_completion_response(
                 model,
-                &config.system_prompt,
+                config,
                 input_text,
                 Arc::clone(&state),
                 preview_mode,
@@ -137,7 +141,7 @@ pub async fn transform_text(
 
 async fn stream_completion_response<M>(
     model: M,
-    system_prompt: &str,
+    config: &TransformationRuntimeConfig,
     input_text: &str,
     state: Arc<AppState>,
     preview_mode: TransformationPreviewMode<'_>,
@@ -147,7 +151,11 @@ where
 {
     let stream = model
         .completion_request(input_text.to_owned())
-        .preamble(system_prompt.to_owned())
+        .preamble(config.system_prompt.clone())
+        .max_tokens_opt(
+            (config.provider == TransformationProvider::Anthropic)
+                .then_some(ANTHROPIC_MAX_OUTPUT_TOKENS),
+        )
         .stream()
         .await
         .map_err(|error| format!("transformation stream failed: {}", error))?;
@@ -161,6 +169,7 @@ async fn drain_stream(
     preview_mode: TransformationPreviewMode<'_>,
 ) -> Result<String, String> {
     let mut accumulator = StreamAccumulator::default();
+    let mut received_final = false;
 
     // Drained to the end rather than stopped at `Final`: rig passes provider
     // events through in order and does not end the stream at the terminal
@@ -173,12 +182,16 @@ async fn drain_stream(
         let chunk =
             chunk_result.map_err(|error| format!("transformation stream failed: {}", error))?;
         log::debug!("Received stream chunk");
+        received_final |= matches!(chunk, StreamedAssistantContent::Final(_));
 
         if let Some(update) = accumulator.apply(chunk) {
             apply_overlay_update(state, preview_mode, update);
         }
     }
 
+    if !received_final {
+        return Err("transformation stream ended before completion; the incomplete result was not applied".to_owned());
+    }
     accumulator.into_final_text()
 }
 
@@ -204,6 +217,7 @@ struct StreamAccumulator {
     transformed_text: String,
     reasoning_parts: Vec<(String, String)>,
     showing_thinking: bool,
+    incomplete_reason: Option<FinishReason>,
 }
 
 impl StreamAccumulator {
@@ -243,11 +257,26 @@ impl StreamAccumulator {
                 *self.reasoning_part_mut(id) = completed;
                 self.thinking_update()
             }
+            StreamedAssistantContent::Final(response) => {
+                if let Some(reason) = response.finish_reason.filter(FinishReason::truncated_output) {
+                    self.incomplete_reason = Some(reason);
+                }
+                None
+            }
             _ => None,
         }
     }
 
     fn into_final_text(self) -> Result<String, String> {
+        match self.incomplete_reason {
+            Some(FinishReason::Length) => {
+                return Err("transformation reached the model's output limit; the incomplete result was not applied".to_owned());
+            }
+            Some(FinishReason::ContentFilter) => {
+                return Err("the provider filtered the transformation; the incomplete result was not applied".to_owned());
+            }
+            _ => {}
+        }
         let finalized_text = self.transformed_text.trim();
         if finalized_text.is_empty() {
             return Err("transformation completed without returning any text".to_owned());
@@ -359,6 +388,82 @@ mod tests {
     use super::*;
     use rig_core::completion::{CompletionError, Usage};
     use rig_core::streaming::{RawStreamingChoice, StreamFinal};
+
+    #[tokio::test]
+    async fn anthropic_models_outside_rigs_prefix_table_send_an_output_budget() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+        use tokio::time::{timeout, Duration};
+
+        for model_name in ["claude-3-5-haiku-latest", "claude-future-model"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let capture = async {
+                let (socket, _) = listener.accept().await.unwrap();
+                let mut socket = BufReader::new(socket);
+                let mut line = String::new();
+                socket.read_line(&mut line).await.unwrap();
+                assert!(line.starts_with("POST /v1/messages "), "{line}");
+                let mut content_length = None;
+                loop {
+                    line.clear();
+                    assert_ne!(socket.read_line(&mut line).await.unwrap(), 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = Some(value.trim().parse::<usize>().unwrap());
+                        }
+                    }
+                }
+                let mut body = vec![0; content_length.expect("request body length")];
+                socket.read_exact(&mut body).await.unwrap();
+                let response = r#"{"type":"error","error":{"type":"api_error","message":"offline request captured"}}"#;
+                socket.write_all(format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()
+                ).as_bytes()).await.unwrap();
+                serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+            };
+            let config = TransformationRuntimeConfig {
+                provider: TransformationProvider::Anthropic,
+                api_key: Some("offline-test-key".to_owned()),
+                model: model_name.to_owned(),
+                system_prompt: "Clean up this dictation.".to_owned(),
+                correction_system_prompt: String::new(),
+            };
+            let client = anthropic::Client::builder()
+                .api_key("offline-test-key")
+                .base_url(&base_url)
+                .build()
+                .unwrap();
+            let request = stream_completion_response(
+                client.completion_model(model_name),
+                &config,
+                "some dictated text",
+                AppState::new(),
+                TransformationPreviewMode::PreserveOverlay,
+            );
+            let (body, error) = timeout(Duration::from_secs(5), async {
+                tokio::try_join!(async { Ok::<_, String>(capture.await) }, async {
+                    match request.await {
+                        Err(error) if error.contains("offline request captured") => Ok(error),
+                        Err(error) => Err(error),
+                        Ok(_) => Err("error response unexpectedly succeeded".to_owned()),
+                    }
+                })
+            })
+            .await
+            .expect("request must reach the local server")
+            .expect("request must pass client-side validation");
+
+            assert_eq!(body["model"], model_name);
+            assert_eq!(body["max_tokens"], 4096);
+            assert_eq!(body["stream"], true);
+            assert!(body["messages"].to_string().contains("some dictated text"));
+            assert!(error.contains("offline request captured"));
+        }
+    }
 
     fn update(reset_with_opacity: Option<f64>, text: &str) -> Option<OverlayUpdate> {
         Some(OverlayUpdate {
@@ -572,6 +677,9 @@ mod tests {
             }),
             Ok(RawStreamingChoice::Message("Transformed ".to_owned())),
             Ok(RawStreamingChoice::Message("result".to_owned())),
+            Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
+                "test-provider", Usage::new(),
+            ))),
         ]);
 
         let result = drain_stream(stream, &state, TransformationPreviewMode::PreserveOverlay).await;
@@ -615,6 +723,25 @@ mod tests {
             result,
             Err("transformation stream failed: ProviderError: boom".to_owned())
         );
+    }
+
+    #[tokio::test]
+    async fn incomplete_streams_never_return_a_pasteable_result() {
+        for reason in [None, Some(FinishReason::Length), Some(FinishReason::ContentFilter)] {
+            let state = AppState::new();
+            state.set_overlay_text("Original dictation");
+            let mut items = vec![Ok(RawStreamingChoice::Message("partial answer".to_owned()))];
+            if let Some(reason) = reason {
+                items.push(Ok(RawStreamingChoice::FinalResponse(
+                    StreamFinal::new("test-provider", Usage::new()).with_finish_reason(reason),
+                )));
+            }
+            let result = drain_stream(
+                raw_stream(items), &state, TransformationPreviewMode::PreserveOverlay,
+            ).await;
+            assert!(result.unwrap_err().contains("incomplete result was not applied"));
+            assert_eq!(&*state.overlay_text(), "Original dictation");
+        }
     }
 
     #[tokio::test]
