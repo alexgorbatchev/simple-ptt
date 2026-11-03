@@ -1,5 +1,7 @@
+mod problems;
 mod provider;
 
+pub use problems::{mic_gain_problem, problems, ConfigProblem};
 pub use provider::TransformationProvider;
 
 use serde::Deserialize;
@@ -227,20 +229,6 @@ fn default_gain() -> f32 {
 pub const MIC_GAIN_MIN_DB: f32 = 0.0;
 /// Highest `mic.gain`, in dB (about 3.2 times the input amplitude).
 pub const MIC_GAIN_MAX_DB: f32 = 10.0;
-
-/// Checks that `gain_db` is within the range the settings gain slider covers.
-/// A value outside it, including NaN and infinity, is rejected rather than
-/// clamped by the slider.
-pub fn validate_mic_gain(gain_db: f32) -> Result<(), String> {
-    if (MIC_GAIN_MIN_DB..=MIC_GAIN_MAX_DB).contains(&gain_db) {
-        Ok(())
-    } else {
-        Err(format!(
-            "Gain must be between {} and {} dB",
-            MIC_GAIN_MIN_DB, MIC_GAIN_MAX_DB
-        ))
-    }
-}
 
 fn default_hold_ms() -> u64 {
     300
@@ -1047,7 +1035,7 @@ mod tests {
 
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
-        materialize_runtime_config, save_config, validate_mic_gain, Config, ConfigFileSnapshot,
+        materialize_runtime_config, save_config, Config, ConfigFileSnapshot,
         PromptResets, UiMeterStyle,
     };
 
@@ -1677,23 +1665,6 @@ mod tests {
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         assert!(updated_contents.contains("always_on = false"));
         std::fs::remove_dir_all(&temp_directory).unwrap();
-    }
-
-    #[test]
-    fn validate_mic_gain_accepts_the_slider_range() {
-        for gain_db in [0.0, Config::default().mic.gain, 10.0] {
-            assert_eq!(validate_mic_gain(gain_db), Ok(()));
-        }
-    }
-
-    #[test]
-    fn validate_mic_gain_rejects_values_outside_the_slider_range() {
-        for gain_db in [-0.1, 10.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(
-                validate_mic_gain(gain_db),
-                Err("Gain must be between 0 and 10 dB".to_owned())
-            );
-        }
     }
 
     #[test]

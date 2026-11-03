@@ -11,7 +11,7 @@
 
 use crate::config::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
-    validate_mic_gain, Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig,
+    Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig,
     TransformationProvider, UiConfig, UiMeterStyle,
 };
 
@@ -268,17 +268,6 @@ pub fn mic_gain_label(gain_db: f32) -> String {
     format!("{:.1} dB", gain_db)
 }
 
-/// Status message for a configured `mic.gain` the gain slider cannot show.
-/// `NSSlider` limits its value to the slider range, and saving writes the
-/// slider value, so the settings window reports the change when it loads.
-pub fn mic_gain_load_problem(gain_db: f32) -> Option<String> {
-    let error = validate_mic_gain(gain_db).err()?;
-    Some(format!(
-        "Microphone: the configured gain of {} dB is outside the slider range. {}; Save writes the slider value.",
-        gain_db, error
-    ))
-}
-
 fn required_text(value: &str, field_name: &str) -> Result<String, String> {
     optional_text(value).ok_or_else(|| format!("{} is required", field_name))
 }
@@ -327,7 +316,7 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        mic_gain_label, mic_gain_load_problem, DeepgramForm, GeneralForm, MicrophoneForm, Prompt,
+        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt,
         PromptsForm, SettingsForm, TransformationForm,
     };
     use crate::config::{
@@ -771,26 +760,5 @@ mod tests {
         assert_eq!(mic_gain_label(4.0), "4.0 dB");
         assert_eq!(mic_gain_label(4.5), "4.5 dB");
         assert_eq!(mic_gain_label(10.0), "10.0 dB");
-    }
-
-    #[test]
-    fn mic_gain_in_the_slider_range_is_not_a_load_problem() {
-        for gain_db in [0.0, Config::default().mic.gain, 10.0] {
-            assert_eq!(mic_gain_load_problem(gain_db), None);
-        }
-    }
-
-    #[test]
-    fn mic_gain_outside_the_slider_range_is_a_load_problem() {
-        assert_eq!(
-            mic_gain_load_problem(15.0).as_deref(),
-            Some(
-                "Microphone: the configured gain of 15 dB is outside the slider range. \
-                 Gain must be between 0 and 10 dB; Save writes the slider value."
-            )
-        );
-        for gain_db in [-0.5, f32::NAN, f32::INFINITY] {
-            assert!(mic_gain_load_problem(gain_db).is_some(), "{gain_db}");
-        }
     }
 }

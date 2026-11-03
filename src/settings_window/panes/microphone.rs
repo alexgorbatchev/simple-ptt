@@ -17,7 +17,7 @@ use crate::settings_window::controls::{
     pop_up_button_with_action, set_checked, set_text_value, set_unsigned_value, slider,
     unsigned_value, NumberFieldKind, NUMBER_FIELD_WIDTH,
 };
-use crate::settings_window::form::{mic_gain_label, mic_gain_load_problem, MicrophoneForm};
+use crate::settings_window::form::{mic_gain_label, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
 use crate::settings_window::helpers::{mic_audio_device_popup_state, MicAudioDeviceOption};
 use crate::state::MicMeterSnapshot;
@@ -128,8 +128,10 @@ impl MicrophonePane {
     }
 
     /// Loads every field of the form, listing the current audio input
-    /// devices, and returns the problems to show in the status area: a failed
-    /// device listing (#10) and a gain the slider cannot show.
+    /// devices, and returns the problem to show in the status area when the
+    /// device listing fails (#10). `NSSlider` limits a configured gain to its
+    /// range, so the label shows the value Save writes; `config::problems`
+    /// reports the configured one.
     pub fn load(&self, form: &MicrophoneForm) -> Vec<String> {
         let audio_device_problem = self.populate_audio_device_popup(form.audio_device.as_deref());
         set_unsigned_value(&self.sample_rate_field, form.sample_rate);
@@ -138,10 +140,7 @@ impl MicrophonePane {
         self.update_gain_label(self.gain_slider_value());
         set_unsigned_value(&self.hold_ms_field, form.hold_ms);
         set_checked(&self.always_on_checkbox, form.always_on);
-        audio_device_problem
-            .into_iter()
-            .chain(mic_gain_load_problem(form.gain))
-            .collect()
+        audio_device_problem.into_iter().collect()
     }
 
     pub fn read(&self) -> MicrophoneForm {

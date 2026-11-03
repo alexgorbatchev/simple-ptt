@@ -10,6 +10,7 @@ pub(super) struct StartupWindows {
     pub(super) settings: bool,
     pub(super) permissions_dialog: bool,
     pub(super) missing_config_alert: bool,
+    pub(super) config_problems_alert: bool,
     pub(super) audio_failure_alert: bool,
 }
 
@@ -17,13 +18,18 @@ impl StartupWindows {
     pub(super) fn plan(
         config_file_missing: bool,
         deepgram_api_key_missing: bool,
+        config_problems_found: bool,
         audio_startup_failed: bool,
         hotkey_permissions_missing: bool,
     ) -> Self {
         Self {
-            settings: config_file_missing || deepgram_api_key_missing || audio_startup_failed,
+            settings: config_file_missing
+                || deepgram_api_key_missing
+                || config_problems_found
+                || audio_startup_failed,
             permissions_dialog: hotkey_permissions_missing,
             missing_config_alert: config_file_missing && !deepgram_api_key_missing,
+            config_problems_alert: config_problems_found,
             audio_failure_alert: audio_startup_failed,
         }
     }
@@ -41,7 +47,7 @@ mod tests {
 
     #[test]
     fn complete_setup_opens_nothing() {
-        let windows = StartupWindows::plan(false, false, false, false);
+        let windows = StartupWindows::plan(false, false, false, false, false);
 
         assert_eq!(windows, StartupWindows::default());
         assert!(!windows.permissions_dialog_returns_in_front_of_settings());
@@ -49,7 +55,7 @@ mod tests {
 
     #[test]
     fn missing_permissions_alone_open_only_the_permissions_dialog() {
-        let windows = StartupWindows::plan(false, false, false, true);
+        let windows = StartupWindows::plan(false, false, false, false, true);
 
         assert_eq!(
             windows,
@@ -63,7 +69,7 @@ mod tests {
 
     #[test]
     fn first_launch_keeps_the_permissions_dialog_in_front_of_settings() {
-        let windows = StartupWindows::plan(true, true, false, true);
+        let windows = StartupWindows::plan(true, true, false, false, true);
 
         assert_eq!(
             windows,
@@ -78,7 +84,7 @@ mod tests {
 
     #[test]
     fn missing_config_with_an_api_key_opens_settings_and_the_missing_config_alert() {
-        let windows = StartupWindows::plan(true, false, false, false);
+        let windows = StartupWindows::plan(true, false, false, false, false);
 
         assert_eq!(
             windows,
@@ -94,7 +100,7 @@ mod tests {
     #[test]
     fn missing_api_key_opens_settings_without_an_alert() {
         assert_eq!(
-            StartupWindows::plan(false, true, false, false),
+            StartupWindows::plan(false, true, false, false, false),
             StartupWindows {
                 settings: true,
                 ..StartupWindows::default()
@@ -105,7 +111,7 @@ mod tests {
     #[test]
     fn audio_failure_opens_settings_and_the_audio_failure_alert() {
         assert_eq!(
-            StartupWindows::plan(false, false, true, false),
+            StartupWindows::plan(false, false, false, true, false),
             StartupWindows {
                 settings: true,
                 audio_failure_alert: true,
@@ -116,7 +122,7 @@ mod tests {
 
     #[test]
     fn every_startup_problem_opens_every_window() {
-        let windows = StartupWindows::plan(true, false, true, true);
+        let windows = StartupWindows::plan(true, false, true, true, true);
 
         assert_eq!(
             windows,
@@ -124,9 +130,22 @@ mod tests {
                 settings: true,
                 permissions_dialog: true,
                 missing_config_alert: true,
+                config_problems_alert: true,
                 audio_failure_alert: true,
             }
         );
         assert!(windows.permissions_dialog_returns_in_front_of_settings());
+    }
+
+    #[test]
+    fn config_problems_open_settings_and_the_config_problems_alert() {
+        assert_eq!(
+            StartupWindows::plan(false, false, true, false, false),
+            StartupWindows {
+                settings: true,
+                config_problems_alert: true,
+                ..StartupWindows::default()
+            }
+        );
     }
 }

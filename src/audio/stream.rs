@@ -27,6 +27,8 @@ pub struct InputStreamHandle {
     pub(super) activity: Arc<StreamActivity>,
 }
 
+/// Opens the configured input and starts capturing into the transcription
+/// controller. A `mic.gain` Save would reject is refused rather than applied.
 pub fn build_input_stream(
     state: Arc<AppState>,
     controller: TranscriptionController,
@@ -34,6 +36,10 @@ pub fn build_input_stream(
     mic_config: &crate::config::MicConfig,
     prefer_built_in: bool,
 ) -> Result<InputStreamHandle, String> {
+    if let Some(problem) = crate::config::mic_gain_problem(mic_config.gain) {
+        return Err(problem.to_string());
+    }
+
     let host = cpal::default_host();
     let device = resolve_input_device(&host, mic_config.audio_device.as_deref(), prefer_built_in)?;
 

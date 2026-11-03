@@ -72,10 +72,15 @@ pub fn populate_combo_box_with_values(
     combo_box.setStringValue(&NSString::from_str(selected_value.trim()));
 }
 
+/// Lists the supported providers after the disabled entry and selects
+/// `selected_provider`. A configured provider that is not supported, which
+/// `config::problems` reports, is shown as a disabled item: it stays selected
+/// until another provider is chosen and cannot be chosen again.
 pub fn populate_transformation_provider_popup(
     popup_button: &NSPopUpButton,
     selected_provider: Option<&str>,
 ) {
+    popup_button.setAutoenablesItems(false);
     popup_button.removeAllItems();
     popup_button.addItemWithTitle(&NSString::from_str(TRANSFORMATION_PROVIDER_DISABLED_LABEL));
     for provider in crate::config::supported_transformation_providers() {
@@ -90,15 +95,18 @@ pub fn populate_transformation_provider_popup(
         return;
     };
 
-    let canonical_provider = selected_provider.parse::<crate::config::TransformationProvider>();
-    let selected_provider = NSString::from_str(match canonical_provider {
-        Ok(provider) => provider.as_str(),
-        Err(_) => selected_provider,
-    });
-    if popup_button.indexOfItemWithTitle(&selected_provider) < 0 {
-        popup_button.insertItemWithTitle_atIndex(&selected_provider, 1);
+    match selected_provider.parse::<crate::config::TransformationProvider>() {
+        Ok(provider) => {
+            popup_button.selectItemWithTitle(&NSString::from_str(provider.as_str()));
+        }
+        Err(_) => {
+            popup_button.insertItemWithTitle_atIndex(&NSString::from_str(selected_provider), 1);
+            if let Some(unsupported_item) = popup_button.itemAtIndex(1) {
+                unsupported_item.setEnabled(false);
+            }
+            popup_button.selectItemAtIndex(1);
+        }
     }
-    popup_button.selectItemWithTitle(&selected_provider);
 }
 
 pub fn populate_deepgram_model_popup(popup_button: &NSPopUpButton, selected_model: Option<&str>) {

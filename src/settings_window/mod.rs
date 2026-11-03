@@ -256,9 +256,10 @@ impl SettingsWindow {
     }
 
     /// Loads `config` into every pane, discarding any edit in progress, and
-    /// returns the problems the panes found, which the caller shows in the
-    /// status area through `helpers::settings_load_status`. A problem in one
-    /// pane never keeps the others from loading (#10).
+    /// returns the problems the panes found followed by `config::problems`,
+    /// which the caller shows in the status area through
+    /// `helpers::settings_load_status`. A problem in one pane never keeps the
+    /// others from loading (#10).
     #[must_use = "load problems must be shown in the status area"]
     pub fn load_from_config(&self, config: &Config) -> Vec<String> {
         // SAFETY: `nil` asks the window to end editing of any field.
@@ -267,7 +268,7 @@ impl SettingsWindow {
         let form = SettingsForm::from_config(config);
         self.general
             .load(MainThreadMarker::from(&*self.window), &form.general);
-        let load_problems = self.microphone.load(&form.microphone);
+        let mut load_problems = self.microphone.load(&form.microphone);
         self.deepgram.load(
             &form.deepgram,
             DeepgramEnvironmentHints {
@@ -283,6 +284,7 @@ impl SettingsWindow {
                 .map(environment_hint_message),
         );
         self.transformation.prompts.load(&form.prompts);
+        load_problems.extend(crate::config::problems(config).iter().map(ToString::to_string));
         load_problems
     }
 

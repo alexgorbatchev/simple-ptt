@@ -130,7 +130,7 @@ pub fn number_field(mtm: MainThreadMarker, kind: NumberFieldKind) -> Retained<NS
 }
 
 /// Formatter of a number field. Zero passes a decimal field's formatter;
-/// `validate_settings_config` rejects a zero font size on Save.
+/// `config::problems` rejects a zero font size on Save.
 fn number_formatter(kind: NumberFieldKind) -> Retained<NSNumberFormatter> {
     let formatter = NSNumberFormatter::new();
     formatter.setUsesGroupingSeparator(false);

@@ -165,19 +165,25 @@ pub fn environment_hint_message(variable_name: &str) -> String {
 /// line: the caller's `status_message`, each problem the panes found while
 /// loading, then `transformation_status` from syncing the transformation
 /// model list. The status area shows the last message set, so every message
-/// from opening the window goes through here at once.
+/// from opening the window goes through here at once. A message repeated by
+/// two sources, such as a config problem that also stopped audio, is shown
+/// once.
 pub fn settings_load_status(
     status_message: Option<&str>,
     load_problems: &[String],
     transformation_status: Option<&str>,
 ) -> String {
-    status_message
+    let mut messages = Vec::new();
+    for message in status_message
         .into_iter()
         .chain(load_problems.iter().map(String::as_str))
         .chain(transformation_status)
-        .filter(|message| !message.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    {
+        if !message.is_empty() && !messages.contains(&message) {
+            messages.push(message);
+        }
+    }
+    messages.join("\n")
 }
 
 /// Status for a transformation provider whose models are not cached and wait
@@ -301,6 +307,16 @@ mod tests {
                 Some("Microphone: failed to enumerate audio input devices: no host")
             );
         }
+    }
+
+    #[test]
+    fn settings_load_status_shows_a_repeated_message_once() {
+        let load_problems = ["mic.gain: 40 dB is outside the 0 to 10 dB range".to_owned()];
+
+        assert_eq!(
+            settings_load_status(Some(load_problems[0].as_str()), &load_problems, None),
+            "mic.gain: 40 dB is outside the 0 to 10 dB range"
+        );
     }
 
     #[test]

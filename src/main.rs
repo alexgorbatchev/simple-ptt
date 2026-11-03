@@ -109,6 +109,11 @@ fn run_graphical_application() -> Result<(), String> {
         !runtime_config.transformation.correction_system_prompt.trim().is_empty(),
     );
 
+    let config_problems = config::problems(&runtime_config);
+    for problem in &config_problems {
+        log::warn!("config problem: {}", problem);
+    }
+
     let config_store =
         settings::LiveConfigStore::new(loaded_config.clone(), runtime_config.clone(), config_path);
     let startup_hotkey_permissions = permissions::GlobalHotkeyPermissions::current();
@@ -121,9 +126,12 @@ fn run_graphical_application() -> Result<(), String> {
 
     let transcription_controller =
         transcription::spawn_transcription_thread(shared_state.clone(), config_store.clone());
+    // An invalid gain is reported with the other config problems; starting
+    // the stream would only fail with the same message.
     let (audio_controller, initial_audio_error) = if startup_hotkey_permissions
         .hotkey_permissions_granted()
         && startup_hotkey_permissions.microphone_granted
+        && config::mic_gain_problem(runtime_config.mic.gain).is_none()
     {
         audio::AudioController::new(
             shared_state.clone(),
@@ -162,6 +170,7 @@ fn run_graphical_application() -> Result<(), String> {
         config_store,
         startup_hotkey_permissions,
         initial_audio_error,
+        config_problems,
         hotkey_capture_controller,
         transformation_models_controller,
         deepgram_connection_controller,

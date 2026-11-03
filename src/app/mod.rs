@@ -27,12 +27,11 @@ use settings_presentation::{SettingsPresentation, SettingsPresentationStep};
 use startup_windows::StartupWindows;
 
 use crate::audio::{validate_mic_config, AudioConfigApplyEffect, AudioController};
-use crate::config::{self, Config};
+use crate::config::{self, Config, ConfigProblem};
 use crate::correction_binding::CorrectionBinding;
 use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
 };
-use crate::hotkey_binding::parse_hotkey_binding;
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
     HotkeyCaptureTarget,
@@ -64,6 +63,7 @@ pub struct Ivars {
     app_updater: OnceCell<Option<crate::updater::AppUpdater>>,
     audio_controller: AudioController,
     initial_audio_error: Option<String>,
+    startup_config_problems: Vec<ConfigProblem>,
     config_store: LiveConfigStore,
     deepgram_connection_controller: DeepgramConnectionController,
     hotkey_capture_controller: HotkeyCaptureController,
@@ -107,11 +107,13 @@ define_class!(
                 .current()
                 .resolve_deepgram_api_key()
                 .is_err();
+            let config_problems_found = !self.ivars().startup_config_problems.is_empty();
             let audio_startup_failed = self.ivars().initial_audio_error.is_some();
             let startup_permissions_missing = !self.ivars().startup_hotkey_permissions.all_granted();
             let startup_windows = StartupWindows::plan(
                 config_file_missing,
                 deepgram_api_key_missing,
+                config_problems_found,
                 audio_startup_failed,
                 startup_permissions_missing,
             );
@@ -257,6 +259,16 @@ define_class!(
                 show_modal_alert(
                     "simple-ptt didn't find a config.toml yet",
                     &missing_config_alert_text(self.ivars().config_store.path()),
+                );
+            }
+
+            if startup_windows.config_problems_alert {
+                show_modal_alert(
+                    "simple-ptt found problems in config.toml",
+                    &config_problems_alert_text(
+                        &self.ivars().startup_config_problems,
+                        self.ivars().config_store.path(),
+                    ),
                 );
             }
 
@@ -554,6 +566,7 @@ impl AppDelegate {
         config_store: LiveConfigStore,
         startup_hotkey_permissions: GlobalHotkeyPermissions,
         initial_audio_error: Option<String>,
+        startup_config_problems: Vec<ConfigProblem>,
         hotkey_capture_controller: HotkeyCaptureController,
         transformation_models_controller: TransformationModelsController,
         deepgram_connection_controller: DeepgramConnectionController,
@@ -564,6 +577,7 @@ impl AppDelegate {
             app_updater: OnceCell::new(),
             audio_controller,
             initial_audio_error,
+            startup_config_problems,
             config_store,
             deepgram_connection_controller,
             hotkey_capture_controller,
@@ -1469,6 +1483,26 @@ fn missing_config_alert_text(config_path: &Path) -> String {
     )
 }
 
+/// Startup alert for config values Save would reject. Each feature reads
+/// only its own values, so the others keep working.
+fn config_problems_alert_text(problems: &[ConfigProblem], config_path: &Path) -> String {
+    format!(
+        concat!(
+            "{problems}\n\n",
+            "Until these are fixed, the shortcut, microphone input, or transformation they configure stays off, ",
+            "and the overlay uses its default font sizes. Fix them in Settings and click {save_button}, or edit:\n\n",
+            "{config_path}"
+        ),
+        problems = problems
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"),
+        save_button = SAVE_BUTTON_TITLE,
+        config_path = config_path.display(),
+    )
+}
+
 fn audio_startup_failure_alert_text(audio_error: &str) -> String {
     format!(
         concat!(
@@ -1518,50 +1552,21 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     }
 }
 
+/// Rejects a proposed config with any `config::problems`, a microphone that
+/// cannot be opened, or no Deepgram key.
 fn validate_settings_config(config: &Config) -> Result<(), String> {
-    let record_hotkey = parse_hotkey_binding(config.ui.hotkey.as_str())
-        .map_err(|error| format!("record hotkey is invalid: {}", error))?;
-    let correction_key = parse_correction_key(config.ui.correction_key.as_str())?;
-
-    if correction_key.overlaps(record_hotkey) {
-        return Err("record hotkey and correction key must be different".to_owned());
+    let problems = config::problems(config);
+    if !problems.is_empty() {
+        return Err(problems
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n"));
     }
-
-    if !config.ui.font_size.is_finite() || config.ui.font_size <= 0.0 {
-        return Err("Font size must be a positive number".to_owned());
-    }
-
-    if let Some(footer_font_size) = config.ui.footer_font_size {
-        if !footer_font_size.is_finite() || footer_font_size <= 0.0 {
-            return Err("Footer font size must be a positive number".to_owned());
-        }
-    }
-
-    config::validate_mic_gain(config.mic.gain)?;
 
     validate_mic_config(&config.mic)?;
-
     config.resolve_deepgram_api_key()?;
-
-    if let Some(provider) = config.transformation.provider.as_deref().map(str::trim) {
-        if !provider.is_empty() {
-            let transform_hotkey = parse_hotkey_binding(config.transformation.hotkey.as_str())
-                .map_err(|error| format!("transform hotkey is invalid: {}", error))?;
-            if record_hotkey == transform_hotkey {
-                return Err("record and transform hotkeys must be different".to_owned());
-            }
-            if correction_key.overlaps(transform_hotkey) {
-                return Err("transform hotkey and correction key must be different".to_owned());
-            }
-            config.resolve_transformation_config()?;
-        }
-    }
-
     Ok(())
-}
-
-fn parse_correction_key(raw: &str) -> Result<CorrectionBinding, String> {
-    CorrectionBinding::parse(raw)
 }
 
 fn correction_key_hint_label(raw: &str) -> String {
@@ -1878,14 +1883,16 @@ pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
 mod tests {
     use objc2::{sel, ClassType};
 
+    use std::path::Path;
+
     use super::{
-        audio_startup_failure_alert_text, config_file_is_missing,
+        audio_startup_failure_alert_text, config_file_is_missing, config_problems_alert_text,
         deepgram_status_title, missing_config_alert_text, overlay_style_from_config,
         settings_presentation_turn_selector, status_poll_selector, validate_settings_config,
         AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
         STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
-    use crate::config::Config;
+    use crate::config::{self, Config};
     use crate::settings_window::actions::SettingsAction;
     use crate::settings_window::SAVE_BUTTON_TITLE;
     use crate::state::{
@@ -2001,42 +2008,49 @@ mod tests {
     }
 
     #[test]
-    fn validate_settings_accepts_a_modifier_only_correction_chord() {
-        let mut config = Config::default();
-        config.deepgram.api_key = Some("test-key".to_owned());
-        config.ui.correction_key = "Alt+Cmd".to_owned();
-        assert_eq!(validate_settings_config(&config), Ok(()));
-
-        config.ui.hotkey = "Alt+Cmd+F5".to_owned();
-        assert_eq!(
-            validate_settings_config(&config).unwrap_err(),
-            "record hotkey and correction key must be different"
-        );
-    }
-
-    #[test]
-    fn validate_settings_rejects_correction_key_that_overlaps_record_hotkey() {
+    fn validate_settings_rejects_a_correction_key_inside_the_record_hotkey() {
         let mut config = Config::default();
         config.ui.hotkey = "Cmd+F5".to_owned();
         config.ui.correction_key = "LeftMeta".to_owned();
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
-            "record hotkey and correction key must be different"
+            "ui.correction_key: \"LeftMeta\" shares a key with ui.hotkey \"Cmd+F5\"; they must be different"
         );
     }
 
     #[test]
-    fn validate_settings_rejects_mic_gain_outside_slider_range() {
-        for gain in [-0.5, 10.5, f32::NAN, f32::INFINITY] {
-            let mut config = Config::default();
-            config.mic.gain = gain;
+    fn validate_settings_reports_every_config_problem_together() {
+        let mut config = Config::default();
+        config.ui.font_size = 0.0;
+        config.mic.gain = 10.5;
 
-            assert_eq!(
-                validate_settings_config(&config).unwrap_err(),
-                "Gain must be between 0 and 10 dB"
-            );
-        }
+        assert_eq!(
+            validate_settings_config(&config).unwrap_err(),
+            "ui.font_size: 0 is not a positive number\nmic.gain: 10.5 dB is outside the 0 to 10 dB range"
+        );
+    }
+
+    #[test]
+    fn config_problems_alert_lists_each_problem_and_the_config_path() {
+        let mut config = Config::default();
+        config.mic.gain = 40.0;
+        config.transformation.provider = Some("galadriel".to_owned());
+
+        let text = config_problems_alert_text(
+            &config::problems(&config),
+            Path::new("/tmp/simple-ptt/config.toml"),
+        );
+
+        assert!(
+            text.starts_with(
+                "mic.gain: 40 dB is outside the 0 to 10 dB range\n\
+                 transformation.provider: unsupported transformation provider 'galadriel'"
+            ),
+            "{text}"
+        );
+        assert!(text.ends_with("\n\n/tmp/simple-ptt/config.toml"), "{text}");
+        assert!(text.contains(SAVE_BUTTON_TITLE), "{text}");
     }
 
     #[test]
