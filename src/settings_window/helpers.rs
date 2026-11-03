@@ -1,8 +1,9 @@
-use crate::audio::AvailableAudioInputDevices;
+use crate::audio::{
+    is_system_default_audio_device_value, AvailableAudioInputDevices,
+    SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
+};
 use crate::settings_window::FETCH_MODELS_BUTTON_TITLE;
 use crate::transformation_models::ManualFetchReason;
-
-pub const SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL: &str = "System default";
 
 // Source: Deepgram model docs and live streaming docs.
 // - https://developers.deepgram.com/docs/model
@@ -50,15 +51,6 @@ pub fn default_audio_device_title(default_device_name: Option<&str>) -> String {
         }
         None => SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL.to_owned(),
     }
-}
-
-pub fn is_system_default_audio_device_value(value: &str) -> bool {
-    let trimmed_value = value.trim();
-    trimmed_value == SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL
-        || trimmed_value
-            .strip_prefix(SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL)
-            .map(|suffix| suffix.starts_with(" (") && suffix.ends_with(')'))
-            .unwrap_or(false)
 }
 
 /// Items and selection of the audio device popup, with the status message to
@@ -220,7 +212,7 @@ pub fn unreadable_model_cache_message(error: &str) -> String {
 mod tests {
     use super::{
         default_audio_device_title, find_mic_audio_device_option_title,
-        is_system_default_audio_device_value, manual_model_fetch_message,
+        manual_model_fetch_message,
         mic_audio_device_popup_state, settings_load_status, unreadable_model_cache_message,
         MicAudioDeviceOption, SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
     };
@@ -484,12 +476,32 @@ mod tests {
     }
 
     #[test]
-    fn system_default_audio_device_value_is_recognized_from_decorated_title() {
-        assert!(is_system_default_audio_device_value(
-            "System default (MacBook Pro Microphone)"
-        ));
-        assert!(is_system_default_audio_device_value("System default"));
-        assert!(!is_system_default_audio_device_value("Shure MV7"));
+    fn popup_default_selection_uses_the_audio_resolution_rule() {
+        for (value, is_default) in [
+            (" ", true),
+            ("System default", true),
+            ("System default (Previous Microphone)", true),
+            ("System default (anything", false),
+            ("System default (x) extra", false),
+        ] {
+            let state = mic_audio_device_popup_state(
+                Ok(AvailableAudioInputDevices {
+                    default_device_name: Some("Current Microphone".to_owned()),
+                    choices: vec![],
+                }),
+                Some(value),
+            );
+            let selected = state
+                .options
+                .iter()
+                .find(|option| option.title == state.selected_title)
+                .unwrap();
+            assert_eq!(
+                selected.value.as_deref(),
+                (!is_default).then_some(value),
+                "{value:?}"
+            );
+        }
     }
 
     #[test]

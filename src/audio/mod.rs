@@ -453,8 +453,8 @@ fn microphone_found<T>(built: &Result<T, String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_audio_input_device_choices, encode_pcm_mono, is_system_default_audio_device_value,
-        config_with_preferred_rate, normalize_meter_amplitude, normalized_configured_audio_device,
+        build_audio_input_device_choices, encode_pcm_mono,
+        config_with_preferred_rate, normalize_meter_amplitude,
         smooth_meter_value, stream_error_response, AudioController, AudioInputDeviceChoice,
         InputDeviceDescriptor, StreamErrorResponse,
     };
@@ -564,30 +564,6 @@ mod tests {
         assert_eq!(selected.sample_format(), SampleFormat::F32);
 
         assert!(config_with_preferred_rate(ranges, 96_000).is_none());
-    }
-
-    #[test]
-    fn decorated_system_default_audio_device_value_is_detected() {
-        assert!(is_system_default_audio_device_value(
-            "System default (MacBook Pro Microphone)"
-        ));
-        assert!(is_system_default_audio_device_value("System default"));
-    }
-
-    #[test]
-    fn decorated_system_default_audio_device_value_normalizes_to_none() {
-        assert_eq!(
-            normalized_configured_audio_device(Some("System default (MacBook Pro Microphone)")),
-            None
-        );
-        assert_eq!(
-            normalized_configured_audio_device(Some("System default")),
-            None
-        );
-        assert_eq!(
-            normalized_configured_audio_device(Some("Shure MV7")),
-            Some("Shure MV7")
-        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ use super::input_choice::{
 const MIC_SILENCE_DB: f32 = -100.0;
 
 const UNKNOWN_AUDIO_INPUT_DEVICE_LABEL: &str = "<unknown>";
+pub const SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL: &str = "System default";
 /// The fixed meters (the Settings microphone meter and the overlay meter
 /// styles other than the pills) map this range of RMS levels, in dBFS, from
 /// empty to full: soft speech (about -45 to -35 dBFS) shows, and a quiet room
@@ -188,8 +189,10 @@ fn find_configured_device(devices: &[cpal::Device], configured: &str) -> Option<
 pub fn is_system_default_audio_device_value(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.is_empty()
-        || trimmed == "System default"
-        || trimmed.starts_with("System default (")
+        || trimmed == SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL
+        || trimmed
+            .strip_prefix(SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL)
+            .is_some_and(|suffix| suffix.starts_with(" (") && suffix.ends_with(')'))
 }
 
 pub fn normalized_configured_audio_device(raw_value: Option<&str>) -> Option<&str> {
@@ -265,5 +268,35 @@ pub fn smooth_meter_value(current: f32, target: f32) -> f32 {
         current + (target - current) * 0.4
     } else {
         current + (target - current) * 0.15
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_system_default_audio_device_value, normalized_configured_audio_device};
+
+    #[test]
+    fn system_default_values_are_normalized_consistently() {
+        for (value, is_default) in [
+            ("", true),
+            ("  ", true),
+            ("System default", true),
+            (" System default (MacBook Pro Microphone) ", true),
+            ("System default (anything", false),
+            ("System default (x) extra", false),
+            ("Shure MV7", false),
+        ] {
+            assert_eq!(
+                is_system_default_audio_device_value(value),
+                is_default,
+                "{value:?}"
+            );
+            assert_eq!(
+                normalized_configured_audio_device(Some(value)),
+                (!is_default).then_some(value.trim()),
+                "{value:?}"
+            );
+        }
+        assert_eq!(normalized_configured_audio_device(None), None);
     }
 }
