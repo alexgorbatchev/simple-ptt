@@ -80,7 +80,7 @@ fn run_graphical_application() -> Result<(), String> {
     let runtime_config = config::materialize_runtime_config(&loaded_config);
     let config_path = config::config_path()?;
 
-    if let Err(error) = crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login) {
+    if let Err(error) = crate::auto_launch::set_start_on_login(runtime_config.ui.start_on_login) {
         log::error!("{}", error);
     }
 

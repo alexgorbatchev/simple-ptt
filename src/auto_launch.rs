@@ -1,8 +1,28 @@
-use auto_launch::{AutoLaunchBuilder, MacOSLaunchMode};
+use auto_launch::{AutoLaunch, AutoLaunchBuilder, MacOSLaunchMode};
 
-/// Registers the app as a login item, or unregisters it, and reports why
-/// that failed.
-pub fn apply_auto_launch_config(enable: bool) -> Result<(), String> {
+/// Makes the login item match `enable`, changing it only when its actual
+/// registration differs, and returns whether it was registered before, so a
+/// failed Save can put that state back.
+pub fn set_start_on_login(enable: bool) -> Result<bool, String> {
+    let login_item = login_item()?;
+    let was_enabled = login_item
+        .is_enabled()
+        .map_err(|error| format!("couldn't check whether the app starts on login: {error}"))?;
+    if was_enabled != enable {
+        if enable {
+            login_item
+                .enable()
+                .map_err(|error| format!("couldn't turn on starting on login: {error}"))?;
+        } else {
+            login_item
+                .disable()
+                .map_err(|error| format!("couldn't turn off starting on login: {error}"))?;
+        }
+    }
+    Ok(was_enabled)
+}
+
+fn login_item() -> Result<AutoLaunch, String> {
     let path = std::env::current_exe()
         .map_err(|error| format!("couldn't find the app to start on login: {error}"))?;
     let mut is_app_bundle = false;
@@ -25,18 +45,10 @@ pub fn apply_auto_launch_config(enable: bool) -> Result<(), String> {
         MacOSLaunchMode::LaunchAgent
     };
 
-    let auto = AutoLaunchBuilder::new()
+    AutoLaunchBuilder::new()
         .set_app_name("simple-ptt")
         .set_app_path(app_path.to_str().unwrap_or_default())
         .set_macos_launch_mode(mode)
         .build()
-        .map_err(|error| format!("couldn't set up starting on login: {error}"))?;
-
-    if enable {
-        auto.enable()
-            .map_err(|error| format!("couldn't turn on starting on login: {error}"))
-    } else {
-        auto.disable()
-            .map_err(|error| format!("couldn't turn off starting on login: {error}"))
-    }
+        .map_err(|error| format!("couldn't set up starting on login: {error}"))
 }

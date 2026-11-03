@@ -1247,26 +1247,25 @@ impl AppDelegate {
         // Save is all or nothing: the fallible steps run first and each
         // failure undoes the steps before it, so the updater setting and the
         // live config change only once everything else has been applied.
-        let previous_start_on_login = self.ivars().config_store.current().ui.start_on_login;
-        let start_on_login_changed = runtime_config.ui.start_on_login != previous_start_on_login;
-        if start_on_login_changed {
-            if let Err(error) =
-                crate::auto_launch::apply_auto_launch_config(runtime_config.ui.start_on_login)
-            {
+        let start_on_login = runtime_config.ui.start_on_login;
+        let started_on_login = match crate::auto_launch::set_start_on_login(start_on_login) {
+            Ok(started_on_login) => started_on_login,
+            Err(error) => {
                 let error = settings_rollback_error(error, config_file_snapshot.restore(), None);
                 settings_window.set_status(&error);
                 show_modal_alert("Couldn't apply settings", &error);
                 return;
             }
-        }
+        };
 
         self.ivars().audio_controller.clear_preview_audio_device();
 
         let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
             Ok(effect) => effect,
             Err(error) => {
-                let login_item_restore = start_on_login_changed
-                    .then(|| crate::auto_launch::apply_auto_launch_config(previous_start_on_login));
+                let login_item_restore = (started_on_login != start_on_login).then(|| {
+                    crate::auto_launch::set_start_on_login(started_on_login).map(|_| ())
+                });
                 let error =
                     settings_rollback_error(error, config_file_snapshot.restore(), login_item_restore);
                 settings_window.set_status(&error);
@@ -1486,10 +1485,6 @@ fn config_file_is_missing(path: &Path) -> bool {
     )
 }
 
-// The alert texts name the settings Save button through `SAVE_BUTTON_TITLE`.
-// `concat!` accepts only literals, and `format!` cannot implicitly capture
-// `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
-// title is passed as an explicit named argument.
 /// The error of a Save step that failed, followed by any step that could
 /// not be undone: the config file restore and, when the login item had
 /// already changed, its restore.
@@ -1512,6 +1507,10 @@ fn settings_rollback_error(
     message
 }
 
+// The alert texts name the settings Save button through `SAVE_BUTTON_TITLE`.
+// `concat!` accepts only literals, and `format!` cannot implicitly capture
+// `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
+// title is passed as an explicit named argument.
 fn missing_config_alert_text(config_path: &Path) -> String {
     format!(
         concat!(
