@@ -24,6 +24,9 @@ const THREE_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - (BUTTON_GAP * 2.0)) / 3.0;
 const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
 const BODY_FONT_SIZE: f64 = 12.0;
+const RESET_BUTTON_TITLE: &str = "Reset and Relaunch";
+const RECHECK_BUTTON_TITLE: &str = "Re-check";
+const RELAUNCH_BUTTON_TITLE: &str = "Quit and Reopen";
 
 #[derive(Debug)]
 pub struct PermissionsDialog {
@@ -130,7 +133,7 @@ impl PermissionsDialog {
 
         let reset_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Reset and Relaunch"),
+                &NSString::from_str(RESET_BUTTON_TITLE),
                 Some(target),
                 Some(sel!(resetHotkeyPermissions:)),
                 mtm,
@@ -148,7 +151,7 @@ impl PermissionsDialog {
 
         let recheck_button = unsafe {
             NSButton::buttonWithTitle_target_action(
-                ns_string!("Re-check"),
+                &NSString::from_str(RECHECK_BUTTON_TITLE),
                 Some(target),
                 Some(sel!(recheckHotkeyPermissions:)),
                 mtm,
@@ -251,11 +254,10 @@ fn permissions_dialog_summary_text(flow: &GlobalHotkeyPermissionFlow) -> String 
     }
 
     if flow.relaunch_required() {
-        return concat!(
-            "Permissions are granted. Click Quit and Reopen to restart simple-ptt with working global shortcuts and paste automation. ",
-            "Use Reset Permissions only if macOS gets stuck or stops showing the app in Privacy & Security."
-        )
-        .to_owned();
+        return format!(
+            "Permissions are granted. Click {RELAUNCH_BUTTON_TITLE} to restart simple-ptt with working global shortcuts and paste automation. \
+             Use {RESET_BUTTON_TITLE} only if macOS gets stuck or stops showing the app in Privacy & Security."
+        );
     }
 
     if matches!(
@@ -268,26 +270,24 @@ fn permissions_dialog_summary_text(flow: &GlobalHotkeyPermissionFlow) -> String 
         flow.microphone_state,
         GlobalHotkeyPermissionState::Requested
     ) {
-        return concat!(
-            "Finish the remaining grants in macOS, then click Re-check. ",
-            "If a visible permission button switches to Open, macOS now requires that privacy pane instead of another prompt. ",
-            "Microphone access can start working in the current app session after Re-check. Global shortcut access may still require quitting and reopening simple-ptt after macOS updates the app trust state. ",
-            "If you leave this window, reopen it from the menu bar with Application Permissions…."
-        )
-        .to_owned();
+        return format!(
+            "Finish the remaining grants in macOS, then click {RECHECK_BUTTON_TITLE}. \
+             If a visible permission button switches to Open, macOS now requires that privacy pane instead of another prompt. \
+             Microphone access can start working in the current app session after {RECHECK_BUTTON_TITLE}. Global shortcut access may still require quitting and reopening simple-ptt after macOS updates the app trust state. \
+             If you leave this window, reopen it from the menu bar with Application Permissions…."
+        );
     }
 
     if flow.all_granted() {
         return "Application permissions are already granted for this app bundle.".to_owned();
     }
 
-    concat!(
-        "simple-ptt needs Accessibility to drive the synthetic paste shortcut and Microphone access to capture audio. ",
-        "Global shortcut access is checked automatically in the background, so there is no separate Input Monitoring button anymore. ",
-        "If macOS stops prompting or a grant looks stale, use Reset Permissions and try again. ",
-        "If you leave this window, reopen it from the menu bar with Application Permissions…."
+    format!(
+        "simple-ptt needs Accessibility to drive the synthetic paste shortcut and Microphone access to capture audio. \
+         Input Monitoring is required for global shortcuts and requested automatically. \
+         If macOS stops prompting or a grant looks stale, use {RESET_BUTTON_TITLE} to reset permissions and restart simple-ptt. \
+         If you leave this window, reopen it from the menu bar with Application Permissions…."
     )
-    .to_owned()
 }
 
 fn sync_completion_button(button: &NSButton, flow: &GlobalHotkeyPermissionFlow) {
@@ -323,7 +323,7 @@ fn sync_permission_button(
 
 fn permissions_completion_button_title(flow: &GlobalHotkeyPermissionFlow) -> &'static str {
     if flow.relaunch_required() {
-        return "Quit and Reopen";
+        return RELAUNCH_BUTTON_TITLE;
     }
 
     if flow.all_granted() {
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn permissions_dialog_summary_explains_hidden_input_monitoring_step() {
+    fn permissions_dialog_summary_explains_automatic_input_monitoring_request() {
         let text = permissions_dialog_summary_text(&GlobalHotkeyPermissionFlow {
             permissions: GlobalHotkeyPermissions {
                 accessibility_granted: false,
@@ -403,7 +403,12 @@ mod tests {
             microphone_state: GlobalHotkeyPermissionState::Missing,
         });
 
-        assert!(text.contains("no separate Input Monitoring button anymore"));
+        assert!(text.contains(
+            "Input Monitoring is required for global shortcuts and requested automatically"
+        ));
+        assert!(!text.contains("anymore"));
+        assert!(text.contains("Reset and Relaunch"));
+        assert!(!text.contains("Reset Permissions"));
     }
 
     #[test]
@@ -421,6 +426,8 @@ mod tests {
 
         assert!(text.contains("Quit and Reopen"));
         assert!(text.contains("paste automation"));
+        assert!(text.contains("Reset and Relaunch"));
+        assert!(!text.contains("Reset Permissions"));
     }
 
     #[test]
