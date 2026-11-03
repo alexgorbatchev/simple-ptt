@@ -199,10 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn app_updater_init_safely_handles_unbundled_execution() {
-        let mtm = unsafe { MainThreadMarker::new_unchecked() };
-        let updater = AppUpdater::init(mtm);
-        assert!(matches!(updater, Err(UpdaterInitError::NotBundled)));
+    fn unbundled_execution_reports_not_bundled() {
+        assert!(matches!(
+            validate_sparkle_bundle(&NSBundle::mainBundle()),
+            Err(UpdaterInitError::NotBundled)
+        ));
     }
 
     #[test]
