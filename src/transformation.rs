@@ -690,6 +690,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsupported_provider_is_rejected_before_requesting_credentials() {
+        let config = TransformationRuntimeConfig {
+            provider: "unknown-provider".to_owned(),
+            api_key: None,
+            model: "test-model".to_owned(),
+            system_prompt: String::new(),
+            correction_system_prompt: String::new(),
+        };
+
+        let result = transform_text(
+            AppState::new(),
+            &config,
+            "input",
+            TransformationPreviewMode::ReplaceOverlay,
+        )
+        .await;
+
+        assert_eq!(result, Err(unsupported_provider_error("unknown-provider")));
+    }
+
+    #[tokio::test]
     #[ignore = "requires GEMINI_API_KEY and calls the live Gemini API"]
     async fn gemini_flash_lite_streams_with_model_defaults() {
         let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");

@@ -1021,7 +1021,8 @@ fn override_config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, OnceLock};
+    use std::ffi::OsString;
+    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
@@ -1029,9 +1030,65 @@ mod tests {
         PromptResets, UiMeterStyle,
     };
 
-    fn env_lock() -> &'static Mutex<()> {
+    fn env_lock() -> MutexGuard<'static, ()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_LOCK.get_or_init(|| Mutex::new(()))
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(name: &'static str, value: Option<&str>) -> Self {
+            let guard = Self {
+                name,
+                previous: std::env::var_os(name),
+            };
+            match value {
+                Some(value) => std::env::set_var(name, value),
+                None => std::env::remove_var(name),
+            }
+            guard
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
+    }
+
+    #[test]
+    fn environment_is_restored_after_panic_and_lock_remains_usable() {
+        const NAME: &str = "SIMPLE_PTT_ENV_GUARD_TEST";
+        for previous in [None, Some("original")] {
+            {
+                let _lock = env_lock();
+                let _original = EnvVarGuard::set(NAME, previous);
+                let result = std::panic::catch_unwind(|| {
+                    let _changed = EnvVarGuard::set(NAME, Some("temporary"));
+                    panic!("exercise environment restoration");
+                });
+                assert!(result.is_err());
+                assert_eq!(std::env::var_os(NAME), previous.map(OsString::from));
+            }
+
+            let result = std::panic::catch_unwind(|| {
+                let _lock = env_lock();
+                let _changed = EnvVarGuard::set(NAME, Some("temporary"));
+                panic!("exercise lock poisoning");
+            });
+            assert!(result.is_err());
+            let _lock = env_lock();
+        }
     }
 
     #[test]
@@ -1156,20 +1213,9 @@ mod tests {
     ) -> Result<String, String> {
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
-        let _guard = env_lock().lock().unwrap();
-        let previous_deepgram_api_key = std::env::var("DEEPGRAM_API_KEY").ok();
-        match env_value {
-            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
-            None => std::env::remove_var("DEEPGRAM_API_KEY"),
-        }
-
-        let resolved = config.resolve_deepgram_api_key();
-
-        match previous_deepgram_api_key {
-            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
-            None => std::env::remove_var("DEEPGRAM_API_KEY"),
-        }
-        resolved
+        let _lock = env_lock();
+        let _key = EnvVarGuard::set("DEEPGRAM_API_KEY", env_value);
+        config.resolve_deepgram_api_key()
     }
 
     #[test]
@@ -1517,28 +1563,20 @@ mod tests {
 
     #[test]
     fn reports_env_backed_deepgram_api_key_without_file_value() {
-        let _guard = env_lock().lock().unwrap();
-        let previous_deepgram_api_key = std::env::var("DEEPGRAM_API_KEY").ok();
-
-        std::env::set_var("DEEPGRAM_API_KEY", "env-deepgram-key");
+        let _lock = env_lock();
+        let _key = EnvVarGuard::set("DEEPGRAM_API_KEY", Some("env-deepgram-key"));
 
         let config = Config::default();
         assert_eq!(
             config.deepgram_api_key_env_var_in_use(),
             Some("DEEPGRAM_API_KEY")
         );
-
-        match previous_deepgram_api_key {
-            Some(value) => std::env::set_var("DEEPGRAM_API_KEY", value),
-            None => std::env::remove_var("DEEPGRAM_API_KEY"),
-        }
     }
 
     #[test]
     fn reports_env_backed_transformation_api_key_for_selected_provider() {
-        let _guard = env_lock().lock().unwrap();
-        let previous_openai_api_key = std::env::var("OPENAI_API_KEY").ok();
-        std::env::set_var("OPENAI_API_KEY", "env-openai-key");
+        let _lock = env_lock();
+        let _key = EnvVarGuard::set("OPENAI_API_KEY", Some("env-openai-key"));
 
         let mut config = Config::default();
         config.transformation.provider = Some("openai".to_owned());
@@ -1548,11 +1586,6 @@ mod tests {
             config.transformation_api_key_env_var_in_use(),
             Some("OPENAI_API_KEY")
         );
-
-        match previous_openai_api_key {
-            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
-            None => std::env::remove_var("OPENAI_API_KEY"),
-        }
     }
 
     #[test]
