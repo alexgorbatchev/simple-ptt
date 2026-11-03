@@ -715,12 +715,44 @@ fn set_defaulted_string_key(
     }
 }
 
-fn set_float_key(table: &mut dyn TableLike, key: &str, field_value: f64) {
-    *table.entry(key).or_insert(Item::None) = value(field_value);
+/// Writes a key that has a built-in default only when `field_value` differs
+/// from `default_value` or the file already has the key (under `key` or an
+/// alias). A config that leaves a default out keeps following the default of
+/// later releases, and a key the user wrote stays, keeping its comments.
+fn set_defaulted_key<V>(
+    table: &mut dyn TableLike,
+    key: &str,
+    aliases: &[&str],
+    field_value: V,
+    default_value: V,
+) where
+    V: PartialEq + Into<toml_edit::Value>,
+{
+    let in_file = table.contains_key(key) || aliases.iter().any(|alias| table.contains_key(alias));
+    if !in_file && field_value == default_value {
+        return;
+    }
+
+    let selected_key = existing_key_name(table, key, aliases);
+    let mut new_value = field_value.into();
+    match table.get_mut(&selected_key).and_then(Item::as_value_mut) {
+        Some(existing_value) => {
+            *new_value.decor_mut() = existing_value.decor().clone();
+            *existing_value = new_value;
+        }
+        None => {
+            *table.entry(&selected_key).or_insert(Item::None) = Item::Value(new_value);
+        }
+    }
+    for alias in aliases {
+        if *alias != selected_key {
+            table.remove(alias);
+        }
+    }
 }
 
-fn set_float32_key(table: &mut dyn TableLike, key: &str, field_value: f32) {
-    *table.entry(key).or_insert(Item::None) = value(f64::from(field_value));
+fn set_float_key(table: &mut dyn TableLike, key: &str, field_value: f64) {
+    *table.entry(key).or_insert(Item::None) = value(field_value);
 }
 
 fn set_string_array_key(table: &mut dyn TableLike, key: &str, values: &[String]) {
@@ -735,28 +767,23 @@ fn set_string_array_key(table: &mut dyn TableLike, key: &str, values: &[String])
     }
 }
 
-fn set_unsigned_key(table: &mut dyn TableLike, key: &str, field_value: impl Into<i64>) {
-    *table.entry(key).or_insert(Item::None) = value(field_value.into());
-}
-
 fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), String> {
     let table = ensure_named_table(document, "ui")?;
-    if ui.start_on_login {
-        *table.entry("start_on_login").or_insert(Item::None) = value(true);
-    } else {
-        table.remove("start_on_login");
-    }
-    if !ui.auto_check_updates {
-        *table.entry("auto_check_updates").or_insert(Item::None) = value(false);
-    } else {
-        table.remove("auto_check_updates");
-    }
-    set_required_string_key(table, "hotkey", &[], &ui.hotkey);
-    set_required_string_key(
+    set_defaulted_key(table, "start_on_login", &[], ui.start_on_login, false);
+    set_defaulted_key(
+        table,
+        "auto_check_updates",
+        &[],
+        ui.auto_check_updates,
+        default_auto_check_updates(),
+    );
+    set_defaulted_key(table, "hotkey", &[], ui.hotkey.as_str(), &default_hotkey());
+    set_defaulted_key(
         table,
         "correction_key",
         &["instruction_key"],
-        &ui.correction_key,
+        ui.correction_key.as_str(),
+        &default_correction_key(),
     );
     set_optional_string_key(
         table,
@@ -764,46 +791,69 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), Strin
         &["overlay_font_family"],
         ui.font_name.as_deref(),
     );
-    set_float_key(table, "font_size", ui.font_size);
+    set_defaulted_key(table, "font_size", &[], ui.font_size, default_overlay_font_size());
     match ui.footer_font_size {
         Some(footer_font_size) => set_float_key(table, "footer_font_size", footer_font_size),
         None => {
             table.remove("footer_font_size");
         }
     }
-    *table.entry("meter_style").or_insert(Item::None) = value(match ui.meter_style {
-        UiMeterStyle::None => "none",
-        UiMeterStyle::AnimatedHeight => "animated-height",
-        UiMeterStyle::AnimatedColor => "animated-color",
-        UiMeterStyle::Pills => "pills",
-    });
+    set_defaulted_key(
+        table,
+        "meter_style",
+        &[],
+        meter_style_name(ui.meter_style),
+        meter_style_name(UiMeterStyle::default()),
+    );
     Ok(())
 }
 
 fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) -> Result<(), String> {
     let table = ensure_named_table(document, "mic")?;
     set_optional_string_key(table, "audio_device", &[], mic.audio_device.as_deref());
-    set_unsigned_key(table, "sample_rate", i64::from(mic.sample_rate));
-    set_float32_key(table, "gain", mic.gain);
-    set_unsigned_key(
+    set_defaulted_key(
+        table,
+        "sample_rate",
+        &[],
+        i64::from(mic.sample_rate),
+        i64::from(default_sample_rate()),
+    );
+    set_defaulted_key(table, "gain", &[], f64::from(mic.gain), f64::from(default_gain()));
+    set_defaulted_key(
         table,
         "hold_ms",
+        &[],
         i64::try_from(mic.hold_ms).unwrap_or(i64::MAX),
+        i64::try_from(default_hold_ms()).unwrap_or(i64::MAX),
     );
-    *table.entry("always_on").or_insert(Item::None) = value(mic.always_on);
+    set_defaulted_key(table, "always_on", &[], mic.always_on, default_always_on());
     Ok(())
 }
 
 fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -> Result<(), String> {
     let table = ensure_named_table(document, "deepgram")?;
     set_optional_string_key(table, "api_key", &[], deepgram.api_key.as_deref());
-    set_required_string_key(table, "language", &[], &deepgram.language);
-    set_required_string_key(table, "model", &[], &deepgram.model);
-    set_unsigned_key(table, "endpointing_ms", i64::from(deepgram.endpointing_ms));
-    set_unsigned_key(
+    set_defaulted_key(
+        table,
+        "language",
+        &[],
+        deepgram.language.as_str(),
+        &default_deepgram_language(),
+    );
+    set_defaulted_key(table, "model", &[], deepgram.model.as_str(), &default_deepgram_model());
+    set_defaulted_key(
+        table,
+        "endpointing_ms",
+        &[],
+        i64::from(deepgram.endpointing_ms),
+        i64::from(default_endpointing_ms()),
+    );
+    set_defaulted_key(
         table,
         "utterance_end_ms",
+        &[],
         i64::from(deepgram.utterance_end_ms),
+        i64::from(default_utterance_end_ms()),
     );
     set_string_array_key(table, "keyterms", &deepgram.keyterms);
     Ok(())
@@ -815,8 +865,14 @@ fn write_transformation_table(
     prompt_resets: PromptResets,
 ) -> Result<(), String> {
     let table = ensure_named_table(document, "transformation")?;
-    set_required_string_key(table, "hotkey", &[], &transformation.hotkey);
-    *table.entry("auto").or_insert(Item::None) = value(transformation.auto);
+    set_defaulted_key(
+        table,
+        "hotkey",
+        &[],
+        transformation.hotkey.as_str(),
+        &default_transformation_hotkey(),
+    );
+    set_defaulted_key(table, "auto", &[], transformation.auto, default_transformation_auto());
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
     let default_model = transformation
@@ -845,16 +901,40 @@ fn write_transformation_table(
     Ok(())
 }
 
+const CONFIG_SECTIONS: [&str; 4] = ["ui", "mic", "deepgram", "transformation"];
+
+fn meter_style_name(meter_style: UiMeterStyle) -> &'static str {
+    match meter_style {
+        UiMeterStyle::None => "none",
+        UiMeterStyle::AnimatedHeight => "animated-height",
+        UiMeterStyle::AnimatedColor => "animated-color",
+        UiMeterStyle::Pills => "pills",
+    }
+}
+
 pub fn save_config(
     path: &Path,
     config: &Config,
     prompt_resets: PromptResets,
 ) -> Result<(), String> {
     let mut document = load_document(path)?;
+    let sections_in_file = CONFIG_SECTIONS.map(|section| root_table(&mut document).contains_key(section));
     write_ui_table(&mut document, &config.ui)?;
     write_mic_table(&mut document, &config.mic)?;
     write_deepgram_table(&mut document, &config.deepgram)?;
     write_transformation_table(&mut document, &config.transformation, prompt_resets)?;
+    // A section Save created only to hold keys that all stayed at their
+    // defaults is left out too.
+    let root = root_table(&mut document);
+    for (section, in_file) in CONFIG_SECTIONS.into_iter().zip(sections_in_file) {
+        let empty = root
+            .get(section)
+            .and_then(Item::as_table_like)
+            .is_some_and(|table| table.is_empty());
+        if !in_file && empty {
+            root.remove(section);
+        }
+    }
     write_document_atomically(path, &document.to_string())
 }
 
@@ -1181,7 +1261,8 @@ mod tests {
         assert!(updated_contents.contains("keep_me = true"));
         assert!(updated_contents.contains("overlay_font_family = \"SF Mono\""));
         assert!(updated_contents.contains("hotkey = \"F5\""));
-        assert!(updated_contents.contains("correction_key = \"Alt+Cmd\""));
+        // Alt+Cmd is the default correction key and the file had none.
+        assert!(!updated_contents.contains("correction_key"));
         assert!(updated_contents
             .contains("correction_system_prompt = \"Apply the spoken correction.\""));
     }
@@ -1199,7 +1280,7 @@ mod tests {
         assert_eq!(config.ui.meter_style, UiMeterStyle::Pills);
         assert_eq!(config.mic.audio_device, None);
         assert_eq!(config.mic.sample_rate, 16000);
-        assert_eq!(config.mic.gain, 4.0);
+        assert_eq!(config.mic.gain, 4.5);
         assert_eq!(config.mic.hold_ms, 300);
         assert!(config.mic.always_on);
         assert_eq!(config.deepgram.api_key, None);
@@ -1334,10 +1415,93 @@ mod tests {
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
         toml::from_str::<Config>(&updated_contents).unwrap();
-        updated_contents.parse::<toml_edit::DocumentMut>().unwrap()["transformation"]
-            .as_table()
-            .expect("save_config writes a [transformation] table")
-            .clone()
+        // A [transformation] table whose keys all stay at their defaults is
+        // left out of a new file.
+        updated_contents
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap()
+            .get("transformation")
+            .map(|item| item.as_table().expect("[transformation] is a table").clone())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn saving_the_default_config_to_a_new_file_writes_no_defaulted_key() {
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-defaults-everywhere-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+
+        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert_eq!(contents.trim(), "", "a default config wrote:\n{contents}");
+    }
+
+    #[test]
+    fn save_config_writes_only_the_values_that_differ_from_their_defaults() {
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-changed-defaults-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        let mut config = Config::default();
+        config.mic.gain = 6.0;
+        config.deepgram.endpointing_ms = 450;
+
+        save_config(&path, &config, PromptResets::default()).unwrap();
+        let document = std::fs::read_to_string(&path)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert_eq!(document["mic"].as_table().unwrap().len(), 1, "{document}");
+        assert_eq!(document["mic"]["gain"].as_float(), Some(6.0));
+        assert_eq!(document["deepgram"].as_table().unwrap().len(), 1, "{document}");
+        assert_eq!(document["deepgram"]["endpointing_ms"].as_integer(), Some(450));
+        assert!(!document.contains_key("ui"), "{document}");
+        assert!(!document.contains_key("transformation"), "{document}");
+    }
+
+    /// Every defaulted key the user already wrote stays, at its default
+    /// value too, with the comment after it.
+    #[test]
+    fn save_config_keeps_default_valued_keys_of_every_section_and_their_comments() {
+        let defaults = Config::default();
+        let initial_contents = format!(
+            concat!(
+                "[ui]\nhotkey = {:?} # keep me\ninstruction_key = {:?}\nfont_size = {:?}\n",
+                "meter_style = \"pills\"\nstart_on_login = false\nauto_check_updates = true\n",
+                "[mic]\nsample_rate = {}\ngain = {:?}\nhold_ms = {}\nalways_on = {}\n",
+                "[deepgram]\nlanguage = {:?}\nmodel = {:?}\nendpointing_ms = {}\nutterance_end_ms = {}\n",
+                "[transformation]\nhotkey = {:?}\nauto = {}\n"
+            ),
+            defaults.ui.hotkey,
+            defaults.ui.correction_key,
+            defaults.ui.font_size,
+            defaults.mic.sample_rate,
+            f64::from(defaults.mic.gain),
+            defaults.mic.hold_ms,
+            defaults.mic.always_on,
+            defaults.deepgram.language,
+            defaults.deepgram.model,
+            defaults.deepgram.endpointing_ms,
+            defaults.deepgram.utterance_end_ms,
+            defaults.transformation.hotkey,
+            defaults.transformation.auto,
+        );
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-defaults-kept-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(&path, &initial_contents).unwrap();
+
+        save_config(&path, &defaults, PromptResets::default()).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert_eq!(contents, initial_contents);
     }
 
     #[test]
@@ -1815,8 +1979,10 @@ mod file_security_tests {
         let path = directory.config();
         symlink("private/actual.toml", &path).unwrap();
         let snapshot = ConfigFileSnapshot::take(&path).unwrap();
+        let mut config = Config::default();
+        config.mic.gain = 6.0;
 
-        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        save_config(&path, &config, PromptResets::default()).unwrap();
         assert_eq!(
             std::fs::read_link(&path).unwrap(),
             Path::new("private/actual.toml")

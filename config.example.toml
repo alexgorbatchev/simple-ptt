@@ -47,7 +47,7 @@ meter_style = "pills"
 sample_rate = 16000
 
 # Input gain in dB (0-10) applied before sending audio upstream. 0 leaves the input unchanged.
-gain = 4.0
+gain = 4.5
 
 # Press-and-hold threshold in milliseconds.
 # Shorter presses behave like toggle; longer presses behave like hold-to-talk.
