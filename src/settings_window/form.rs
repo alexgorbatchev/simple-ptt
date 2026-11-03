@@ -12,7 +12,7 @@
 use crate::config::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
     validate_mic_gain, Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig,
-    UiConfig, UiMeterStyle,
+    TransformationProvider, UiConfig, UiMeterStyle,
 };
 
 /// The font popup's title for an unset `ui.font_name`: the overlay then uses
@@ -222,7 +222,13 @@ impl SettingsForm {
                 provider: optional_popup_value(
                     transformation.provider_title.as_deref(),
                     TRANSFORMATION_PROVIDER_DISABLED_LABEL,
-                ),
+                )
+                .map(|provider| {
+                    provider
+                        .parse::<TransformationProvider>()
+                        .map(|provider| provider.to_string())
+                })
+                .transpose()?,
                 api_key: optional_text(&transformation.api_key),
                 model: required_text(&transformation.model, "Transformation model")?,
                 system_prompt: self.prompts.system_prompt.clone(),
@@ -487,7 +493,7 @@ mod tests {
         form.deepgram.api_key = "   ".to_owned();
         form.deepgram.language = " en-GB ".to_owned();
         form.transformation.api_key = "".to_owned();
-        form.transformation.provider_title = Some(" anthropic ".to_owned());
+        form.transformation.provider_title = Some(" Anthropic ".to_owned());
         form.transformation.model = " claude-test ".to_owned();
 
         let config = form.to_config().unwrap();

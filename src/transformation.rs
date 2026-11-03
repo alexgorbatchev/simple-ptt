@@ -10,6 +10,7 @@ use rig_core::providers::{
 use rig_core::streaming::{StreamedAssistantContent, StreamingCompletionResponse};
 use tokio_stream::StreamExt;
 
+use crate::config::TransformationProvider;
 use crate::state::AppState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,7 +31,7 @@ pub enum TransformationPreviewMode<'a> {
 
 #[derive(Clone, Debug)]
 pub struct TransformationRuntimeConfig {
-    pub provider: String,
+    pub provider: TransformationProvider,
     pub api_key: Option<String>,
     pub model: String,
     pub system_prompt: String,
@@ -43,8 +44,6 @@ pub async fn transform_text(
     input_text: &str,
     preview_mode: TransformationPreviewMode<'_>,
 ) -> Result<String, String> {
-    let normalized_provider = normalize_provider_name(&config.provider);
-
     if state.is_abort_requested() {
         return Err("transformation aborted".to_owned());
     }
@@ -63,72 +62,77 @@ pub async fn transform_text(
         }};
     }
 
-    match normalized_provider.as_str() {
-        "anthropic" => {
+    match config.provider {
+        TransformationProvider::Anthropic => {
             stream_with_client!(anthropic::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "cohere" => stream_with_client!(
-            cohere::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        "deepseek" => {
+        TransformationProvider::Cohere => {
+            stream_with_client!(
+                cohere::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
+        TransformationProvider::Deepseek => {
             stream_with_client!(deepseek::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "gemini" => stream_with_client!(
-            gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        "groq" => stream_with_client!(
-            groq::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        "huggingface" => stream_with_client!(huggingface::Client::new(required_api_key(config)?)
-            .map_err(format_http_client_error)?),
-        "hyperbolic" => {
+        TransformationProvider::Gemini => {
+            stream_with_client!(
+                gemini::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
+        TransformationProvider::Groq => {
+            stream_with_client!(
+                groq::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
+        TransformationProvider::Huggingface => {
+            stream_with_client!(huggingface::Client::new(required_api_key(config)?)
+                .map_err(format_http_client_error)?)
+        }
+        TransformationProvider::Hyperbolic => {
             stream_with_client!(hyperbolic::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "mira" => stream_with_client!(
-            mira::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        "mistral" => {
+        TransformationProvider::Mira => {
+            stream_with_client!(
+                mira::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
+        TransformationProvider::Mistral => {
             stream_with_client!(mistral::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "moonshot" => {
+        TransformationProvider::Moonshot => {
             stream_with_client!(moonshot::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "ollama" => {
+        TransformationProvider::Ollama => {
             stream_with_client!(ollama::Client::from_env().map_err(format_provider_client_error)?)
         }
-        "openai" => stream_with_client!(
-            openai::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        "openrouter" => {
+        TransformationProvider::Openai => {
+            stream_with_client!(
+                openai::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
+        TransformationProvider::Openrouter => {
             stream_with_client!(openrouter::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "perplexity" => {
+        TransformationProvider::Perplexity => {
             stream_with_client!(perplexity::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "together" => {
+        TransformationProvider::Together => {
             stream_with_client!(together::Client::new(required_api_key(config)?)
                 .map_err(format_http_client_error)?)
         }
-        "xai" => stream_with_client!(
-            xai::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
-        ),
-        _ => Err(unsupported_provider_error(&config.provider)),
+        TransformationProvider::Xai => {
+            stream_with_client!(
+                xai::Client::new(required_api_key(config)?).map_err(format_http_client_error)?
+            )
+        }
     }
-}
-
-fn unsupported_provider_error(provider: &str) -> String {
-    format!(
-        "unsupported transformation provider '{}'; supported providers: {}",
-        provider,
-        crate::config::supported_transformation_providers().join(", ")
-    )
 }
 
 async fn stream_completion_response<M>(
@@ -350,10 +354,6 @@ fn format_provider_client_error(error: ProviderClientError) -> String {
     format!("{}", error)
 }
 
-fn normalize_provider_name(provider_name: &str) -> String {
-    provider_name.trim().to_ascii_lowercase()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,16 +388,6 @@ mod tests {
 
     fn final_item() -> StreamedAssistantContent {
         StreamedAssistantContent::Final(StreamFinal::new("test-provider", Usage::new()))
-    }
-
-    #[test]
-    fn unsupported_provider_error_names_provider_and_lists_supported_providers() {
-        assert_eq!(
-            unsupported_provider_error("galadriel"),
-            "unsupported transformation provider 'galadriel'; supported providers: \
-             anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, \
-             moonshot, ollama, openai, openrouter, perplexity, together, xai"
-        );
     }
 
     #[test]
@@ -660,11 +650,10 @@ mod tests {
         // `ollama` takes no API key: its client reads the environment and
         // would open a real connection to the local server.
         for provider in crate::config::supported_transformation_providers()
-            .iter()
-            .filter(|provider| **provider != "ollama")
+            .filter(|provider| *provider != "ollama")
         {
             let config = TransformationRuntimeConfig {
-                provider: (*provider).to_owned(),
+                provider: provider.parse().unwrap(),
                 api_key: None,
                 model: "test-model".to_owned(),
                 system_prompt: String::new(),
@@ -690,33 +679,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_provider_is_rejected_before_requesting_credentials() {
-        let config = TransformationRuntimeConfig {
-            provider: "unknown-provider".to_owned(),
-            api_key: None,
-            model: "test-model".to_owned(),
-            system_prompt: String::new(),
-            correction_system_prompt: String::new(),
-        };
-
-        let result = transform_text(
-            AppState::new(),
-            &config,
-            "input",
-            TransformationPreviewMode::ReplaceOverlay,
-        )
-        .await;
-
-        assert_eq!(result, Err(unsupported_provider_error("unknown-provider")));
-    }
-
-    #[tokio::test]
     #[ignore = "requires GEMINI_API_KEY and calls the live Gemini API"]
     async fn gemini_flash_lite_streams_with_model_defaults() {
         let api_key = std::env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY must be set");
         let state = AppState::new();
         let config = TransformationRuntimeConfig {
-            provider: "gemini".to_owned(),
+            provider: TransformationProvider::Gemini,
             api_key: Some(api_key),
             model: "gemini-3.5-flash-lite".to_owned(),
             system_prompt: "Reply briefly.".to_owned(),
@@ -751,7 +719,7 @@ mod tests {
         let state = AppState::new();
         state.set_overlay_text_opacity(0.2);
         let config = TransformationRuntimeConfig {
-            provider: "gemini".to_owned(),
+            provider: TransformationProvider::Gemini,
             api_key: Some(api_key),
             model: "gemini-2.5-flash".to_owned(),
             system_prompt: "You are a helpful assistant.".to_owned(),
@@ -838,8 +806,6 @@ mod tests {
                 )+
 
                 let hosted_providers: Vec<&str> = crate::config::supported_transformation_providers()
-                    .iter()
-                    .copied()
                     .filter(|provider| *provider != "ollama")
                     .collect();
                 assert_eq!(vec![$(stringify!($provider)),+], hosted_providers);

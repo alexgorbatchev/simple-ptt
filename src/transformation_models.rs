@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::config::TransformationProvider;
+
 const CACHE_FILE_NAME: &str = "transformation-models.toml";
 const HTTP_TIMEOUT_SECS: u64 = 20;
 const MAX_MODEL_COUNT: usize = 50;
@@ -39,20 +41,26 @@ const OBVIOUSLY_NON_CHAT_MODEL_FRAGMENTS: &[&str] = &[
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransformationProviderRequest {
-    pub provider: String,
+    pub provider: TransformationProvider,
     pub resolved_api_key: Option<String>,
     pub selected_model: String,
 }
 
 impl TransformationProviderRequest {
-    pub fn new(provider: String, resolved_api_key: Option<String>, selected_model: String) -> Self {
-        Self {
-            provider: provider.trim().to_ascii_lowercase(),
+    /// Parses the provider before recording its account and selected model.
+    /// Unsupported names return the shared provider parser's error.
+    pub fn new(
+        provider: String,
+        resolved_api_key: Option<String>,
+        selected_model: String,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            provider: provider.parse()?,
             resolved_api_key: resolved_api_key
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()),
             selected_model: selected_model.trim().to_owned(),
-        }
+        })
     }
 
     pub fn same_source_as(&self, other: &Self) -> bool {
@@ -63,7 +71,7 @@ impl TransformationProviderRequest {
     /// models endpoint and, when that endpoint needs one, an API key resolved
     /// from the API key field or the provider's environment variable.
     fn models_fetch_readiness(&self) -> Result<(), String> {
-        let endpoint = models_endpoint(&self.provider)?;
+        let endpoint = models_endpoint(self.provider);
         if endpoint.auth.requires_api_key() {
             required_api_key(self.resolved_api_key.as_deref())?;
         }
@@ -72,13 +80,12 @@ impl TransformationProviderRequest {
 
     /// Whether fetching this request's models sends its API key.
     fn sends_api_key(&self) -> bool {
-        self.resolved_api_key.is_some()
-            && models_endpoint(&self.provider).is_ok_and(|endpoint| endpoint.auth.sends_api_key())
+        self.resolved_api_key.is_some() && models_endpoint(self.provider).auth.sends_api_key()
     }
 
     pub fn account_fingerprint(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(self.provider.as_bytes());
+        hasher.update(self.provider.as_str().as_bytes());
         hasher.update([0]);
         if let Some(api_key) = self.resolved_api_key.as_deref() {
             hasher.update(api_key.as_bytes());
@@ -170,9 +177,9 @@ pub fn api_key_belongs_to_provider(
         return true;
     };
     !request.sends_api_key()
-        || (non_empty_trimmed(saved_provider)
-            .is_some_and(|provider| provider.eq_ignore_ascii_case(&request.provider))
-            && non_empty_trimmed(saved_api_key) == Some(field_key))
+        || (non_empty_trimmed(saved_provider).is_some_and(|provider| {
+            provider.parse::<TransformationProvider>() == Ok(request.provider)
+        }) && non_empty_trimmed(saved_api_key) == Some(field_key))
 }
 
 fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
@@ -338,7 +345,7 @@ impl InFlightFetch {
 impl Drop for InFlightFetch {
     fn drop(&mut self) {
         if let Some(request) = self.request.take() {
-            let message = self.action.interrupted_message(&request.provider);
+            let message = self.action.interrupted_message(request.provider.as_str());
             self.controller
                 .finish_fetch(TransformationModelUpdate::ActionFailed {
                     request,
@@ -413,7 +420,7 @@ impl TransformationModelsController {
         let fetch_in_flight = self.fetch_in_flight(request);
         plan_model_list(
             trigger,
-            &request.provider,
+            request.provider.as_str(),
             self.read_cached_models(request),
             fetch_in_flight,
             request.models_fetch_readiness(),
@@ -569,7 +576,8 @@ fn cached_models_in(
         .entries
         .into_iter()
         .find(|entry| {
-            entry.provider == request.provider && entry.account_fingerprint == account_fingerprint
+            entry.provider == request.provider.as_str()
+                && entry.account_fingerprint == account_fingerprint
         })
         .map(|entry| normalize_model_names(entry.models)))
 }
@@ -608,42 +616,36 @@ struct ModelsEndpoint {
     auth: ModelsAuth,
 }
 
-fn models_endpoint(provider: &str) -> Result<ModelsEndpoint, String> {
+fn models_endpoint(provider: TransformationProvider) -> ModelsEndpoint {
     let (url, auth) = match provider {
-        "anthropic" => ("https://api.anthropic.com/v1/models", ModelsAuth::Anthropic),
-        "cohere" => ("https://api.cohere.ai/models", ModelsAuth::Bearer),
-        "deepseek" => ("https://api.deepseek.com/models", ModelsAuth::Bearer),
-        "gemini" => (
+        TransformationProvider::Anthropic => ("https://api.anthropic.com/v1/models", ModelsAuth::Anthropic),
+        TransformationProvider::Cohere => ("https://api.cohere.ai/models", ModelsAuth::Bearer),
+        TransformationProvider::Deepseek => ("https://api.deepseek.com/models", ModelsAuth::Bearer),
+        TransformationProvider::Gemini => (
             "https://generativelanguage.googleapis.com/v1beta/models",
             ModelsAuth::GoogleApiKeyQuery,
         ),
-        "groq" => ("https://api.groq.com/openai/v1/models", ModelsAuth::Bearer),
-        "huggingface" => (
+        TransformationProvider::Groq => ("https://api.groq.com/openai/v1/models", ModelsAuth::Bearer),
+        TransformationProvider::Huggingface => (
             "https://huggingface.co/api/models?inference_provider=hf-inference&pipeline_tag=text-generation&limit=200",
             ModelsAuth::OptionalBearer,
         ),
-        "hyperbolic" => ("https://api.hyperbolic.xyz/models", ModelsAuth::Bearer),
-        "mira" => ("https://api.mira.network/v1/models", ModelsAuth::Bearer),
-        "mistral" => ("https://api.mistral.ai/models", ModelsAuth::Bearer),
-        "moonshot" => ("https://api.moonshot.cn/v1/models", ModelsAuth::Bearer),
-        "ollama" => ("http://localhost:11434/api/tags", ModelsAuth::None),
-        "openai" => ("https://api.openai.com/v1/models", ModelsAuth::Bearer),
-        "openrouter" => ("https://openrouter.ai/api/v1/models", ModelsAuth::Bearer),
-        "perplexity" => ("https://api.perplexity.ai/models", ModelsAuth::Bearer),
-        "together" => ("https://api.together.xyz/models", ModelsAuth::Bearer),
-        "xai" => ("https://api.x.ai/v1/models", ModelsAuth::Bearer),
-        _ => {
-            return Err(format!(
-                "Model refresh is not implemented for provider '{}'.",
-                provider
-            ))
-        }
+        TransformationProvider::Hyperbolic => ("https://api.hyperbolic.xyz/models", ModelsAuth::Bearer),
+        TransformationProvider::Mira => ("https://api.mira.network/v1/models", ModelsAuth::Bearer),
+        TransformationProvider::Mistral => ("https://api.mistral.ai/models", ModelsAuth::Bearer),
+        TransformationProvider::Moonshot => ("https://api.moonshot.cn/v1/models", ModelsAuth::Bearer),
+        TransformationProvider::Ollama => ("http://localhost:11434/api/tags", ModelsAuth::None),
+        TransformationProvider::Openai => ("https://api.openai.com/v1/models", ModelsAuth::Bearer),
+        TransformationProvider::Openrouter => ("https://openrouter.ai/api/v1/models", ModelsAuth::Bearer),
+        TransformationProvider::Perplexity => ("https://api.perplexity.ai/models", ModelsAuth::Bearer),
+        TransformationProvider::Together => ("https://api.together.xyz/models", ModelsAuth::Bearer),
+        TransformationProvider::Xai => ("https://api.x.ai/v1/models", ModelsAuth::Bearer),
     };
-    Ok(ModelsEndpoint { url, auth })
+    ModelsEndpoint { url, auth }
 }
 
 fn fetch_provider_models(request: &TransformationProviderRequest) -> Result<Vec<String>, String> {
-    let endpoint = models_endpoint(&request.provider)?;
+    let endpoint = models_endpoint(request.provider);
     let http_client = Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
         .build()
@@ -658,7 +660,7 @@ fn fetch_provider_models(request: &TransformationProviderRequest) -> Result<Vec<
         ModelsAuth::GoogleApiKeyQuery => with_google_api_key_query(request_builder, api_key)?,
         ModelsAuth::None => request_builder,
     };
-    let models = fetch_json_models(request_builder, &request.provider)?;
+    let models = fetch_json_models(request_builder, request.provider)?;
 
     let filtered_models = filter_completion_model_names(models);
 
@@ -733,7 +735,7 @@ fn required_api_key(api_key: Option<&str>) -> Result<&str, String> {
 
 fn fetch_json_models(
     request_builder: RequestBuilder,
-    provider: &str,
+    provider: TransformationProvider,
 ) -> Result<Vec<String>, String> {
     let response = request_builder
         .send()
@@ -757,12 +759,15 @@ fn fetch_json_models(
     extract_model_names(provider, &value)
 }
 
-fn extract_model_names(provider: &str, value: &Value) -> Result<Vec<String>, String> {
+fn extract_model_names(
+    provider: TransformationProvider,
+    value: &Value,
+) -> Result<Vec<String>, String> {
     let models = match value {
         Value::Object(map) => {
-            if provider == "gemini" {
+            if provider == TransformationProvider::Gemini {
                 extract_gemini_model_names(map.get("models").unwrap_or(&Value::Null))
-            } else if provider == "ollama" {
+            } else if provider == TransformationProvider::Ollama {
                 extract_array_model_names(map.get("models").unwrap_or(&Value::Null))
             } else if let Some(data) = map.get("data") {
                 extract_array_model_names(data)
@@ -882,11 +887,11 @@ fn write_models_to_cache(
 ) -> Result<(), String> {
     let mut cache = read_cache_file().unwrap_or_default();
     cache.entries.retain(|entry| {
-        !(entry.provider == request.provider
+        !(entry.provider == request.provider.as_str()
             && entry.account_fingerprint == request.account_fingerprint())
     });
     cache.entries.push(TransformationModelsCacheEntry {
-        provider: request.provider.clone(),
+        provider: request.provider.to_string(),
         account_fingerprint: request.account_fingerprint(),
         updated_at_unix_seconds: current_unix_timestamp(),
         models: models.to_vec(),
@@ -975,7 +980,8 @@ mod tests {
         CacheReadError, InFlightFetch, ManualFetchReason, ModelListPlan, ModelListTrigger,
         TransformationModelAction, TransformationModelUpdate, TransformationModelsCache,
         TransformationModelsCacheEntry, TransformationModelsController,
-        TransformationProviderRequest, CACHE_VERSION, MAX_MODEL_COUNT, MISSING_API_KEY_MESSAGE,
+        TransformationProvider, TransformationProviderRequest, CACHE_VERSION, MAX_MODEL_COUNT,
+        MISSING_API_KEY_MESSAGE,
     };
     use serde_json::json;
 
@@ -1020,12 +1026,27 @@ mod tests {
             "OpenAI".to_owned(),
             Some("sk-test".to_owned()),
             "gpt-4o".to_owned(),
-        );
+        )
+        .unwrap();
         let without_key =
-            TransformationProviderRequest::new("openai".to_owned(), None, "gpt-4o".to_owned());
+            TransformationProviderRequest::new("openai".to_owned(), None, "gpt-4o".to_owned())
+                .unwrap();
 
         assert_eq!(with_key.account_fingerprint(), "5d43f605b5bbc62f");
         assert_eq!(without_key.account_fingerprint(), "a5115c737f57d969");
+    }
+
+    #[test]
+    fn model_requests_share_canonical_provider_parsing() {
+        let canonical = request("openai", Some("test-key"));
+        let mixed_case = request(" OpenAI ", Some("test-key"));
+        assert!(canonical.same_source_as(&mixed_case));
+        assert_eq!(mixed_case.provider.as_str(), "openai");
+        assert_eq!(
+            TransformationProviderRequest::new("galadriel".to_owned(), None, String::new())
+                .unwrap_err(),
+            "galadriel".parse::<TransformationProvider>().unwrap_err()
+        );
     }
 
     #[test]
@@ -1038,7 +1059,7 @@ mod tests {
         });
 
         assert_eq!(
-            extract_model_names("openai", &value).unwrap(),
+            extract_model_names(TransformationProvider::Openai, &value).unwrap(),
             vec!["gpt-4.1".to_owned(), "gpt-4o".to_owned()]
         );
     }
@@ -1059,7 +1080,7 @@ mod tests {
         });
 
         assert_eq!(
-            extract_model_names("gemini", &value).unwrap(),
+            extract_model_names(TransformationProvider::Gemini, &value).unwrap(),
             vec!["gemini-2.5-flash".to_owned()]
         );
     }
@@ -1097,6 +1118,7 @@ mod tests {
             api_key.map(str::to_owned),
             String::new(),
         )
+        .unwrap()
     }
 
     fn cache_with_entry(
@@ -1163,12 +1185,8 @@ mod tests {
 
     #[test]
     fn every_supported_provider_has_a_models_endpoint() {
-        for provider in crate::config::supported_transformation_providers() {
-            assert!(
-                models_endpoint(provider).is_ok(),
-                "no models endpoint for {}",
-                provider
-            );
+        for provider in TransformationProvider::ALL {
+            assert!(!models_endpoint(provider).url.is_empty());
         }
     }
 

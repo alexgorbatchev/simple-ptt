@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn correction_runtime_config_swaps_correction_prompt() {
         let base_config = TransformationRuntimeConfig {
-            provider: "openai".to_owned(),
+            provider: crate::config::TransformationProvider::Openai,
             api_key: Some("key".to_owned()),
             model: "gpt-4o-mini".to_owned(),
             system_prompt: "dictation prompt".to_owned(),

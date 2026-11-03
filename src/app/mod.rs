@@ -976,11 +976,11 @@ impl AppDelegate {
             settings_window.transformation_api_key_value().as_deref(),
         );
 
-        Ok(TransformationProviderRequest::new(
+        TransformationProviderRequest::new(
             provider,
             resolved_api_key,
             settings_window.transformation_model_value(),
-        ))
+        )
     }
 
     fn current_deepgram_check_request(&self) -> Result<DeepgramCheckRequest, String> {
@@ -1019,7 +1019,13 @@ impl AppDelegate {
             return Some(String::new());
         }
 
-        let request = self.current_transformation_provider_request().ok()?;
+        let request = match self.current_transformation_provider_request() {
+            Ok(request) => request,
+            Err(error) => {
+                settings_window.populate_transformation_model_values(&[]);
+                return Some(error);
+            }
+        };
         let saved = self.ivars().config_store.current_file().transformation;
         let api_key_belongs = api_key_belongs_to_provider(
             &request,
@@ -1039,12 +1045,13 @@ impl AppDelegate {
                 Vec::new(),
                 self.begin_transformation_model_action(TransformationModelAction::Refresh, request),
             ),
-            ModelListPlan::AwaitFetch(action) => {
-                (Vec::new(), action.progress_message(&request.provider))
-            }
+            ModelListPlan::AwaitFetch(action) => (
+                Vec::new(),
+                action.progress_message(request.provider.as_str()),
+            ),
             ModelListPlan::NeedsManualFetch(reason) => (
                 Vec::new(),
-                manual_model_fetch_message(&request.provider, reason),
+                manual_model_fetch_message(request.provider.as_str(), reason),
             ),
             ModelListPlan::CacheUnreadable(error) => {
                 (Vec::new(), unreadable_model_cache_message(&error))
@@ -1080,7 +1087,7 @@ impl AppDelegate {
         {
             settings_window.reset_transformation_check_button();
         }
-        let status_message = action.progress_message(&request.provider);
+        let status_message = action.progress_message(request.provider.as_str());
         self.ivars()
             .transformation_models_controller
             .start_action(action, request);

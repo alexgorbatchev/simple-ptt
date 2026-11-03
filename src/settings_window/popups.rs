@@ -90,7 +90,11 @@ pub fn populate_transformation_provider_popup(
         return;
     };
 
-    let selected_provider = NSString::from_str(selected_provider);
+    let canonical_provider = selected_provider.parse::<crate::config::TransformationProvider>();
+    let selected_provider = NSString::from_str(match canonical_provider {
+        Ok(provider) => provider.as_str(),
+        Err(_) => selected_provider,
+    });
     if popup_button.indexOfItemWithTitle(&selected_provider) < 0 {
         popup_button.insertItemWithTitle_atIndex(&selected_provider, 1);
     }

@@ -1,3 +1,7 @@
+mod provider;
+
+pub use provider::TransformationProvider;
+
 use serde::Deserialize;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -424,25 +428,15 @@ impl Config {
                     config_location_hint()
                 )
             })?
-            .to_owned();
+            .parse::<TransformationProvider>()?;
 
         let model = match self.transformation.model.trim() {
             "" => default_transformation_model(),
             model => model.to_owned(),
         };
 
-        if !supported_transformation_providers().contains(&provider.as_str()) {
-            return Err(format!(
-                "unsupported transformation.provider '{}'. Supported values: {}.",
-                provider,
-                supported_transformation_providers().join(", ")
-            ));
-        }
-
-        let api_key = resolve_transformation_api_key(
-            self.transformation.api_key.as_deref(),
-            provider.as_str(),
-        );
+        let api_key =
+            resolve_transformation_api_key(self.transformation.api_key.as_deref(), provider);
 
         let system_prompt = self.transformation.system_prompt.trim();
         let correction_system_prompt = self.transformation.correction_system_prompt.trim();
@@ -484,9 +478,10 @@ pub(crate) fn transformation_api_key_env_var_in_use(
         return None;
     }
 
-    let provider = provider.map(str::trim).filter(|value| !value.is_empty())?;
+    let provider = provider?.parse::<TransformationProvider>().ok()?;
 
-    transformation_api_key_env_vars(provider)
+    provider
+        .api_key_env_vars()
         .iter()
         .copied()
         .find(|variable_name| env_var_is_present(variable_name))
@@ -496,13 +491,13 @@ pub(crate) fn resolve_transformation_api_key_for_provider(
     provider: Option<&str>,
     configured_api_key: Option<&str>,
 ) -> Option<String> {
-    let provider = provider.map(str::trim).filter(|value| !value.is_empty())?;
+    let provider = provider?.parse::<TransformationProvider>().ok()?;
     resolve_transformation_api_key(configured_api_key, provider)
 }
 
 fn resolve_transformation_api_key(
     configured_api_key: Option<&str>,
-    provider: &str,
+    provider: TransformationProvider,
 ) -> Option<String> {
     if let Some(api_key) = configured_api_key
         .map(str::trim)
@@ -511,7 +506,8 @@ fn resolve_transformation_api_key(
         return Some(api_key.to_owned());
     }
 
-    transformation_api_key_env_vars(provider)
+    provider
+        .api_key_env_vars()
         .into_iter()
         .find_map(|variable_name| {
             std::env::var(variable_name)
@@ -521,47 +517,10 @@ fn resolve_transformation_api_key(
         })
 }
 
-fn transformation_api_key_env_vars(provider: &str) -> &'static [&'static str] {
-    match provider.trim().to_ascii_lowercase().as_str() {
-        "anthropic" => &["ANTHROPIC_API_KEY"],
-        "cohere" => &["COHERE_API_KEY"],
-        "deepseek" => &["DEEPSEEK_API_KEY"],
-        "gemini" => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
-        "groq" => &["GROQ_API_KEY"],
-        "huggingface" => &["HUGGINGFACE_API_KEY", "HF_TOKEN"],
-        "hyperbolic" => &["HYPERBOLIC_API_KEY"],
-        "mira" => &["MIRA_API_KEY"],
-        "mistral" => &["MISTRAL_API_KEY"],
-        "moonshot" => &["MOONSHOT_API_KEY"],
-        "ollama" => &[],
-        "openai" => &["OPENAI_API_KEY"],
-        "openrouter" => &["OPENROUTER_API_KEY"],
-        "perplexity" => &["PERPLEXITY_API_KEY"],
-        "together" => &["TOGETHER_API_KEY"],
-        "xai" => &["XAI_API_KEY"],
-        _ => &[],
-    }
-}
-
-pub(crate) fn supported_transformation_providers() -> &'static [&'static str] {
-    &[
-        "anthropic",
-        "cohere",
-        "deepseek",
-        "gemini",
-        "groq",
-        "huggingface",
-        "hyperbolic",
-        "mira",
-        "mistral",
-        "moonshot",
-        "ollama",
-        "openai",
-        "openrouter",
-        "perplexity",
-        "together",
-        "xai",
-    ]
+pub(crate) fn supported_transformation_providers() -> impl Iterator<Item = &'static str> {
+    TransformationProvider::ALL
+        .into_iter()
+        .map(TransformationProvider::as_str)
 }
 
 fn config_location_hint() -> String {
@@ -979,13 +938,9 @@ pub fn materialize_runtime_config(config: &Config) -> Config {
         .is_empty()
         && runtime_config.transformation.provider.is_some()
     {
-        runtime_config.transformation.api_key = resolve_transformation_api_key(
+        runtime_config.transformation.api_key = resolve_transformation_api_key_for_provider(
+            runtime_config.transformation.provider.as_deref(),
             config.transformation.api_key.as_deref(),
-            runtime_config
-                .transformation
-                .provider
-                .as_deref()
-                .unwrap_or_default(),
         );
     }
     if runtime_config.transformation.model.trim().is_empty() {
@@ -1638,13 +1593,16 @@ mod tests {
         let _key = EnvVarGuard::set("OPENAI_API_KEY", Some("env-openai-key"));
 
         let mut config = Config::default();
-        config.transformation.provider = Some("openai".to_owned());
+        config.transformation.provider = Some(" OpenAI ".to_owned());
         config.transformation.api_key = None;
 
         assert_eq!(
             config.transformation_api_key_env_var_in_use(),
             Some("OPENAI_API_KEY")
         );
+        let resolved = config.resolve_transformation_config().unwrap();
+        assert_eq!(resolved.provider, super::TransformationProvider::Openai);
+        assert_eq!(resolved.api_key.as_deref(), Some("env-openai-key"));
     }
 
     #[test]
@@ -1722,6 +1680,22 @@ mod tests {
     }
 
     #[test]
+    fn transformation_provider_names_resolve_to_canonical_names() {
+        for provider in ["openai", " OpenAI ", "ANTHROPIC"] {
+            let mut config = Config::default();
+            config.transformation.provider = Some(provider.to_owned());
+            config.transformation.api_key = Some("test-key".to_owned());
+
+            let resolved = config.resolve_transformation_config().unwrap();
+            assert_eq!(
+                resolved.provider.to_string(),
+                provider.trim().to_ascii_lowercase()
+            );
+            assert_eq!(resolved.api_key.as_deref(), Some("test-key"));
+        }
+    }
+
+    #[test]
     fn galadriel_provider_is_rejected_as_unsupported() {
         let toml_content = r#"
 [deepgram]
@@ -1739,9 +1713,9 @@ api_key = "test-key"
 
         assert_eq!(
             error,
-            "unsupported transformation.provider 'galadriel'. Supported values: \
-             anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, \
-             moonshot, ollama, openai, openrouter, perplexity, together, xai."
+            "galadriel"
+                .parse::<super::TransformationProvider>()
+                .unwrap_err()
         );
     }
 }
