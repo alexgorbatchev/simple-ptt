@@ -655,8 +655,28 @@ fn existing_key_name(table: &dyn TableLike, primary_key: &str, aliases: &[&str])
 }
 
 fn set_required_string_key(table: &mut dyn TableLike, key: &str, aliases: &[&str], field_value: &str) {
+    write_key_value(table, key, aliases, field_value.into());
+}
+
+/// Writes `new_value` under `key`, or under the alias the file already uses,
+/// and removes the other aliases. An existing value is replaced in place, so
+/// the comment after it stays.
+fn write_key_value(
+    table: &mut dyn TableLike,
+    key: &str,
+    aliases: &[&str],
+    mut new_value: toml_edit::Value,
+) {
     let selected_key = existing_key_name(table, key, aliases);
-    *table.entry(&selected_key).or_insert(Item::None) = value(field_value);
+    match table.get_mut(&selected_key).and_then(Item::as_value_mut) {
+        Some(existing_value) => {
+            *new_value.decor_mut() = existing_value.decor().clone();
+            *existing_value = new_value;
+        }
+        None => {
+            *table.entry(&selected_key).or_insert(Item::None) = Item::Value(new_value);
+        }
+    }
     for alias in aliases {
         if *alias != selected_key {
             table.remove(alias);
@@ -670,19 +690,13 @@ fn set_optional_string_key(
     aliases: &[&str],
     field_value: Option<&str>,
 ) {
-    let selected_key = existing_key_name(table, key, aliases);
     match field_value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(non_empty_value) => {
-            *table.entry(&selected_key).or_insert(Item::None) = value(non_empty_value);
-        }
+        Some(non_empty_value) => write_key_value(table, key, aliases, non_empty_value.into()),
         None => {
-            table.remove(&selected_key);
-        }
-    }
-
-    for alias in aliases {
-        if *alias != selected_key {
-            table.remove(alias);
+            table.remove(key);
+            for alias in aliases {
+                table.remove(alias);
+            }
         }
     }
 }
@@ -733,22 +747,7 @@ fn set_defaulted_key<V>(
         return;
     }
 
-    let selected_key = existing_key_name(table, key, aliases);
-    let mut new_value = field_value.into();
-    match table.get_mut(&selected_key).and_then(Item::as_value_mut) {
-        Some(existing_value) => {
-            *new_value.decor_mut() = existing_value.decor().clone();
-            *existing_value = new_value;
-        }
-        None => {
-            *table.entry(&selected_key).or_insert(Item::None) = Item::Value(new_value);
-        }
-    }
-    for alias in aliases {
-        if *alias != selected_key {
-            table.remove(alias);
-        }
-    }
+    write_key_value(table, key, aliases, field_value.into());
 }
 
 fn set_float_key(table: &mut dyn TableLike, key: &str, field_value: f64) {
@@ -1468,14 +1467,17 @@ mod tests {
     /// value too, with the comment after it.
     #[test]
     fn save_config_keeps_default_valued_keys_of_every_section_and_their_comments() {
-        let defaults = Config::default();
+        let mut defaults = Config::default();
+        defaults.transformation.model = "gpt-x".to_owned();
+        defaults.transformation.system_prompt = "Mine.".to_owned();
         let initial_contents = format!(
             concat!(
                 "[ui]\nhotkey = {:?} # keep me\ninstruction_key = {:?}\nfont_size = {:?}\n",
                 "meter_style = \"pills\"\nstart_on_login = false\nauto_check_updates = true\n",
                 "[mic]\nsample_rate = {}\ngain = {:?}\nhold_ms = {}\nalways_on = {}\n",
                 "[deepgram]\nlanguage = {:?}\nmodel = {:?}\nendpointing_ms = {}\nutterance_end_ms = {}\n",
-                "[transformation]\nhotkey = {:?}\nauto = {}\n"
+                "[transformation]\nhotkey = {:?}\nauto = {}\nmodel = \"gpt-x\" # mine\n",
+                "system_prompt = \"Mine.\" # prompt\n"
             ),
             defaults.ui.hotkey,
             defaults.ui.correction_key,
