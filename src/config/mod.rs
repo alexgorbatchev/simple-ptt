@@ -1,5 +1,8 @@
 use serde::Deserialize;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use toml_edit::{value, DocumentMut, Item, Table};
 
 use crate::transformation::TransformationRuntimeConfig;
@@ -579,7 +582,29 @@ fn load_document(path: &Path) -> Result<DocumentMut, String> {
 }
 
 fn write_document_atomically(path: &Path, contents: &str) -> Result<(), String> {
-    let parent_directory = path.parent().ok_or_else(|| {
+    // Resolve the destination before replacing its directory entry: renaming over
+    // the configured path itself would replace a user's symlink.
+    let (destination, permissions) = match std::fs::symlink_metadata(path) {
+        Ok(_) => {
+            let destination = std::fs::canonicalize(path).map_err(|error| {
+                format!("failed to resolve config file {}: {error}", path.display())
+            })?;
+            let permissions = std::fs::metadata(&destination)
+                .map_err(|error| {
+                    format!("failed to inspect config file {}: {error}", path.display())
+                })?
+                .permissions();
+            (destination, Some(permissions))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (path.to_owned(), None),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect config file {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let parent_directory = destination.parent().ok_or_else(|| {
         format!(
             "failed to determine parent directory for {}",
             path.display()
@@ -593,30 +618,64 @@ fn write_document_atomically(path: &Path, contents: &str) -> Result<(), String> 
         )
     })?;
 
-    let temporary_path = parent_directory.join(format!(
-        ".{}.tmp-{}",
-        path.file_name()
-            .and_then(|file_name| file_name.to_str())
-            .unwrap_or("config.toml"),
-        std::process::id()
-    ));
+    let (temporary_path, mut temporary_file) = create_temporary_config(parent_directory)
+        .map_err(|error| format!("failed to create temporary config file: {error}"))?;
+    let result = (|| {
+        temporary_file
+            .write_all(contents.as_bytes())
+            .map_err(|error| {
+                format!(
+                    "failed to write temporary config file {}: {error}",
+                    temporary_path.display()
+                )
+            })?;
+        if let Some(permissions) = permissions {
+            temporary_file
+                .set_permissions(permissions)
+                .map_err(|error| format!("failed to preserve config file permissions: {error}"))?;
+        }
+        temporary_file.sync_all().map_err(|error| {
+            format!(
+                "failed to sync temporary config file {}: {error}",
+                temporary_path.display()
+            )
+        })?;
+        drop(temporary_file);
+        std::fs::rename(&temporary_path, &destination)
+            .map_err(|error| format!("failed to replace config file {}: {error}", path.display()))
+    })();
 
-    std::fs::write(&temporary_path, contents).map_err(|error| {
-        format!(
-            "failed to write temporary config file {}: {}",
-            temporary_path.display(),
-            error
-        )
-    })?;
-
-    std::fs::rename(&temporary_path, path).map_err(|error| {
+    if result.is_err() {
         let _ = std::fs::remove_file(&temporary_path);
-        format!(
-            "failed to replace config file {}: {}",
-            path.display(),
-            error
-        )
-    })
+    }
+    result
+}
+
+fn create_temporary_config(directory: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    for _ in 0..128 {
+        let path = directory.join(format!(
+            ".simple-ptt-config-{}-{}.tmp",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        // Exclusive creation rejects existing files and symlinks. Secret-bearing
+        // contents are private from the moment the temporary file is created.
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "could not reserve a temporary config file",
+    ))
 }
 
 fn root_table(document: &mut DocumentMut) -> &mut toml_edit::Table {
@@ -1684,5 +1743,108 @@ api_key = "test-key"
              anthropic, cohere, deepseek, gemini, groq, huggingface, hyperbolic, mira, mistral, \
              moonshot, ollama, openai, openrouter, perplexity, together, xai."
         );
+    }
+}
+
+#[cfg(test)]
+mod file_security_tests {
+    use super::{save_config, Config, ConfigFileSnapshot, PromptResets};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "simple-ptt-config-security-{}-{}",
+                std::process::id(),
+                NEXT_ID.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn config(&self) -> PathBuf {
+            self.0.join("config.toml")
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mode(path: &Path) -> u32 {
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn existing_config_permissions_survive_save_and_rollback() {
+        for permissions in [0o600, 0o640] {
+            let directory = TestDirectory::new();
+            let path = directory.config();
+            std::fs::write(&path, "# original\n").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions)).unwrap();
+            let snapshot = ConfigFileSnapshot::take(&path).unwrap();
+
+            save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+            assert_eq!(mode(&path), permissions);
+            snapshot.restore().unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "# original\n");
+            assert_eq!(mode(&path), permissions);
+        }
+    }
+
+    #[test]
+    fn new_config_is_private() {
+        let directory = TestDirectory::new();
+        let path = directory.config();
+        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        assert_eq!(mode(&path), 0o600);
+    }
+
+    #[test]
+    fn relative_symlink_and_target_survive_save_and_rollback() {
+        let directory = TestDirectory::new();
+        let target_directory = directory.0.join("private");
+        std::fs::create_dir(&target_directory).unwrap();
+        let target = target_directory.join("actual.toml");
+        std::fs::write(&target, "# original\n").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let path = directory.config();
+        symlink("private/actual.toml", &path).unwrap();
+        let snapshot = ConfigFileSnapshot::take(&path).unwrap();
+
+        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("private/actual.toml")
+        );
+        assert_ne!(std::fs::read_to_string(&target).unwrap(), "# original\n");
+        assert_eq!(mode(&target), 0o600);
+        snapshot.restore().unwrap();
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("private/actual.toml")
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# original\n");
+        assert_eq!(mode(&target), 0o600);
+    }
+
+    #[test]
+    fn dangling_symlink_is_preserved_when_save_fails() {
+        let directory = TestDirectory::new();
+        let path = directory.config();
+        symlink("missing.toml", &path).unwrap();
+        assert!(save_config(&path, &Config::default(), PromptResets::default()).is_err());
+        assert_eq!(
+            std::fs::read_link(&path).unwrap(),
+            Path::new("missing.toml")
+        );
+        assert!(!directory.0.join("missing.toml").exists());
     }
 }
