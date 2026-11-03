@@ -13,6 +13,7 @@ mod controls;
 pub mod form;
 mod grid;
 pub mod helpers;
+pub mod labels;
 mod panes;
 mod popups;
 
@@ -49,7 +50,6 @@ use panes::transformation::TransformationPane;
 /// Title of the button that saves every pane to the config file. Startup
 /// alerts name this button, so they build their text from this constant.
 pub const SAVE_BUTTON_TITLE: &str = "Save";
-const DEEPGRAM_PANE_TITLE: &str = "Deepgram";
 
 /// Title of the Transformation pane button that fetches the provider's models.
 /// Status messages name this button, so they build their text from this
@@ -105,10 +105,10 @@ impl SettingsWindow {
         let (deepgram, deepgram_view) = DeepgramPane::new(mtm, target);
         let (transformation, transformation_view) = TransformationPane::new(mtm, target);
         let pane_views = [
-            ("General", "gearshape", general_view),
-            ("Microphone", "mic", microphone_view),
-            (DEEPGRAM_PANE_TITLE, "waveform", deepgram_view),
-            ("Transformation", "wand.and.stars", transformation_view),
+            (labels::GENERAL_PANE_TITLE, "gearshape", general_view),
+            (labels::MICROPHONE_PANE_TITLE, "mic", microphone_view),
+            (labels::DEEPGRAM_PANE_TITLE, "waveform", deepgram_view),
+            (labels::TRANSFORMATION_PANE_TITLE, "wand.and.stars", transformation_view),
         ];
 
         let tab_view_controller = NSTabViewController::new(mtm);
@@ -284,7 +284,11 @@ impl SettingsWindow {
                 .map(environment_hint_message),
         );
         self.transformation.prompts.load(&form.prompts);
-        load_problems.extend(crate::config::problems(config).iter().map(ToString::to_string));
+        load_problems.extend(
+            crate::config::problems(config)
+                .iter()
+                .map(|problem| problem.describe(labels::settings_name)),
+        );
         load_problems
     }
 
@@ -538,7 +542,8 @@ fn button_bar(
 
 #[cfg(test)]
 mod tests {
-    use super::{DEEPGRAM_PANE_TITLE, SAVE_BUTTON_TITLE};
+    use super::labels::DEEPGRAM_PANE_TITLE;
+    use super::SAVE_BUTTON_TITLE;
 
     #[test]
     fn installer_instructions_match_settings_controls() {

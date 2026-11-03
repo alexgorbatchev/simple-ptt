@@ -9,8 +9,14 @@
 //! rejects anything that is not a number at entry, so only emptiness and the
 //! config type's range remain to be checked on save.
 
+use super::labels::{
+    settings_name, SettingsField, CORRECTION_KEY, DEEPGRAM_LANGUAGE, DEEPGRAM_MODEL,
+    DICTATION_SHORTCUT, ENDPOINTING, FONT_SIZE, HOLD_THRESHOLD, METER_STYLE, SAMPLE_RATE,
+    TRANSFORM_SHORTCUT, UTTERANCE_END,
+};
 use crate::config::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
+    unsupported_provider_problem,
     Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig,
     TransformationProvider, UiConfig, UiMeterStyle,
 };
@@ -40,6 +46,7 @@ pub struct SettingsForm {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GeneralForm {
     pub hotkey: String,
+    pub hold_ms: Option<u64>,
     pub correction_key: String,
     /// Selected title of the overlay font popup.
     pub font_name_title: Option<String>,
@@ -58,7 +65,6 @@ pub struct MicrophoneForm {
     pub audio_device: Option<String>,
     pub sample_rate: Option<u64>,
     pub gain: f32,
-    pub hold_ms: Option<u64>,
     pub always_on: bool,
 }
 
@@ -128,6 +134,7 @@ impl SettingsForm {
         Self {
             general: GeneralForm {
                 hotkey: config.ui.hotkey.clone(),
+                hold_ms: Some(config.mic.hold_ms),
                 correction_key: config.ui.correction_key.clone(),
                 font_name_title: Some(
                     config
@@ -146,7 +153,6 @@ impl SettingsForm {
                 audio_device: config.mic.audio_device.clone(),
                 sample_rate: Some(u64::from(config.mic.sample_rate)),
                 gain: config.mic.gain,
-                hold_ms: Some(config.mic.hold_ms),
                 always_on: config.mic.always_on,
             },
             deepgram: DeepgramForm {
@@ -188,36 +194,36 @@ impl SettingsForm {
             ui: UiConfig {
                 start_on_login: general.start_on_login,
                 auto_check_updates: general.auto_check_updates,
-                hotkey: required_text(&general.hotkey, "Record hotkey")?,
-                correction_key: required_text(&general.correction_key, "Correction key")?,
+                hotkey: required_text(&general.hotkey, DICTATION_SHORTCUT)?,
+                correction_key: required_text(&general.correction_key, CORRECTION_KEY)?,
                 font_name: optional_popup_value(
                     general.font_name_title.as_deref(),
                     SYSTEM_MONOSPACED_FONT_LABEL,
                 ),
-                font_size: required_number(general.font_size, "Font size")?,
+                font_size: required_number(general.font_size, FONT_SIZE)?,
                 footer_font_size: general.footer_font_size,
                 meter_style: parse_meter_style(&required_popup_title(
                     general.meter_style_title.as_deref(),
-                    "Meter style",
+                    METER_STYLE,
                 )?)?,
             },
             mic: MicConfig {
                 audio_device: microphone.audio_device.clone(),
-                sample_rate: required_integer(microphone.sample_rate, "Sample rate")?,
+                sample_rate: required_integer(microphone.sample_rate, SAMPLE_RATE)?,
                 gain: microphone.gain,
-                hold_ms: required_integer(microphone.hold_ms, "Hold ms")?,
+                hold_ms: required_integer(general.hold_ms, HOLD_THRESHOLD)?,
                 always_on: microphone.always_on,
             },
             deepgram: DeepgramConfig {
                 api_key: optional_text(&deepgram.api_key),
-                language: required_text(&deepgram.language, "Deepgram language")?,
+                language: required_text(&deepgram.language, DEEPGRAM_LANGUAGE)?,
                 keyterms: parse_keyterms(&deepgram.keyterms),
-                model: required_popup_title(deepgram.model_title.as_deref(), "Deepgram model")?,
-                endpointing_ms: required_integer(deepgram.endpointing_ms, "Endpointing ms")?,
-                utterance_end_ms: required_integer(deepgram.utterance_end_ms, "Utterance end ms")?,
+                model: required_popup_title(deepgram.model_title.as_deref(), DEEPGRAM_MODEL)?,
+                endpointing_ms: required_integer(deepgram.endpointing_ms, ENDPOINTING)?,
+                utterance_end_ms: required_integer(deepgram.utterance_end_ms, UTTERANCE_END)?,
             },
             transformation: TransformationConfig {
-                hotkey: required_text(&transformation.hotkey, "Transform hotkey")?,
+                hotkey: required_text(&transformation.hotkey, TRANSFORM_SHORTCUT)?,
                 auto: transformation.auto,
                 provider: optional_popup_value(
                     transformation.provider_title.as_deref(),
@@ -227,6 +233,9 @@ impl SettingsForm {
                     provider
                         .parse::<TransformationProvider>()
                         .map(|provider| provider.to_string())
+                        .map_err(|_| {
+                            unsupported_provider_problem(&provider).describe(settings_name)
+                        })
                 })
                 .transpose()?,
                 api_key: optional_text(&transformation.api_key),
@@ -280,26 +289,25 @@ pub fn mic_gain_label(gain_db: f32) -> String {
     format!("{:.1} dB", gain_db)
 }
 
-fn required_text(value: &str, field_name: &str) -> Result<String, String> {
-    optional_text(value).ok_or_else(|| format!("{} is required", field_name))
+fn required_text(value: &str, field: SettingsField) -> Result<String, String> {
+    optional_text(value).ok_or_else(|| format!("{} is required", field))
 }
 
-fn required_popup_title(selected_title: Option<&str>, field_name: &str) -> Result<String, String> {
-    required_text(selected_title.unwrap_or_default(), field_name)
+fn required_popup_title(selected_title: Option<&str>, field: SettingsField) -> Result<String, String> {
+    required_text(selected_title.unwrap_or_default(), field)
 }
 
-fn required_number(value: Option<f64>, field_name: &str) -> Result<f64, String> {
-    value.ok_or_else(|| format!("{} is required", field_name))
+fn required_number(value: Option<f64>, field: SettingsField) -> Result<f64, String> {
+    value.ok_or_else(|| format!("{} is required", field))
 }
 
-fn required_integer<T>(value: Option<u64>, field_name: &str) -> Result<T, String>
+fn required_integer<T>(value: Option<u64>, field: SettingsField) -> Result<T, String>
 where
     T: TryFrom<u64>,
     T::Error: std::fmt::Display,
 {
-    let value = value.ok_or_else(|| format!("{} is required", field_name))?;
-    T::try_from(value)
-        .map_err(|error| format!("{} must be an unsigned integer: {}", field_name, error))
+    let value = value.ok_or_else(|| format!("{} is required", field))?;
+    T::try_from(value).map_err(|error| format!("{} must be an unsigned integer: {}", field, error))
 }
 
 fn parse_keyterms(value: &str) -> Vec<String> {
@@ -319,7 +327,13 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
         .map(|(style, _)| *style)
         .ok_or_else(|| {
             format!(
-                "Meter style must be one of: pills, animated-color, animated-height, none (got '{}')",
+                "{} must be one of: {} (got '{}')",
+                METER_STYLE,
+                METER_STYLE_TITLES
+                    .iter()
+                    .map(|(_, title)| *title)
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 raw_value
             )
         })
@@ -328,7 +342,7 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt,
+        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt, METER_STYLE_TITLES,
         PromptsForm, SettingsForm, TransformationForm,
     };
     use crate::config::{
@@ -398,6 +412,7 @@ mod tests {
             form.general,
             GeneralForm {
                 hotkey: "Cmd+F9".to_owned(),
+                hold_ms: Some(750),
                 correction_key: "Alt+Cmd".to_owned(),
                 font_name_title: Some("Menlo".to_owned()),
                 font_size: Some(15.5),
@@ -413,7 +428,6 @@ mod tests {
                 audio_device: Some("Shure MV7".to_owned()),
                 sample_rate: Some(48000),
                 gain: 2.25,
-                hold_ms: Some(750),
                 always_on: false,
             }
         );
@@ -610,22 +624,22 @@ mod tests {
     #[test]
     fn blank_required_text_values_are_rejected_with_field_names() {
         let cases: [(&str, fn(&mut SettingsForm)); 6] = [
-            ("Record hotkey is required", |form| {
+            ("General > Dictation shortcut is required", |form| {
                 form.general.hotkey = " ".to_owned()
             }),
-            ("Correction key is required", |form| {
+            ("General > Correction key is required", |form| {
                 form.general.correction_key = "".to_owned()
             }),
-            ("Meter style is required", |form| {
+            ("General > Meter style is required", |form| {
                 form.general.meter_style_title = None
             }),
-            ("Deepgram language is required", |form| {
+            ("Deepgram > Language is required", |form| {
                 form.deepgram.language = "\t".to_owned()
             }),
-            ("Deepgram model is required", |form| {
+            ("Deepgram > Model is required", |form| {
                 form.deepgram.model_title = Some(" ".to_owned())
             }),
-            ("Transform hotkey is required", |form| {
+            ("Transformation > Transform shortcut is required", |form| {
                 form.transformation.hotkey = "".to_owned()
             }),
         ];
@@ -641,17 +655,17 @@ mod tests {
     #[test]
     fn empty_required_numbers_are_rejected_with_field_names() {
         let cases: [(&str, fn(&mut SettingsForm)); 5] = [
-            ("Font size is required", |form| {
+            ("General > Font size is required", |form| {
                 form.general.font_size = None
             }),
-            ("Sample rate is required", |form| {
+            ("Microphone > Sample rate is required", |form| {
                 form.microphone.sample_rate = None
             }),
-            ("Hold ms is required", |form| form.microphone.hold_ms = None),
-            ("Endpointing ms is required", |form| {
+            ("General > Hold threshold (ms) is required", |form| form.general.hold_ms = None),
+            ("Deepgram > Endpointing (ms) is required", |form| {
                 form.deepgram.endpointing_ms = None
             }),
-            ("Utterance end ms is required", |form| {
+            ("Deepgram > Utterance end (ms) is required", |form| {
                 form.deepgram.utterance_end_ms = None
             }),
         ];
@@ -667,13 +681,13 @@ mod tests {
     #[test]
     fn integers_outside_the_config_type_range_are_rejected() {
         let cases: [(&str, fn(&mut SettingsForm)); 3] = [
-            ("Sample rate must be an unsigned integer", |form| {
+            ("Microphone > Sample rate must be an unsigned integer", |form| {
                 form.microphone.sample_rate = Some(u64::from(u32::MAX) + 1)
             }),
-            ("Endpointing ms must be an unsigned integer", |form| {
+            ("Deepgram > Endpointing (ms) must be an unsigned integer", |form| {
                 form.deepgram.endpointing_ms = Some(u64::from(u16::MAX) + 1)
             }),
-            ("Utterance end ms must be an unsigned integer", |form| {
+            ("Deepgram > Utterance end (ms) must be an unsigned integer", |form| {
                 form.deepgram.utterance_end_ms = Some(u64::from(u16::MAX) + 1)
             }),
         ];
@@ -691,7 +705,7 @@ mod tests {
     fn integers_at_the_config_type_maximum_are_accepted() {
         let mut form = SettingsForm::from_config(&customized_config());
         form.microphone.sample_rate = Some(u64::from(u32::MAX));
-        form.microphone.hold_ms = Some(u64::MAX);
+        form.general.hold_ms = Some(u64::MAX);
         form.deepgram.endpointing_ms = Some(u64::from(u16::MAX));
         form.deepgram.utterance_end_ms = Some(0);
 
@@ -716,13 +730,13 @@ mod tests {
         let mut form = SettingsForm::from_config(&customized_config());
         form.general.meter_style_title = Some("sparkles".to_owned());
 
-        assert_eq!(
-            form.to_config(),
-            Err(
-                "Meter style must be one of: pills, animated-color, animated-height, none (got 'sparkles')"
-                    .to_owned()
-            )
-        );
+        let error = form.to_config().unwrap_err();
+
+        assert!(error.starts_with("General > Meter style must be one of: "), "{error}");
+        assert!(error.ends_with(" (got 'sparkles')"), "{error}");
+        for (_, title) in METER_STYLE_TITLES {
+            assert!(error.contains(title), "{title} missing from {error}");
+        }
     }
 
     #[test]

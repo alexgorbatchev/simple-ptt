@@ -1,7 +1,9 @@
 mod problems;
 mod provider;
 
-pub use problems::{mic_gain_problem, missing_model_problem, problems, ConfigProblem};
+pub use problems::{
+    mic_gain_problem, missing_model_problem, problems, unsupported_provider_problem, ConfigProblem,
+};
 pub use provider::TransformationProvider;
 
 use serde::Deserialize;
@@ -1399,7 +1401,7 @@ mod tests {
         let error = config.resolve_transformation_config().unwrap_err();
         assert_eq!(
             error,
-            "transformation.model: is required for provider 'ollama', which has no built-in default model"
+            "transformation.model is required for provider 'ollama', which has no built-in default model"
         );
         assert_eq!(materialize_runtime_config(&config).transformation.model, "");
     }

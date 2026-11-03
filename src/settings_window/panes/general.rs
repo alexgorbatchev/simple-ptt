@@ -8,18 +8,24 @@ use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
     checkbox, decimal_value, fixed_width, hotkey_display_field, is_checked, minimum_width,
     number_field, pop_up_button, push_button, selected_title, set_checked, set_decimal_value,
-    set_text_value, text_value, NumberFieldKind, FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH,
+    set_text_value, set_unsigned_value, text_value, unsigned_value, NumberFieldKind,
+    FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH,
 };
 use crate::settings_window::form::GeneralForm;
 use crate::settings_window::grid::{ControlWidth, FormGrid};
+use crate::settings_window::labels;
 use crate::settings_window::popups::{
     available_font_family_names, populate_font_name_popup, populate_meter_style_popup,
 };
+
+const HOLD_THRESHOLD_HINT: &str =
+    "A shorter press of the dictation shortcut toggles recording; holding it longer records until release.";
 
 #[derive(Debug)]
 pub struct GeneralPane {
     pub hotkey_field: Retained<NSTextField>,
     pub hotkey_capture_button: Retained<NSButton>,
+    hold_ms_field: Retained<NSTextField>,
     pub correction_key_field: Retained<NSTextField>,
     pub correction_key_capture_button: Retained<NSButton>,
     font_name_popup: Retained<NSPopUpButton>,
@@ -35,6 +41,14 @@ impl GeneralPane {
         let hotkey_field = hotkey_display_field(mtm);
         let hotkey_capture_button =
             push_button(mtm, "Capture…", target, SettingsAction::CaptureRecordHotkey);
+        // `NSNumberFormatter` rejects integers above `i64::MAX`, so that is the
+        // largest hold threshold the field can take.
+        let hold_ms_field = number_field(
+            mtm,
+            NumberFieldKind::UnsignedInteger {
+                maximum: i64::MAX as u64,
+            },
+        );
         let correction_key_field = hotkey_display_field(mtm);
         let correction_key_capture_button = push_button(
             mtm,
@@ -50,34 +64,42 @@ impl GeneralPane {
         let start_on_login_checkbox = checkbox(mtm, "Start automatically on login");
 
         minimum_width(&hotkey_field, FIELD_MIN_WIDTH);
+        fixed_width(&hold_ms_field, NUMBER_FIELD_WIDTH);
         fixed_width(&font_size_field, NUMBER_FIELD_WIDTH);
         fixed_width(&footer_font_size_field, NUMBER_FIELD_WIDTH);
 
         let grid = FormGrid::new(mtm, 1);
         grid.add_section_header("Shortcuts");
         grid.add_row(
-            "Dictation shortcut:",
+            &labels::DICTATION_SHORTCUT.row_title(),
             &hotkey_field,
             ControlWidth::Fill,
             &[&hotkey_capture_button],
         );
         grid.add_row(
-            "Correction key:",
+            &labels::HOLD_THRESHOLD.row_title(),
+            &hold_ms_field,
+            ControlWidth::Intrinsic,
+            &[],
+        );
+        grid.add_hint_row(Some(HOLD_THRESHOLD_HINT));
+        grid.add_row(
+            &labels::CORRECTION_KEY.row_title(),
             &correction_key_field,
             ControlWidth::Fill,
             &[&correction_key_capture_button],
         );
         grid.add_section_header("Overlay");
-        grid.add_row("Font:", &font_name_popup, ControlWidth::Intrinsic, &[]);
-        grid.add_row("Font size:", &font_size_field, ControlWidth::Intrinsic, &[]);
+        grid.add_row(&labels::FONT.row_title(), &font_name_popup, ControlWidth::Intrinsic, &[]);
+        grid.add_row(&labels::FONT_SIZE.row_title(), &font_size_field, ControlWidth::Intrinsic, &[]);
         grid.add_row(
-            "Footer font size:",
+            &labels::FOOTER_FONT_SIZE.row_title(),
             &footer_font_size_field,
             ControlWidth::Intrinsic,
             &[],
         );
         grid.add_row(
-            "Meter style:",
+            &labels::METER_STYLE.row_title(),
             &meter_style_popup,
             ControlWidth::Intrinsic,
             &[],
@@ -89,6 +111,7 @@ impl GeneralPane {
         let pane = Self {
             hotkey_field,
             hotkey_capture_button,
+            hold_ms_field,
             correction_key_field,
             correction_key_capture_button,
             font_name_popup,
@@ -104,6 +127,7 @@ impl GeneralPane {
 
     pub fn load(&self, mtm: MainThreadMarker, form: &GeneralForm) {
         set_text_value(&self.hotkey_field, &form.hotkey);
+        set_unsigned_value(&self.hold_ms_field, form.hold_ms);
         set_text_value(&self.correction_key_field, &form.correction_key);
         populate_font_name_popup(
             &self.font_name_popup,
@@ -120,6 +144,7 @@ impl GeneralPane {
     pub fn read(&self) -> GeneralForm {
         GeneralForm {
             hotkey: text_value(&self.hotkey_field),
+            hold_ms: unsigned_value(&self.hold_ms_field),
             correction_key: text_value(&self.correction_key_field),
             font_name_title: selected_title(&self.font_name_popup),
             font_size: decimal_value(&self.font_size_field),

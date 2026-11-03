@@ -20,6 +20,7 @@ use crate::settings_window::controls::{
 use crate::settings_window::form::{mic_gain_label, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
 use crate::settings_window::helpers::{mic_audio_device_popup_state, MicAudioDeviceOption};
+use crate::settings_window::labels;
 use crate::state::MicMeterSnapshot;
 use crate::ui_meter::{meter_container_height, UiMeterView, METER_BORDER_PADDING};
 
@@ -36,7 +37,6 @@ pub struct MicrophonePane {
     gain_slider: Retained<NSSlider>,
     gain_label: Retained<NSTextField>,
     meter_view: UiMeterView,
-    hold_ms_field: Retained<NSTextField>,
     always_on_checkbox: Retained<NSButton>,
 }
 
@@ -59,18 +59,9 @@ impl MicrophonePane {
         );
         let gain_label = gain_value_label(mtm, gain_slider.doubleValue() as f32);
         let meter_view = UiMeterView::new(mtm, UiMeterStyle::AnimatedColor);
-        // `NSNumberFormatter` rejects integers above `i64::MAX`, so that is the
-        // largest silence pad the field can take.
-        let hold_ms_field = number_field(
-            mtm,
-            NumberFieldKind::UnsignedInteger {
-                maximum: i64::MAX as u64,
-            },
-        );
         let always_on_checkbox = checkbox(mtm, "Keep microphone connection open");
 
         fixed_width(&sample_rate_field, NUMBER_FIELD_WIDTH);
-        fixed_width(&hold_ms_field, NUMBER_FIELD_WIDTH);
         minimum_width(&gain_slider, GAIN_SLIDER_MIN_WIDTH);
         let meter = for_auto_layout(meter_view.view());
         activate(&[
@@ -86,29 +77,23 @@ impl MicrophonePane {
 
         let grid = FormGrid::new(mtm, 2);
         grid.add_row(
-            "Audio device:",
+            &labels::AUDIO_DEVICE.row_title(),
             &audio_device_popup,
             ControlWidth::Intrinsic,
             &[],
         );
         grid.add_row(
-            "Sample rate:",
+            &labels::SAMPLE_RATE.row_title(),
             &sample_rate_field,
             ControlWidth::Intrinsic,
             &[],
         );
         grid.add_aligned_row(
-            "Mic gain (dB):",
+            &labels::MIC_GAIN.row_title(),
             &gain_slider,
             ControlWidth::Fill,
             &[&gain_label, meter],
             RowAlignment::Center,
-        );
-        grid.add_row(
-            "Silence pad (ms):",
-            &hold_ms_field,
-            ControlWidth::Intrinsic,
-            &[],
         );
         grid.add_detail_row(&always_on_checkbox, ControlWidth::Intrinsic);
         grid.add_hint_row(Some(ALWAYS_ON_HINT));
@@ -120,7 +105,6 @@ impl MicrophonePane {
             gain_slider,
             gain_label,
             meter_view,
-            hold_ms_field,
             always_on_checkbox,
         };
         let view = pane_view(mtm, grid.view(), PaneContentHeight::Fitting);
@@ -138,7 +122,6 @@ impl MicrophonePane {
         self.gain_slider.setDoubleValue(f64::from(form.gain));
         // The label shows the slider value, which is what saving writes.
         self.update_gain_label(self.gain_slider_value());
-        set_unsigned_value(&self.hold_ms_field, form.hold_ms);
         set_checked(&self.always_on_checkbox, form.always_on);
         audio_device_problem.into_iter().collect()
     }
@@ -148,7 +131,6 @@ impl MicrophonePane {
             audio_device: self.audio_device_value(),
             sample_rate: unsigned_value(&self.sample_rate_field),
             gain: self.gain_slider_value(),
-            hold_ms: unsigned_value(&self.hold_ms_field),
             always_on: is_checked(&self.always_on_checkbox),
         }
     }

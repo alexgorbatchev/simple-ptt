@@ -12,6 +12,7 @@ use crate::settings_window::controls::{
 };
 use crate::settings_window::form::{optional_text, DeepgramForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow};
+use crate::settings_window::labels;
 use crate::settings_window::popups::populate_deepgram_model_popup;
 
 const KEYTERMS_HINT: &str = "Comma-separated (e.g. 'macOS, GitHub')";
@@ -58,24 +59,24 @@ impl DeepgramPane {
 
         let grid = FormGrid::new(mtm, 1);
         grid.add_row(
-            "API key:",
+            &labels::DEEPGRAM_API_KEY.row_title(),
             &api_key_field,
             ControlWidth::Fill,
             &[&api_key_check_button],
         );
         let api_key_env_hint = grid.add_hint_row(None);
-        grid.add_row("Language:", &language_field, ControlWidth::Fill, &[]);
-        grid.add_row("Keyterms:", &keyterms_field, ControlWidth::Fill, &[]);
+        grid.add_row(&labels::DEEPGRAM_LANGUAGE.row_title(), &language_field, ControlWidth::Fill, &[]);
+        grid.add_row(&labels::DEEPGRAM_KEYTERMS.row_title(), &keyterms_field, ControlWidth::Fill, &[]);
         grid.add_hint_row(Some(KEYTERMS_HINT));
-        grid.add_row("Model:", &model_popup, ControlWidth::Intrinsic, &[]);
+        grid.add_row(&labels::DEEPGRAM_MODEL.row_title(), &model_popup, ControlWidth::Intrinsic, &[]);
         grid.add_row(
-            "Endpointing (ms):",
+            &labels::ENDPOINTING.row_title(),
             &endpointing_ms_field,
             ControlWidth::Intrinsic,
             &[],
         );
         grid.add_row(
-            "Utterance end (ms):",
+            &labels::UTTERANCE_END.row_title(),
             &utterance_end_ms_field,
             ControlWidth::Intrinsic,
             &[],

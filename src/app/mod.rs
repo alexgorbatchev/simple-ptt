@@ -45,6 +45,7 @@ use crate::settings_window::form::Prompt;
 use crate::settings_window::helpers::{
     manual_model_fetch_message, settings_load_status, unreadable_model_cache_message,
 };
+use crate::settings_window::labels::{self, settings_name};
 use crate::settings_window::{SettingsWindow, SAVE_BUTTON_TITLE};
 use crate::state::{
     AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
@@ -1024,12 +1025,13 @@ impl AppDelegate {
 
         let request = match self.current_transformation_provider_request() {
             Ok(request) => request,
-            Err(error) => {
+            Err(_) => {
                 settings_window.populate_transformation_model_values(&[]);
                 // Only a loaded config selects an unsupported provider; the
                 // message matches its `config::problems` line so the status
                 // shows it once.
-                return Some(ConfigProblem::new("transformation.provider", error).to_string());
+                let provider = settings_window.transformation_provider_value().unwrap_or_default();
+                return Some(config::unsupported_provider_problem(&provider).describe(settings_name));
             }
         };
         let saved = self.ivars().config_store.current_file().transformation;
@@ -1349,9 +1351,12 @@ impl AppDelegate {
                 .find(|candidate| settings_window.hotkey_value(*candidate) == captured_name);
                 if conflicting_target.is_some() {
                     settings_window.cancel_hotkey_capture();
-                    settings_window.set_status(
-                        "Record, correction, and transform triggers must be different.",
-                    );
+                    settings_window.set_status(&format!(
+                        "{}, {}, and {} must be different.",
+                        labels::DICTATION_SHORTCUT,
+                        labels::CORRECTION_KEY,
+                        labels::TRANSFORM_SHORTCUT
+                    ));
                     return;
                 }
 
@@ -1556,14 +1561,14 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     }
 }
 
-/// Rejects a proposed config with any `config::problems`, a microphone that
-/// cannot be opened, or no Deepgram key.
+/// Rejects a proposed config with any `config::problems`, named by their
+/// settings rows, a microphone that cannot be opened, or no Deepgram key.
 fn validate_settings_config(config: &Config) -> Result<(), String> {
     let problems = config::problems(config);
     if !problems.is_empty() {
         return Err(problems
             .iter()
-            .map(ToString::to_string)
+            .map(|problem| problem.describe(settings_name))
             .collect::<Vec<_>>()
             .join("\n"));
     }
@@ -2019,7 +2024,7 @@ mod tests {
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
-            "ui.correction_key: \"LeftMeta\" shares a key with ui.hotkey \"Cmd+F5\"; they must be different"
+            "General > Correction key \"LeftMeta\" shares a key with General > Dictation shortcut \"Cmd+F5\"; they must be different"
         );
     }
 
@@ -2031,7 +2036,7 @@ mod tests {
 
         assert_eq!(
             validate_settings_config(&config).unwrap_err(),
-            "ui.font_size: 0 is not a positive number\nmic.gain: 10.5 dB is outside the 0 to 10 dB range"
+            "General > Font size 0 is not a positive number\nMicrophone > Mic gain (dB) 10.5 dB is outside the 0 to 10 dB range"
         );
     }
 
@@ -2048,8 +2053,8 @@ mod tests {
 
         assert!(
             text.starts_with(
-                "mic.gain: 40 dB is outside the 0 to 10 dB range\n\
-                 transformation.provider: unsupported transformation provider 'galadriel'"
+                "mic.gain 40 dB is outside the 0 to 10 dB range\n\
+                 transformation.provider \"galadriel\" is not supported"
             ),
             "{text}"
         );

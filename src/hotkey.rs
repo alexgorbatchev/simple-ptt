@@ -516,8 +516,12 @@ fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig 
         auto_transform_enabled: config.transformation.auto
             && config.resolve_transformation_config().is_ok(),
         hold_ms: config.mic.hold_ms,
-        mic_gain_problem: crate::config::mic_gain_problem(config.mic.gain)
-            .map(|problem| format!("{problem}. Fix it in Settings, then record again.")),
+        mic_gain_problem: crate::config::mic_gain_problem(config.mic.gain).map(|problem| {
+            format!(
+                "{}. Fix it in Settings, then record again.",
+                problem.describe(crate::settings_window::labels::settings_name)
+            )
+        }),
         correction_key,
         record_hotkey,
         transform_hotkey,
@@ -858,7 +862,7 @@ mod tests {
         let state = AppState::new();
         state.set_state(STATE_IDLE);
         let controller = crate::transcription::TranscriptionController::without_worker();
-        let problem = "mic.gain: 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.";
+        let problem = "Microphone > Mic gain (dB) 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.";
 
         assert_eq!(super::start_recording(&state, &controller, STATE_IDLE, Some(problem)), None);
 
@@ -883,7 +887,7 @@ mod tests {
         config.mic.gain = 40.0;
         assert_eq!(
             hotkey_config_for(config).mic_gain_problem.as_deref(),
-            Some("mic.gain: 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.")
+            Some("Microphone > Mic gain (dB) 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.")
         );
     }
 

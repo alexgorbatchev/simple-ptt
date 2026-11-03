@@ -1,6 +1,7 @@
 //! Config values that Save rejects. Startup and the Settings window report
 //! the same problems, so a hand-edited `config.toml` is never applied or
-//! ignored without a message.
+//! ignored without a message. Startup names each value by its config key;
+//! the settings window names it by its row (`ConfigProblem::describe`).
 
 use std::fmt;
 
@@ -8,22 +9,69 @@ use super::{Config, TransformationProvider, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
 use crate::correction_binding::CorrectionBinding;
 use crate::hotkey_binding::parse_hotkey_binding;
 
-/// One invalid value, named by its config key.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// One invalid value, at its config key.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ConfigProblem {
     pub key: &'static str,
-    pub message: String,
+    pub kind: ProblemKind,
+}
+
+/// What is wrong with a value. A kind that refers to another key names it
+/// the same way as the problem's own key.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProblemKind {
+    InvalidShortcut { value: String, error: String },
+    InvalidCorrectionKey { value: String, error: String },
+    SharesKeyWith { value: String, other_key: &'static str, other_value: String },
+    SameAs { value: String, other_key: &'static str },
+    NotPositive(f64),
+    GainOutOfRange(f32),
+    UnsupportedProvider { value: String },
+    MissingModel(TransformationProvider),
 }
 
 impl ConfigProblem {
-    pub fn new(key: &'static str, message: String) -> Self {
-        Self { key, message }
+    fn new(key: &'static str, kind: ProblemKind) -> Self {
+        Self { key, kind }
+    }
+
+    /// The problem as one sentence, with every config key named by `name`.
+    pub fn describe(&self, name: impl Fn(&str) -> String) -> String {
+        let subject = name(self.key);
+        match &self.kind {
+            ProblemKind::InvalidShortcut { value, error } => {
+                format!("{subject} \"{value}\" is not a valid shortcut: {error}")
+            }
+            ProblemKind::InvalidCorrectionKey { value, error } => {
+                format!("{subject} \"{value}\" is not valid: {error}")
+            }
+            ProblemKind::SharesKeyWith { value, other_key, other_value } => format!(
+                "{subject} \"{value}\" shares a key with {} \"{other_value}\"; they must be different",
+                name(other_key)
+            ),
+            ProblemKind::SameAs { value, other_key } => format!(
+                "{subject} \"{value}\" is also {}; they must be different",
+                name(other_key)
+            ),
+            ProblemKind::NotPositive(value) => format!("{subject} {value} is not a positive number"),
+            ProblemKind::GainOutOfRange(gain_db) => format!(
+                "{subject} {gain_db} dB is outside the {MIC_GAIN_MIN_DB} to {MIC_GAIN_MAX_DB} dB range"
+            ),
+            ProblemKind::UnsupportedProvider { value } => format!(
+                "{subject} \"{value}\" is not supported; supported providers: {}",
+                TransformationProvider::ALL.map(TransformationProvider::as_str).join(", ")
+            ),
+            ProblemKind::MissingModel(provider) => format!(
+                "{subject} is required for provider '{provider}', which has no built-in default model"
+            ),
+        }
     }
 }
 
+/// The problem with every key named as it appears in `config.toml`.
 impl fmt::Display for ConfigProblem {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "{}: {}", self.key, self.message)
+        formatter.write_str(&self.describe(str::to_owned))
     }
 }
 
@@ -37,7 +85,7 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         Err(error) => {
             problems.push(ConfigProblem::new(
                 "ui.hotkey",
-                format!("\"{}\" is not a valid shortcut: {}", config.ui.hotkey, error),
+                ProblemKind::InvalidShortcut { value: config.ui.hotkey.clone(), error },
             ));
             None
         }
@@ -47,7 +95,10 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         Err(error) => {
             problems.push(ConfigProblem::new(
                 "ui.correction_key",
-                format!("\"{}\" is not valid: {}", config.ui.correction_key, error),
+                ProblemKind::InvalidCorrectionKey {
+                    value: config.ui.correction_key.clone(),
+                    error,
+                },
             ));
             None
         }
@@ -56,10 +107,11 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         if correction_key.overlaps(record_hotkey) {
             problems.push(ConfigProblem::new(
                 "ui.correction_key",
-                format!(
-                    "\"{}\" shares a key with ui.hotkey \"{}\"; they must be different",
-                    config.ui.correction_key, config.ui.hotkey
-                ),
+                ProblemKind::SharesKeyWith {
+                    value: config.ui.correction_key.clone(),
+                    other_key: "ui.hotkey",
+                    other_value: config.ui.hotkey.clone(),
+                },
             ));
         }
     }
@@ -67,67 +119,63 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
     if !is_positive(config.ui.font_size) {
         problems.push(ConfigProblem::new(
             "ui.font_size",
-            format!("{} is not a positive number", config.ui.font_size),
+            ProblemKind::NotPositive(config.ui.font_size),
         ));
     }
     if let Some(footer_font_size) = config.ui.footer_font_size {
         if !is_positive(footer_font_size) {
             problems.push(ConfigProblem::new(
                 "ui.footer_font_size",
-                format!("{} is not a positive number", footer_font_size),
+                ProblemKind::NotPositive(footer_font_size),
             ));
         }
     }
 
     problems.extend(mic_gain_problem(config.mic.gain));
 
-    let transformation_enabled = config
+    let configured_provider = config
         .transformation
         .provider
         .as_deref()
-        .is_some_and(|provider| !provider.trim().is_empty());
-    if transformation_enabled {
-        let provider = config
-            .transformation
-            .provider
-            .as_deref()
-            .unwrap_or_default()
-            .parse::<TransformationProvider>();
-        match provider {
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty());
+    if let Some(configured_provider) = configured_provider {
+        match configured_provider.parse::<TransformationProvider>() {
             Ok(provider) => {
                 if provider.resolve_model(&config.transformation.model).is_none() {
                     problems.push(missing_model_problem(provider));
                 }
             }
-            Err(error) => problems.push(ConfigProblem::new("transformation.provider", error)),
+            Err(_) => problems.push(unsupported_provider_problem(configured_provider)),
         }
         match parse_hotkey_binding(&config.transformation.hotkey) {
             Ok(transform_hotkey) => {
                 if record_hotkey == Some(transform_hotkey) {
                     problems.push(ConfigProblem::new(
                         "transformation.hotkey",
-                        format!(
-                            "\"{}\" is also ui.hotkey; they must be different",
-                            config.transformation.hotkey
-                        ),
+                        ProblemKind::SameAs {
+                            value: config.transformation.hotkey.clone(),
+                            other_key: "ui.hotkey",
+                        },
                     ));
                 }
                 if correction_key.is_some_and(|key| key.overlaps(transform_hotkey)) {
                     problems.push(ConfigProblem::new(
                         "transformation.hotkey",
-                        format!(
-                            "\"{}\" shares a key with ui.correction_key \"{}\"; they must be different",
-                            config.transformation.hotkey, config.ui.correction_key
-                        ),
+                        ProblemKind::SharesKeyWith {
+                            value: config.transformation.hotkey.clone(),
+                            other_key: "ui.correction_key",
+                            other_value: config.ui.correction_key.clone(),
+                        },
                     ));
                 }
             }
             Err(error) => problems.push(ConfigProblem::new(
                 "transformation.hotkey",
-                format!(
-                    "\"{}\" is not a valid shortcut: {}",
-                    config.transformation.hotkey, error
-                ),
+                ProblemKind::InvalidShortcut {
+                    value: config.transformation.hotkey.clone(),
+                    error,
+                },
             )),
         }
     }
@@ -139,26 +187,21 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
 /// covers, including NaN and infinity. The audio stream refuses to start
 /// with such a gain instead of amplifying by it or substituting another.
 pub fn mic_gain_problem(gain_db: f32) -> Option<ConfigProblem> {
-    (!(MIC_GAIN_MIN_DB..=MIC_GAIN_MAX_DB).contains(&gain_db)).then(|| {
-        ConfigProblem::new(
-            "mic.gain",
-            format!(
-                "{} dB is outside the {} to {} dB range",
-                gain_db, MIC_GAIN_MIN_DB, MIC_GAIN_MAX_DB
-            ),
-        )
-    })
+    (!(MIC_GAIN_MIN_DB..=MIC_GAIN_MAX_DB).contains(&gain_db))
+        .then(|| ConfigProblem::new("mic.gain", ProblemKind::GainOutOfRange(gain_db)))
 }
 
 /// The problem with an unset `transformation.model` for a provider that has
 /// no default model.
 pub fn missing_model_problem(provider: TransformationProvider) -> ConfigProblem {
+    ConfigProblem::new("transformation.model", ProblemKind::MissingModel(provider))
+}
+
+/// The problem with a `transformation.provider` that is not supported.
+pub fn unsupported_provider_problem(provider: &str) -> ConfigProblem {
     ConfigProblem::new(
-        "transformation.model",
-        format!(
-            "is required for provider '{}', which has no built-in default model",
-            provider
-        ),
+        "transformation.provider",
+        ProblemKind::UnsupportedProvider { value: provider.trim().to_owned() },
     )
 }
 
@@ -168,11 +211,15 @@ fn is_positive(value: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{mic_gain_problem, problems, ConfigProblem};
+    use super::{mic_gain_problem, problems, ConfigProblem, ProblemKind};
     use crate::config::Config;
 
     fn keys(config: &Config) -> Vec<&'static str> {
         problems(config).into_iter().map(|problem| problem.key).collect()
+    }
+
+    fn messages(config: &Config) -> Vec<String> {
+        problems(config).iter().map(ToString::to_string).collect()
     }
 
     #[test]
@@ -185,13 +232,7 @@ mod tests {
         let mut config = Config::default();
         config.mic.gain = 40.0;
 
-        assert_eq!(
-            problems(&config)
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            ["mic.gain: 40 dB is outside the 0 to 10 dB range"]
-        );
+        assert_eq!(messages(&config), ["mic.gain 40 dB is outside the 0 to 10 dB range"]);
     }
 
     #[test]
@@ -209,13 +250,12 @@ mod tests {
         let mut config = Config::default();
         config.ui.hotkey = "Ctrl+Banana".to_owned();
 
-        let problems = problems(&config);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].key, "ui.hotkey");
+        let messages = messages(&config);
+        assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(
-            problems[0].message.starts_with("\"Ctrl+Banana\" is not a valid shortcut: "),
+            messages[0].starts_with("ui.hotkey \"Ctrl+Banana\" is not a valid shortcut: "),
             "{}",
-            problems[0].message
+            messages[0]
         );
     }
 
@@ -226,12 +266,20 @@ mod tests {
         config.ui.correction_key = "F5".to_owned();
 
         assert_eq!(
-            problems(&config),
-            [ConfigProblem {
-                key: "ui.correction_key",
-                message: "\"F5\" shares a key with ui.hotkey \"F5\"; they must be different"
-                    .to_owned(),
-            }]
+            messages(&config),
+            ["ui.correction_key \"F5\" shares a key with ui.hotkey \"F5\"; they must be different"]
+        );
+    }
+
+    #[test]
+    fn describe_names_every_key_the_problem_mentions() {
+        let mut config = Config::default();
+        config.ui.hotkey = "F5".to_owned();
+        config.ui.correction_key = "F5".to_owned();
+
+        assert_eq!(
+            problems(&config)[0].describe(|key| key.to_ascii_uppercase()),
+            "UI.CORRECTION_KEY \"F5\" shares a key with UI.HOTKEY \"F5\"; they must be different"
         );
     }
 
@@ -252,13 +300,10 @@ mod tests {
         config.ui.footer_font_size = Some(f64::NAN);
 
         assert_eq!(
-            problems(&config)
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
+            messages(&config),
             [
-                "ui.font_size: 0 is not a positive number",
-                "ui.footer_font_size: NaN is not a positive number",
+                "ui.font_size 0 is not a positive number",
+                "ui.footer_font_size NaN is not a positive number",
             ]
         );
     }
@@ -266,17 +311,16 @@ mod tests {
     #[test]
     fn an_unsupported_provider_is_one_problem_listing_the_supported_providers() {
         let mut config = Config::default();
-        config.transformation.provider = Some("galadriel".to_owned());
+        config.transformation.provider = Some(" galadriel ".to_owned());
 
-        let problems = problems(&config);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert_eq!(problems[0].key, "transformation.provider");
+        let messages = messages(&config);
+        assert_eq!(messages.len(), 1, "{messages:?}");
         assert!(
-            problems[0]
-                .message
-                .starts_with("unsupported transformation provider 'galadriel'; supported providers: anthropic,"),
+            messages[0].starts_with(
+                "transformation.provider \"galadriel\" is not supported; supported providers: anthropic,"
+            ),
             "{}",
-            problems[0].message
+            messages[0]
         );
     }
 
@@ -288,11 +332,8 @@ mod tests {
 
         config.transformation.provider = Some("ollama".to_owned());
         assert_eq!(
-            problems(&config)
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            ["transformation.model: is required for provider 'ollama', which has no built-in default model"]
+            messages(&config),
+            ["transformation.model is required for provider 'ollama', which has no built-in default model"]
         );
 
         config.transformation.model = "llama3.2".to_owned();
@@ -306,7 +347,10 @@ mod tests {
         assert_eq!(keys(&config), Vec::<&str>::new());
 
         config.transformation.provider = Some("openai".to_owned());
-        assert_eq!(keys(&config), ["transformation.hotkey"]);
+        assert_eq!(
+            problems(&config)[0].kind,
+            ProblemKind::SameAs { value: "F5".to_owned(), other_key: "ui.hotkey" }
+        );
 
         config.transformation.hotkey = "Nope".to_owned();
         assert_eq!(keys(&config), ["transformation.hotkey"]);

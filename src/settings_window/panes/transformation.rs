@@ -20,6 +20,7 @@ use crate::settings_window::form::{
     TRANSFORMATION_PROVIDER_DISABLED_LABEL,
 };
 use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow, RowAlignment};
+use crate::settings_window::labels;
 use crate::settings_window::popups::{
     populate_combo_box_with_values, populate_transformation_provider_popup,
 };
@@ -78,22 +79,27 @@ impl TransformationPane {
 
         let grid = FormGrid::new(mtm, 2);
         grid.add_row(
-            "Transform shortcut:",
+            &labels::TRANSFORM_SHORTCUT.row_title(),
             &hotkey_field,
             ControlWidth::Fill,
             &[&hotkey_capture_button],
         );
         grid.add_detail_row(&auto_checkbox, ControlWidth::Intrinsic);
         grid.add_hint_row(Some(AUTO_TRANSFORM_HINT));
-        grid.add_row("Provider:", &provider_popup, ControlWidth::Intrinsic, &[]);
-        grid.add_row("API key:", &api_key_field, ControlWidth::Fill, &[]);
+        grid.add_row(
+            &labels::TRANSFORMATION_PROVIDER.row_title(),
+            &provider_popup,
+            ControlWidth::Intrinsic,
+            &[],
+        );
+        grid.add_row(&labels::TRANSFORMATION_API_KEY.row_title(), &api_key_field, ControlWidth::Fill, &[]);
         let api_key_env_hint = grid.add_hint_row(None);
         // NSComboBox reports a first baseline 4pt above the text it draws (as
         // measured on macOS 26), so a first-baseline row sets it 4pt below its
         // label and buttons. Centering puts every view of the row on one line,
         // and the label's text on the combo box's drawn text.
         grid.add_aligned_row(
-            "Model:",
+            &labels::TRANSFORMATION_MODEL.row_title(),
             &model_combo_box,
             ControlWidth::Fill,
             &[&model_refresh_button, &model_check_button],
