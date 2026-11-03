@@ -13,7 +13,7 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Run with normal XDG/home config lookup: `just run-xdg`
 - List audio input devices from an installed app bundle: `just list-devices`
 - Test the Sparkle update flow: `just test-update` (stops the running app, rebuilds `dist/simple-ptt.app` with an older test version, and launches it; run only when app launches are authorized).
-- Run with a simulated startup error: `just run-simulated-error "error message"` (uses the repo-local config and launches the app).
+- Run with a simulated transcription error: `just run-simulated-error "error message"` (uses the repo-local config and launches the app; begin a recording to trigger the error).
 - Build the `.app` bundle: `just bundle-release`
 - Build the DMG: `just bundle-dmg`
 - Install to `~/Applications` and launch: `just install-app && just start`
