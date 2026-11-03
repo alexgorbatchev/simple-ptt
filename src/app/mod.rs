@@ -1025,7 +1025,10 @@ impl AppDelegate {
             Ok(request) => request,
             Err(error) => {
                 settings_window.populate_transformation_model_values(&[]);
-                return Some(error);
+                // Only a loaded config selects an unsupported provider; the
+                // message matches its `config::problems` line so the status
+                // shows it once.
+                return Some(ConfigProblem::new("transformation.provider", error).to_string());
             }
         };
         let saved = self.ivars().config_store.current_file().transformation;

@@ -16,7 +16,7 @@ pub struct ConfigProblem {
 }
 
 impl ConfigProblem {
-    fn new(key: &'static str, message: String) -> Self {
+    pub fn new(key: &'static str, message: String) -> Self {
         Self { key, message }
     }
 }

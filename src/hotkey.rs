@@ -44,6 +44,8 @@ struct CurrentHotkeyConfig {
     auto_transform_enabled: bool,
     correction_key: Option<CorrectionBinding>,
     hold_ms: u64,
+    /// Why recording cannot start with the configured `mic.gain`.
+    mic_gain_problem: Option<String>,
     record_hotkey: Option<HotkeyBinding>,
     transform_hotkey: Option<HotkeyBinding>,
     transformation_hotkey_enabled: bool,
@@ -289,7 +291,12 @@ fn handle_key_press(
                     state.clear_overlay_text();
                 }
                 state.set_overlay_text_opacity(1.0);
-                match start_recording(state, controller, current_state) {
+                match start_recording(
+                    state,
+                    controller,
+                    current_state,
+                    hotkey_config.mic_gain_problem.as_deref(),
+                ) {
                     Some(action) => Some(action),
                     None => return true,
                 }
@@ -485,21 +492,32 @@ fn handle_key_release(
     false
 }
 
+/// The bindings in effect. A binding `config::problems` reports as sharing
+/// keys with another is off: the correction key when it overlaps the record
+/// hotkey, and the transform hotkey when it equals the record hotkey or
+/// overlaps the correction key.
 fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig {
     let config = config_store.current();
-    let correction_key = parse_correction_key(config.ui.correction_key.as_str());
     let record_hotkey = parse_hotkey_binding(&config.ui.hotkey).ok();
+    let correction_key = parse_correction_key(config.ui.correction_key.as_str()).filter(|key| {
+        !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey))
+    });
     let transform_hotkey = config
         .resolve_transformation_config()
         .ok()
         .and_then(|_| parse_hotkey_binding(&config.transformation.hotkey).ok());
-    let transformation_hotkey_enabled =
-        transform_hotkey.is_some() && transform_hotkey != record_hotkey;
+    let transformation_hotkey_enabled = transform_hotkey.is_some_and(|transform_hotkey| {
+        Some(transform_hotkey) != record_hotkey
+            && !parse_correction_key(config.ui.correction_key.as_str())
+                .is_some_and(|key| key.overlaps(transform_hotkey))
+    });
 
     CurrentHotkeyConfig {
         auto_transform_enabled: config.transformation.auto
             && config.resolve_transformation_config().is_ok(),
         hold_ms: config.mic.hold_ms,
+        mic_gain_problem: crate::config::mic_gain_problem(config.mic.gain)
+            .map(|problem| format!("{problem}. Fix it in Settings, then record again.")),
         correction_key,
         record_hotkey,
         transform_hotkey,
@@ -566,12 +584,19 @@ fn stop_recording_and_transform_and_paste(
 }
 
 /// Starts recording from `current_state`, or shows why it cannot: with no
-/// microphone the overlay explains that instead of recording silence.
+/// microphone, or a gain the audio stream refuses, the overlay explains that
+/// instead of recording silence.
 fn start_recording(
     state: &AppState,
     controller: &TranscriptionController,
     current_state: u8,
+    mic_gain_problem: Option<&str>,
 ) -> Option<RecordHotkeyAction> {
+    if let Some(problem) = mic_gain_problem {
+        log::warn!("record hotkey pressed with an invalid gain (state {})", current_state);
+        state.report_error(problem);
+        return None;
+    }
     if !state.is_microphone_available() {
         log::warn!("record hotkey pressed with no microphone available (state {})", current_state);
         state.report_error(NO_MICROPHONE_MESSAGE);
@@ -664,7 +689,7 @@ mod tests {
         state.set_microphone_available(false);
         let controller = crate::transcription::TranscriptionController::without_worker();
 
-        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE), None);
+        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE, None), None);
 
         assert_eq!(state.get_state(), STATE_ERROR);
         assert_eq!(&*state.overlay_error_text(), NO_MICROPHONE_MESSAGE);
@@ -827,6 +852,69 @@ mod tests {
     }
 
     #[test]
+    fn the_record_key_names_an_invalid_gain_instead_of_recording() {
+        use crate::state::{AppState, STATE_ERROR, STATE_IDLE};
+
+        let state = AppState::new();
+        state.set_state(STATE_IDLE);
+        let controller = crate::transcription::TranscriptionController::without_worker();
+        let problem = "mic.gain: 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.";
+
+        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE, Some(problem)), None);
+
+        assert_eq!(state.get_state(), STATE_ERROR);
+        assert_eq!(&*state.overlay_error_text(), problem);
+    }
+
+    fn hotkey_config_for(config: crate::config::Config) -> super::CurrentHotkeyConfig {
+        let store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        super::current_hotkey_config(&store)
+    }
+
+    #[test]
+    fn an_invalid_gain_is_carried_into_the_hotkey_config() {
+        let mut config = crate::config::Config::default();
+        assert_eq!(hotkey_config_for(config.clone()).mic_gain_problem, None);
+
+        config.mic.gain = 40.0;
+        assert_eq!(
+            hotkey_config_for(config).mic_gain_problem.as_deref(),
+            Some("mic.gain: 40 dB is outside the 0 to 10 dB range. Fix it in Settings, then record again.")
+        );
+    }
+
+    #[test]
+    fn a_correction_key_inside_the_record_hotkey_is_off() {
+        let mut config = crate::config::Config::default();
+        config.ui.hotkey = "Cmd+F5".to_owned();
+        config.ui.correction_key = "LeftMeta".to_owned();
+
+        let hotkey_config = hotkey_config_for(config);
+
+        assert!(hotkey_config.record_hotkey.is_some());
+        assert_eq!(hotkey_config.correction_key, None);
+    }
+
+    #[test]
+    fn a_transform_hotkey_sharing_a_key_with_the_correction_key_is_off() {
+        let mut config = crate::config::Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+        config.transformation.api_key = Some("test-key".to_owned());
+        assert!(hotkey_config_for(config.clone()).transformation_hotkey_enabled);
+
+        config.ui.correction_key = "F6".to_owned();
+        config.transformation.hotkey = "Shift+F6".to_owned();
+        let hotkey_config = hotkey_config_for(config);
+
+        assert!(hotkey_config.correction_key.is_some());
+        assert!(!hotkey_config.transformation_hotkey_enabled);
+    }
+
+    #[test]
     fn the_record_key_starts_recording_when_a_microphone_is_available() {
         use crate::state::{AppState, STATE_IDLE, STATE_RECORDING};
 
@@ -836,7 +924,7 @@ mod tests {
         let controller = crate::transcription::TranscriptionController::without_worker();
 
         assert_eq!(
-            super::start_recording(&state, &controller, STATE_IDLE),
+            super::start_recording(&state, &controller, STATE_IDLE, None),
             Some(super::RecordHotkeyAction::StartRecording)
         );
         assert_eq!(state.get_state(), STATE_RECORDING);

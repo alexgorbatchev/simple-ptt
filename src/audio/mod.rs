@@ -359,7 +359,11 @@ impl AudioController {
             return;
         }
 
-        if !self.should_rebuild_stream() {
+        // `config::problems` reports an invalid gain; Save rebuilds the
+        // stream through `apply_mic_config` once it is fixed.
+        if crate::config::mic_gain_problem(self.effective_mic_config().gain).is_some()
+            || !self.should_rebuild_stream()
+        {
             return;
         }
 

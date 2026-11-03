@@ -72,13 +72,37 @@ pub fn populate_combo_box_with_values(
     combo_box.setStringValue(&NSString::from_str(selected_value.trim()));
 }
 
+/// The provider popup's selection for a form's provider title.
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderSelection<'a> {
+    /// An item the popup always lists: the disabled entry or a supported
+    /// provider, by its title.
+    Listed(&'a str),
+    /// A configured provider that is not supported, which `config::problems`
+    /// reports.
+    Unsupported(&'a str),
+}
+
+fn provider_selection(provider_title: Option<&str>) -> ProviderSelection<'_> {
+    let Some(title) = provider_title
+        .map(str::trim)
+        .filter(|title| !title.is_empty() && *title != TRANSFORMATION_PROVIDER_DISABLED_LABEL)
+    else {
+        return ProviderSelection::Listed(TRANSFORMATION_PROVIDER_DISABLED_LABEL);
+    };
+    match title.parse::<crate::config::TransformationProvider>() {
+        Ok(provider) => ProviderSelection::Listed(provider.as_str()),
+        Err(_) => ProviderSelection::Unsupported(title),
+    }
+}
+
 /// Lists the supported providers after the disabled entry and selects
-/// `selected_provider`. A configured provider that is not supported, which
-/// `config::problems` reports, is shown as a disabled item: it stays selected
-/// until another provider is chosen and cannot be chosen again.
+/// `provider_title`. An unsupported provider is shown as a disabled item
+/// after the disabled entry: it stays selected until another provider is
+/// chosen and cannot be chosen again.
 pub fn populate_transformation_provider_popup(
     popup_button: &NSPopUpButton,
-    selected_provider: Option<&str>,
+    provider_title: Option<&str>,
 ) {
     popup_button.setAutoenablesItems(false);
     popup_button.removeAllItems();
@@ -87,20 +111,12 @@ pub fn populate_transformation_provider_popup(
         popup_button.addItemWithTitle(&NSString::from_str(provider));
     }
 
-    let Some(selected_provider) = selected_provider
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        popup_button.selectItemAtIndex(0);
-        return;
-    };
-
-    match selected_provider.parse::<crate::config::TransformationProvider>() {
-        Ok(provider) => {
-            popup_button.selectItemWithTitle(&NSString::from_str(provider.as_str()));
+    match provider_selection(provider_title) {
+        ProviderSelection::Listed(title) => {
+            popup_button.selectItemWithTitle(&NSString::from_str(title));
         }
-        Err(_) => {
-            popup_button.insertItemWithTitle_atIndex(&NSString::from_str(selected_provider), 1);
+        ProviderSelection::Unsupported(title) => {
+            popup_button.insertItemWithTitle_atIndex(&NSString::from_str(title), 1);
             if let Some(unsupported_item) = popup_button.itemAtIndex(1) {
                 unsupported_item.setEnabled(false);
             }
@@ -126,4 +142,34 @@ pub fn populate_deepgram_model_popup(popup_button: &NSPopUpButton, selected_mode
         popup_button.insertItemWithTitle_atIndex(&selected_model, 0);
     }
     popup_button.selectItemWithTitle(&selected_model);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{provider_selection, ProviderSelection};
+    use crate::settings_window::form::TRANSFORMATION_PROVIDER_DISABLED_LABEL;
+
+    #[test]
+    fn no_provider_selects_the_disabled_entry() {
+        for title in [None, Some(""), Some("  "), Some(TRANSFORMATION_PROVIDER_DISABLED_LABEL)] {
+            assert_eq!(
+                provider_selection(title),
+                ProviderSelection::Listed(TRANSFORMATION_PROVIDER_DISABLED_LABEL),
+                "{title:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_supported_provider_selects_its_canonical_title() {
+        assert_eq!(provider_selection(Some(" OpenAI ")), ProviderSelection::Listed("openai"));
+    }
+
+    #[test]
+    fn an_unsupported_provider_gets_its_own_item() {
+        assert_eq!(
+            provider_selection(Some(" galadriel ")),
+            ProviderSelection::Unsupported("galadriel")
+        );
+    }
 }
