@@ -169,29 +169,23 @@ define_class!(
             }
             menu.addItem(&settings_item);
 
-            let check_updates_item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    ns_string!("Check for Updates…"),
-                    Some(sel!(checkForUpdates:)),
-                    ns_string!(""),
-                )
+            let app_updater = match crate::updater::AppUpdater::init(mtm) {
+                Ok(updater) => Some(updater),
+                Err(error) => {
+                    if matches!(error, crate::updater::UpdaterInitError::NotBundled) {
+                        log::info!("Sparkle updater unavailable: {error}");
+                    } else {
+                        log::warn!("Sparkle updater unavailable: {error}");
+                    }
+                    None
+                }
             };
-
-            let app_updater = crate::updater::AppUpdater::init(mtm);
             if let Some(ref updater) = app_updater {
                 updater.set_automatically_checks_for_updates(
                     self.ivars().config_store.current().ui.auto_check_updates,
                 );
-                unsafe {
-                    check_updates_item.setTarget(Some(updater.controller()));
-                }
-            } else {
-                unsafe {
-                    check_updates_item.setTarget(Some(self));
-                }
             }
-            menu.addItem(&check_updates_item);
+            crate::updater::append_update_menu_item(&menu, mtm, app_updater.as_ref());
             let _ = self.ivars().app_updater.set(app_updater);
 
             let permissions_item = unsafe {
@@ -330,14 +324,6 @@ define_class!(
                 presentation.default_mode_turn(app_is_active, app_is_frontmost)
             });
             self.perform_settings_presentation_step(step);
-        }
-
-        #[unsafe(method(checkForUpdates:))]
-        fn check_for_updates(&self, sender: Option<&AnyObject>) {
-            self.promote_for_window_presentation();
-            if let Some(Some(ref updater)) = self.ivars().app_updater.get() {
-                updater.check_for_updates(sender);
-            }
         }
 
         #[unsafe(method(openGitHubRepo:))]
