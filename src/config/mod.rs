@@ -7,7 +7,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use toml_edit::{value, DocumentMut, Item, Table};
+use toml_edit::{value, DocumentMut, Item, Table, TableLike};
 
 use crate::transformation::TransformationRuntimeConfig;
 
@@ -641,18 +641,21 @@ fn root_table(document: &mut DocumentMut) -> &mut toml_edit::Table {
     document.as_table_mut()
 }
 
-fn ensure_named_table<'a>(document: &'a mut DocumentMut, table_name: &str) -> &'a mut Table {
+fn ensure_named_table<'a>(
+    document: &'a mut DocumentMut,
+    table_name: &str,
+) -> Result<&'a mut dyn TableLike, String> {
     let root = root_table(document);
     if !root.contains_key(table_name) {
         root.insert(table_name, Item::Table(Table::new()));
     }
 
     root[table_name]
-        .as_table_mut()
-        .expect("managed config section must be a table")
+        .as_table_like_mut()
+        .ok_or_else(|| format!("config section '{table_name}' must be a table"))
 }
 
-fn existing_key_name(table: &Table, primary_key: &str, aliases: &[&str]) -> String {
+fn existing_key_name(table: &dyn TableLike, primary_key: &str, aliases: &[&str]) -> String {
     if table.contains_key(primary_key) {
         return primary_key.to_owned();
     }
@@ -665,9 +668,9 @@ fn existing_key_name(table: &Table, primary_key: &str, aliases: &[&str]) -> Stri
         .to_owned()
 }
 
-fn set_required_string_key(table: &mut Table, key: &str, aliases: &[&str], field_value: &str) {
+fn set_required_string_key(table: &mut dyn TableLike, key: &str, aliases: &[&str], field_value: &str) {
     let selected_key = existing_key_name(table, key, aliases);
-    table[&selected_key] = value(field_value);
+    *table.entry(&selected_key).or_insert(Item::None) = value(field_value);
     for alias in aliases {
         if *alias != selected_key {
             table.remove(alias);
@@ -676,7 +679,7 @@ fn set_required_string_key(table: &mut Table, key: &str, aliases: &[&str], field
 }
 
 fn set_optional_string_key(
-    table: &mut Table,
+    table: &mut dyn TableLike,
     key: &str,
     aliases: &[&str],
     field_value: Option<&str>,
@@ -684,7 +687,7 @@ fn set_optional_string_key(
     let selected_key = existing_key_name(table, key, aliases);
     match field_value.map(str::trim).filter(|value| !value.is_empty()) {
         Some(non_empty_value) => {
-            table[&selected_key] = value(non_empty_value);
+            *table.entry(&selected_key).or_insert(Item::None) = value(non_empty_value);
         }
         None => {
             table.remove(&selected_key);
@@ -706,7 +709,7 @@ fn set_optional_string_key(
 /// `reset` is false: a key the user wrote stays, while an explicit reset in
 /// the settings window hands the key back to the default.
 fn set_defaulted_string_key(
-    table: &mut Table,
+    table: &mut dyn TableLike,
     key: &str,
     aliases: &[&str],
     field_value: &str,
@@ -726,15 +729,15 @@ fn set_defaulted_string_key(
     }
 }
 
-fn set_float_key(table: &mut Table, key: &str, field_value: f64) {
-    table[key] = value(field_value);
+fn set_float_key(table: &mut dyn TableLike, key: &str, field_value: f64) {
+    *table.entry(key).or_insert(Item::None) = value(field_value);
 }
 
-fn set_float32_key(table: &mut Table, key: &str, field_value: f32) {
-    table[key] = value(f64::from(field_value));
+fn set_float32_key(table: &mut dyn TableLike, key: &str, field_value: f32) {
+    *table.entry(key).or_insert(Item::None) = value(f64::from(field_value));
 }
 
-fn set_string_array_key(table: &mut Table, key: &str, values: &[String]) {
+fn set_string_array_key(table: &mut dyn TableLike, key: &str, values: &[String]) {
     if values.is_empty() {
         table.remove(key);
     } else {
@@ -742,23 +745,23 @@ fn set_string_array_key(table: &mut Table, key: &str, values: &[String]) {
         for v in values {
             array.push(v);
         }
-        table[key] = toml_edit::value(array);
+        *table.entry(key).or_insert(Item::None) = value(array);
     }
 }
 
-fn set_unsigned_key(table: &mut Table, key: &str, field_value: impl Into<i64>) {
-    table[key] = value(field_value.into());
+fn set_unsigned_key(table: &mut dyn TableLike, key: &str, field_value: impl Into<i64>) {
+    *table.entry(key).or_insert(Item::None) = value(field_value.into());
 }
 
-fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
-    let table = ensure_named_table(document, "ui");
+fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), String> {
+    let table = ensure_named_table(document, "ui")?;
     if ui.start_on_login {
-        table["start_on_login"] = value(true);
+        *table.entry("start_on_login").or_insert(Item::None) = value(true);
     } else {
         table.remove("start_on_login");
     }
     if !ui.auto_check_updates {
-        table["auto_check_updates"] = value(false);
+        *table.entry("auto_check_updates").or_insert(Item::None) = value(false);
     } else {
         table.remove("auto_check_updates");
     }
@@ -782,16 +785,17 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) {
             table.remove("footer_font_size");
         }
     }
-    table["meter_style"] = value(match ui.meter_style {
+    *table.entry("meter_style").or_insert(Item::None) = value(match ui.meter_style {
         UiMeterStyle::None => "none",
         UiMeterStyle::AnimatedHeight => "animated-height",
         UiMeterStyle::AnimatedColor => "animated-color",
         UiMeterStyle::Pills => "pills",
     });
+    Ok(())
 }
 
-fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) {
-    let table = ensure_named_table(document, "mic");
+fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) -> Result<(), String> {
+    let table = ensure_named_table(document, "mic")?;
     set_optional_string_key(table, "audio_device", &[], mic.audio_device.as_deref());
     set_unsigned_key(table, "sample_rate", i64::from(mic.sample_rate));
     set_float32_key(table, "gain", mic.gain);
@@ -800,11 +804,12 @@ fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) {
         "hold_ms",
         i64::try_from(mic.hold_ms).unwrap_or(i64::MAX),
     );
-    table["always_on"] = value(mic.always_on);
+    *table.entry("always_on").or_insert(Item::None) = value(mic.always_on);
+    Ok(())
 }
 
-fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
-    let table = ensure_named_table(document, "deepgram");
+fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -> Result<(), String> {
+    let table = ensure_named_table(document, "deepgram")?;
     set_optional_string_key(table, "api_key", &[], deepgram.api_key.as_deref());
     set_required_string_key(table, "language", &[], &deepgram.language);
     set_required_string_key(table, "model", &[], &deepgram.model);
@@ -815,16 +820,17 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) {
         i64::from(deepgram.utterance_end_ms),
     );
     set_string_array_key(table, "keyterms", &deepgram.keyterms);
+    Ok(())
 }
 
 fn write_transformation_table(
     document: &mut DocumentMut,
     transformation: &TransformationConfig,
     prompt_resets: PromptResets,
-) {
-    let table = ensure_named_table(document, "transformation");
+) -> Result<(), String> {
+    let table = ensure_named_table(document, "transformation")?;
     set_required_string_key(table, "hotkey", &[], &transformation.hotkey);
-    table["auto"] = value(transformation.auto);
+    *table.entry("auto").or_insert(Item::None) = value(transformation.auto);
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
     set_defaulted_string_key(
@@ -851,6 +857,7 @@ fn write_transformation_table(
         &default_transformation_correction_system_prompt(),
         prompt_resets.correction_system_prompt,
     );
+    Ok(())
 }
 
 pub fn save_config(
@@ -859,10 +866,10 @@ pub fn save_config(
     prompt_resets: PromptResets,
 ) -> Result<(), String> {
     let mut document = load_document(path)?;
-    write_ui_table(&mut document, &config.ui);
-    write_mic_table(&mut document, &config.mic);
-    write_deepgram_table(&mut document, &config.deepgram);
-    write_transformation_table(&mut document, &config.transformation, prompt_resets);
+    write_ui_table(&mut document, &config.ui)?;
+    write_mic_table(&mut document, &config.mic)?;
+    write_deepgram_table(&mut document, &config.deepgram)?;
+    write_transformation_table(&mut document, &config.transformation, prompt_resets)?;
     write_document_atomically(path, &document.to_string())
 }
 
@@ -1822,3 +1829,6 @@ mod file_security_tests {
         assert!(!directory.0.join("missing.toml").exists());
     }
 }
+
+#[cfg(test)]
+mod inline_tables_tests;
