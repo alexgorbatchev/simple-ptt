@@ -167,6 +167,14 @@ fn db_to_linear_gain(gain_db: f32) -> f32 {
     10.0f32.powf(gain_db / 20.0)
 }
 
+fn callback_gain(state: &AppState, config_store: &LiveConfigStore) -> f32 {
+    db_to_linear_gain(
+        state
+            .preview_mic_gain()
+            .unwrap_or_else(|| config_store.mic_gain()),
+    )
+}
+
 fn build_stream_for_format<T>(
     device: &cpal::Device,
     config: &SupportedStreamConfig,
@@ -215,12 +223,7 @@ where
                     return;
                 }
 
-                let current_mic_config = config_store.current().mic;
-                let gain_linear = db_to_linear_gain(
-                    meter_state
-                        .preview_mic_gain()
-                        .unwrap_or(current_mic_config.gain),
-                );
+                let gain_linear = callback_gain(&meter_state, &config_store);
 
                 let (pcm_chunk, clipped_count, level_db, peak_db) =
                     encode_pcm_mono(data, channels, gain_linear);
@@ -334,7 +337,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{audio_route, db_to_linear_gain, AudioRoute};
+    use super::{audio_route, callback_gain, db_to_linear_gain, AudioRoute};
+    use crate::config::Config;
+    use crate::settings::LiveConfigStore;
     use crate::state::{AppState, STATE_RECORDING, STATE_TRANSFORMING};
 
     #[test]
@@ -363,5 +368,22 @@ mod tests {
         assert_eq!(db_to_linear_gain(0.0), 1.0);
         assert!((db_to_linear_gain(20.0) - 10.0).abs() < 1e-5);
         assert!((db_to_linear_gain(6.0) - 1.995_262).abs() < 1e-5);
+    }
+
+    #[test]
+    fn callback_gain_prefers_preview_and_resumes_the_latest_saved_gain() {
+        let state = AppState::new();
+        let mut config = Config::default();
+        config.mic.gain = 20.0;
+        let store = LiveConfigStore::new(config.clone(), config.clone(), "/tmp/config.toml".into());
+        assert!((callback_gain(&state, &store) - 10.0).abs() < 1e-5);
+
+        state.set_preview_mic_gain(Some(0.0));
+        config.mic.gain = 6.0;
+        store.replace(config.clone(), config);
+        assert_eq!(callback_gain(&state, &store), 1.0);
+
+        state.set_preview_mic_gain(None);
+        assert!((callback_gain(&state, &store) - 1.995_262).abs() < 1e-5);
     }
 }
