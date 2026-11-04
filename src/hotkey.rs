@@ -203,9 +203,9 @@ fn handle_key_press(
             state.clear_overlay_error_text();
         } else {
             // The work in progress uses the request up: the recording's start
-            // or its paste, the buffer's discard, or the transformation. An
-            // error has none, and a request left set would make the worker
-            // skip the next recording start.
+            // or its paste, the buffer's discard, or the transformation. Idle
+            // and error have no work in progress to cancel, so they request
+            // no abort.
             state.request_abort();
         }
         state.dismiss_overlay();
@@ -771,8 +771,7 @@ mod tests {
         assert_eq!(state.get_state(), STATE_IDLE);
         assert!(state.is_overlay_dismissed());
         assert!(state.overlay_error_text().is_empty());
-        // Nothing runs that would use the abort up, so a request left set
-        // would make the transcription worker skip the next recording start.
+        // An error has no work in progress for an abort to cancel.
         assert!(!state.is_abort_requested());
     }
 
