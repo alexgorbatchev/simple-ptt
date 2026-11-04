@@ -15,7 +15,7 @@ pub use stream::*;
 use cpal::traits::{HostTrait, StreamTrait};
 use cpal::Stream;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex, MutexGuard, Once};
 use std::time::{Duration, Instant};
 
 #[cfg(target_os = "macos")]
@@ -210,10 +210,7 @@ impl AudioController {
     /// unhealthy, stalled, opened for another device or rate, or the
     /// hardware changed since it was opened.
     fn should_rebuild_stream_for(&self, mic_config: &MicConfig) -> bool {
-        let active_stream = match self.active_stream.lock() {
-            Ok(guard) => guard,
-            Err(_) => return true,
-        };
+        let active_stream = self.lock_active_stream();
 
         let Some(active) = active_stream.as_ref() else {
             return true;
@@ -308,27 +305,28 @@ impl AudioController {
         let mic_config = self.effective_mic_config();
         let should_play = stream_should_play(mic_config.always_on, &self.state);
 
-        let mut active_stream = match self.active_stream.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
-        };
+        let mut active_stream = self.lock_active_stream();
 
         if let Some(active) = active_stream.as_mut() {
-            if should_play {
-                let play_requested_at = Instant::now();
-                if let Err(error) = active._stream.play() {
-                    log::error!("failed to play audio stream: {}", error);
-                    active.healthy.store(false, Ordering::SeqCst);
-                } else {
-                    active.activity.set_playing_at(true, play_requested_at);
+            match stream_command(should_play, active.healthy.load(Ordering::SeqCst)) {
+                StreamCommand::Play => {
+                    let play_requested_at = Instant::now();
+                    if let Err(error) = active._stream.play() {
+                        log::error!("failed to play audio stream: {}", error);
+                        active.healthy.store(false, Ordering::SeqCst);
+                    } else {
+                        active.activity.set_playing_at(true, play_requested_at);
+                    }
                 }
-            } else {
-                if let Err(error) = active._stream.pause() {
-                    log::error!("failed to pause audio stream: {}", error);
-                    active.healthy.store(false, Ordering::SeqCst);
-                } else {
-                    active.activity.set_playing_at(false, Instant::now());
+                StreamCommand::Pause => {
+                    if let Err(error) = active._stream.pause() {
+                        log::error!("failed to pause audio stream: {}", error);
+                        active.healthy.store(false, Ordering::SeqCst);
+                    } else {
+                        active.activity.set_playing_at(false, Instant::now());
+                    }
                 }
+                StreamCommand::LeaveForRebuild => {}
             }
             if active.activity.is_stalled_at(Instant::now()) {
                 log::warn!("audio stream stalled (no audio callbacks for >1.5s); marking unhealthy");
@@ -414,10 +412,7 @@ impl AudioController {
         let handle = built?;
 
         self.transcription_controller.set_sample_rate(handle.sample_rate);
-        let mut active_stream = self
-            .active_stream
-            .lock()
-            .map_err(|_| "audio stream lock poisoned".to_owned())?;
+        let mut active_stream = self.lock_active_stream();
         *active_stream = Some(ActiveAudioStream::new(handle, mic_config));
         #[cfg(target_os = "macos")]
         self.hardware_generation.store(hardware_generation, Ordering::SeqCst);
@@ -426,6 +421,17 @@ impl AudioController {
 }
 
 impl AudioController {
+    /// The active stream. A panic while it was locked leaves it as it was,
+    /// so the lock is recovered and the panic logged once, instead of
+    /// leaving audio silently unmanaged from then on.
+    fn lock_active_stream(&self) -> MutexGuard<'_, Option<ActiveAudioStream>> {
+        self.active_stream.lock().unwrap_or_else(|poisoned| {
+            log::error!("a panic happened while the audio stream was locked; continuing with its last state");
+            self.active_stream.clear_poison();
+            poisoned.into_inner()
+        })
+    }
+
     /// Looks at the inputs before choosing one: when the device in use has
     /// disappeared, the built-in microphone is preferred until the system
     /// default changes (see `BuiltInPreference`). Returns whether it is.
@@ -436,10 +442,9 @@ impl AudioController {
             .map(|devices| devices.filter_map(|device| device_uid(&device)).collect::<Vec<_>>())
             .unwrap_or_default();
         let device_in_use_lost = self
-            .active_stream
-            .lock()
-            .ok()
-            .and_then(|active| active.as_ref().and_then(|active| active.actual_device_uid.clone()))
+            .lock_active_stream()
+            .as_ref()
+            .and_then(|active| active.actual_device_uid.clone())
             .is_some_and(|uid| !connected.contains(&uid));
         let default_uid = host.default_input_device().as_ref().and_then(device_uid);
         let follows_system_default =
@@ -466,6 +471,25 @@ fn stream_opened_for_another_config(
         || configured_audio_device != mic_config.audio_device.as_deref()
 }
 
+/// What the status poll does with the active stream.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StreamCommand {
+    Play,
+    Pause,
+    /// An unhealthy stream is left alone: CoreAudio pauses a stream it
+    /// invalidated, and resuming it would feed audio from a unit cpal gave
+    /// up on until the rebuild replaces it.
+    LeaveForRebuild,
+}
+
+fn stream_command(should_play: bool, healthy: bool) -> StreamCommand {
+    match (healthy, should_play) {
+        (false, _) => StreamCommand::LeaveForRebuild,
+        (true, true) => StreamCommand::Play,
+        (true, false) => StreamCommand::Pause,
+    }
+}
+
 fn stream_should_play(always_on: bool, state: &AppState) -> bool {
     always_on || state.is_capturing_audio() || state.is_settings_window_visible()
 }
@@ -485,6 +509,43 @@ mod tests {
         InputDeviceDescriptor, StreamErrorResponse,
     };
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+
+    #[test]
+    fn an_unhealthy_stream_is_neither_resumed_nor_paused() {
+        use super::{stream_command, StreamCommand};
+
+        assert_eq!(stream_command(true, true), StreamCommand::Play);
+        assert_eq!(stream_command(false, true), StreamCommand::Pause);
+        assert_eq!(stream_command(true, false), StreamCommand::LeaveForRebuild);
+        assert_eq!(stream_command(false, false), StreamCommand::LeaveForRebuild);
+    }
+
+    #[test]
+    fn a_poisoned_stream_lock_is_recovered_once() {
+        let state = crate::state::AppState::new();
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let controller = std::sync::Arc::new(AudioController::inactive(
+            state,
+            crate::transcription::TranscriptionController::without_worker(),
+            config_store,
+        ));
+        let poisoner = controller.clone();
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.active_stream.lock().unwrap();
+            panic!("poison the stream lock");
+        })
+        .join();
+        assert!(controller.active_stream.is_poisoned());
+
+        assert!(controller.lock_active_stream().is_none());
+        assert!(!controller.active_stream.is_poisoned());
+        assert!(controller.should_rebuild_stream());
+    }
 
     #[test]
     fn a_paused_microphone_keeps_playing_through_correction_and_dictation_resume() {
