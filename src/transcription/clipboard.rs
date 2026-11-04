@@ -103,6 +103,14 @@ pub fn flush_buffered_text_or_paste(state: &AppState, buffered_text: &mut String
 }
 
 pub fn run_paste_sequence(state: &AppState, text: &str) -> Result<(), String> {
+    // Tests never write the clipboard or send Cmd+V to the frontmost app;
+    // they count the attempt and see it fail.
+    if cfg!(test) {
+        #[cfg(test)]
+        state.record_paste_attempt();
+        return Err("paste is disabled in tests".to_owned());
+    }
+
     log::info!(
         "paste handoff start: chars={}, diagnostics={}",
         text.chars().count(),

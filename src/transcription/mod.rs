@@ -1428,6 +1428,7 @@ mod tests {
         wait_for_state(&state, STATE_IDLE);
         assert!(state.overlay_text().is_empty());
         assert!(!state.is_abort_requested());
+        assert_eq!(state.paste_attempts(), 0);
     }
 
     #[test]
@@ -1447,6 +1448,7 @@ mod tests {
             wait_for_state(&state, STATE_IDLE);
             assert!(state.overlay_text().is_empty(), "{abort_requested}");
             assert!(!state.is_abort_requested(), "{abort_requested}");
+            assert_eq!(state.paste_attempts(), 0, "{abort_requested}");
         }
     }
 

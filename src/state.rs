@@ -90,6 +90,9 @@ pub struct MicMeterSnapshot {
 
 #[derive(Debug)]
 pub struct AppState {
+    /// Paste sequences started; tests count them instead of pasting.
+    #[cfg(test)]
+    paste_attempts: AtomicU32,
     abort_requested: AtomicBool,
     abort_notification: tokio::sync::Notify,
     deepgram_waiting: AtomicBool,
@@ -124,9 +127,22 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Records a paste sequence that would have started (tests only).
+    #[cfg(test)]
+    pub fn record_paste_attempt(&self) {
+        self.paste_attempts.fetch_add(1, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub fn paste_attempts(&self) -> u32 {
+        self.paste_attempts.load(Ordering::SeqCst)
+    }
+
     pub fn new() -> Arc<Self> {
         let (spectrum_sender, spectrum_receiver) = sync_channel(QUEUED_SPECTRUM_FRAMES);
         Arc::new(Self {
+            #[cfg(test)]
+            paste_attempts: AtomicU32::new(0),
             abort_requested: AtomicBool::new(false),
             abort_notification: tokio::sync::Notify::new(),
             deepgram_waiting: AtomicBool::new(false),
