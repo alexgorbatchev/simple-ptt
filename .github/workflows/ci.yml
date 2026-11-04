@@ -79,7 +79,12 @@ jobs:
         run: |
           set -euo pipefail
           bun .agents/skills/readme-demo/scripts/record-demo.ts check
-          git diff --exit-code
+          # Untracked files count too: the splice creates view_probe.rs.
+          leftover="$(git status --porcelain)"
+          if [ -n "$leftover" ]; then
+            printf 'record-demo check left changes behind:\n%s\n' "$leftover"
+            exit 1
+          fi
 
       - name: Run tests
         shell: bash
