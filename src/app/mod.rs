@@ -1468,10 +1468,6 @@ fn settings_rollback_error(
     message
 }
 
-// The alert texts name the settings Save button through `SAVE_BUTTON_TITLE`.
-// `concat!` accepts only literals, and `format!` cannot implicitly capture
-// `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
-// title is passed as an explicit named argument.
 /// Opens the first of `urls` that System Settings accepts and brings System
 /// Settings forward. macOS reports the outcome on a concurrent queue after
 /// this returns, so the second URL is tried from there, back on the main
@@ -1528,13 +1524,17 @@ fn open_system_settings_url(url: &'static str, fallback: Option<&'static str>) {
     );
 }
 
+// The alert texts name the settings Save button through `SAVE_BUTTON_TITLE`.
+// `concat!` accepts only literals, and `format!` cannot implicitly capture
+// `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
+// title is passed as an explicit named argument.
 fn missing_config_alert_text(config_path: &Path) -> String {
     format!(
         concat!(
             "Settings opens so you can create one on first launch.\n",
             "Review the defaults, then click {save_button} to write:\n\n",
             "{config_path}\n\n",
-            "simple-ptt runs from the menu bar. Its Dock icon shows only while Settings or the permissions window is open."
+            "simple-ptt runs from the menu bar. Its Dock icon shows only while one of its windows or alerts is open."
         ),
         save_button = SAVE_BUTTON_TITLE,
         config_path = config_path.display(),
