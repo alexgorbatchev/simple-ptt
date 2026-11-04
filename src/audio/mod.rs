@@ -44,9 +44,8 @@ pub struct AudioController {
     config_store: LiveConfigStore,
     state: Arc<AppState>,
     transcription_controller: TranscriptionController,
-    /// When the last idle rebuild failed; retries wait `REBUILD_RETRY_INTERVAL`
-    /// after it, while a rebuild after a success runs at once.
-    last_failed_rebuild: Mutex<Option<Instant>>,
+    /// The last failed idle rebuild; see `rebuild_waits_for_retry`.
+    last_failed_rebuild: Mutex<Option<FailedRebuild>>,
     preview_audio_device: Mutex<PreviewDeviceState>,
     /// Whether the built-in microphone stands in for a device that
     /// disappeared.
@@ -385,10 +384,11 @@ impl AudioController {
         }
 
         let now = Instant::now();
+        let generation = device_change_generation();
         let Ok(mut last_failed_rebuild) = self.last_failed_rebuild.lock() else {
             return;
         };
-        if last_failed_rebuild.is_some_and(|failed_at| now.duration_since(failed_at) < REBUILD_RETRY_INTERVAL) {
+        if rebuild_waits_for_retry(*last_failed_rebuild, now, generation) {
             return;
         }
 
@@ -399,7 +399,7 @@ impl AudioController {
                 log::info!("successfully rebuilt audio input stream");
             }
             Err(error) => {
-                *last_failed_rebuild = Some(now);
+                *last_failed_rebuild = Some(FailedRebuild { at: now, generation });
                 log::error!("failed to switch or reconnect audio input device: {}", error);
             }
         }
@@ -479,6 +479,30 @@ fn stream_opened_for_another_config(
         || configured_audio_device != mic_config.audio_device.as_deref()
 }
 
+/// An idle rebuild that failed, and the device-change generation it was
+/// attempted at.
+#[derive(Clone, Copy, Debug)]
+struct FailedRebuild {
+    at: Instant,
+    generation: u64,
+}
+
+/// Whether idle recovery waits before retrying: only within
+/// `REBUILD_RETRY_INTERVAL` of a failure, and only while Core Audio has
+/// reported nothing since, so a newly connected device is tried at once.
+fn rebuild_waits_for_retry(failed: Option<FailedRebuild>, now: Instant, generation: u64) -> bool {
+    failed.is_some_and(|failed| {
+        failed.generation == generation && now.duration_since(failed.at) < REBUILD_RETRY_INTERVAL
+    })
+}
+
+fn device_change_generation() -> u64 {
+    #[cfg(target_os = "macos")]
+    return DEVICE_CHANGES.generation();
+    #[cfg(not(target_os = "macos"))]
+    0
+}
+
 /// What the status poll does with the active stream.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StreamCommand {
@@ -553,6 +577,20 @@ mod tests {
         state.set_state(crate::state::STATE_IDLE);
         controller.apply_pending_if_idle();
         assert!(!controller.has_pending_device_change());
+    }
+
+    #[test]
+    fn a_failed_rebuild_waits_out_the_retry_interval_unless_a_device_changes() {
+        use super::{rebuild_waits_for_retry, FailedRebuild, REBUILD_RETRY_INTERVAL};
+
+        let failed_at = std::time::Instant::now();
+        let failed = Some(FailedRebuild { at: failed_at, generation: 7 });
+
+        assert!(!rebuild_waits_for_retry(None, failed_at, 7));
+        assert!(rebuild_waits_for_retry(failed, failed_at, 7));
+        assert!(!rebuild_waits_for_retry(failed, failed_at + REBUILD_RETRY_INTERVAL, 7));
+        // A microphone plugged in after the failure is tried at once.
+        assert!(!rebuild_waits_for_retry(failed, failed_at, 8));
     }
 
     #[test]
