@@ -1,6 +1,6 @@
 pub mod clipboard;
-pub mod session;
 mod progress;
+pub mod session;
 pub mod text_builder;
 mod transformation_history;
 
@@ -17,10 +17,7 @@ use tokio::runtime::Runtime;
 
 use crate::config::{Config, DeepgramConfig};
 use crate::settings::LiveConfigStore;
-use crate::state::{
-    AppState, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING,
-    STATE_TRANSFORMING,
-};
+use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING};
 use crate::transformation::{
     transform_text, TransformationPreviewMode, TransformationRuntimeConfig,
 };
@@ -30,7 +27,9 @@ const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
 enum Command {
     SetSampleRate(u32),
-    StartSession { recording_prefix: String },
+    StartSession {
+        recording_prefix: String,
+    },
     StartCorrectionSession,
     PushAudio(Bytes),
     StopSessionAndPaste,
@@ -153,7 +152,10 @@ pub fn spawn_transcription_thread(
         let runtime = match Runtime::new() {
             Ok(runtime) => runtime,
             Err(error) => {
-                log::error!("failed to create Tokio runtime for transcription: {}", error);
+                log::error!(
+                    "failed to create Tokio runtime for transcription: {}",
+                    error
+                );
                 state.report_error(error.to_string());
                 return;
             }
@@ -170,9 +172,13 @@ pub fn spawn_transcription_thread(
                 Command::SetSampleRate(sample_rate) => {
                     thread_worker_sample_rate.store(sample_rate, Ordering::Relaxed);
                 }
-                Command::StartSession { recording_prefix: requested_prefix } => {
+                Command::StartSession {
+                    recording_prefix: requested_prefix,
+                } => {
                     if let Some(old_session) = active_session.take() {
-                        log::info!("cleaning up previous active session before starting new session");
+                        log::info!(
+                            "cleaning up previous active session before starting new session"
+                        );
                         if matches!(finish_session(old_session, &state), Ok(None)) {
                             buffered_text.clear();
                             recording_prefix.clear();
@@ -224,7 +230,11 @@ pub fn spawn_transcription_thread(
                             active_session = Some(session);
                         }
                         Err(SessionError::Cancelled) => {
-                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                            complete_session_cancellation(
+                                &state,
+                                &mut buffered_text,
+                                SessionKind::Dictation,
+                            );
                         }
                         Err(error) => {
                             log::error!("failed to start Deepgram session: {}", error);
@@ -324,7 +334,11 @@ pub fn spawn_transcription_thread(
                             active_session = Some(session);
                         }
                         Err(SessionError::Cancelled) => {
-                            complete_session_cancellation(&state, &mut buffered_text, SessionKind::Correction);
+                            complete_session_cancellation(
+                                &state,
+                                &mut buffered_text,
+                                SessionKind::Correction,
+                            );
                         }
                         Err(error) => {
                             log::error!("failed to start correction Deepgram session: {}", error);
@@ -341,7 +355,9 @@ pub fn spawn_transcription_thread(
                                 log::warn!("audio queue full; dropping audio chunk");
                             }
                             PushAudioResult::Closed => {
-                                let session = active_session.take().expect("the closed queue belongs to the active session");
+                                let session = active_session
+                                    .take()
+                                    .expect("the closed queue belongs to the active session");
                                 match finish_session(session, &state) {
                                     Ok(None) => {
                                         buffered_text.clear();
@@ -349,7 +365,8 @@ pub fn spawn_transcription_thread(
                                         resume_after_correction = false;
                                     }
                                     Err(error) => state.report_error(error),
-                                    Ok(Some(_)) => state.report_error("Deepgram session queue closed unexpectedly"),
+                                    Ok(Some(_)) => state
+                                        .report_error("Deepgram session queue closed unexpectedly"),
                                 }
                             }
                         }
@@ -382,7 +399,10 @@ pub fn spawn_transcription_thread(
                     let text_to_insert = match read_clipboard_text() {
                         Ok(text) => text,
                         Err(error) => {
-                            log::warn!("ignoring clipboard insertion because clipboard read failed: {}", error);
+                            log::warn!(
+                                "ignoring clipboard insertion because clipboard read failed: {}",
+                                error
+                            );
                             continue;
                         }
                     };
@@ -421,7 +441,9 @@ pub fn spawn_transcription_thread(
                     }
 
                     append_text_segment(&mut recording_prefix, text_to_insert.as_str());
-                    if !recording_prefix.is_empty() && !recording_prefix.ends_with(|c: char| c.is_whitespace()) {
+                    if !recording_prefix.is_empty()
+                        && !recording_prefix.ends_with(|c: char| c.is_whitespace())
+                    {
                         recording_prefix.push(' ');
                     }
 
@@ -460,7 +482,11 @@ pub fn spawn_transcription_thread(
                                 active_session = Some(session);
                             }
                             Err(SessionError::Cancelled) => {
-                                complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                                complete_session_cancellation(
+                                    &state,
+                                    &mut buffered_text,
+                                    SessionKind::Dictation,
+                                );
                             }
                             Err(error) => {
                                 log::error!(
@@ -485,8 +511,7 @@ pub fn spawn_transcription_thread(
 
                     // Also clear the hotkey's pending resume intent if the
                     // correction connection failed and there is no session.
-                    let _resuming =
-                        ResumingDictation::new(&state, should_resume_after_correction);
+                    let _resuming = ResumingDictation::new(&state, should_resume_after_correction);
                     if let Some(session) = active_session.take() {
                         let correction_request = match finish_session(session, &state) {
                             Ok(None) => {
@@ -520,19 +545,20 @@ pub fn spawn_transcription_thread(
                                 recording_prefix = prefix;
                                 let current_sample_rate =
                                     thread_worker_sample_rate.load(Ordering::Relaxed);
-                                let deepgram_config =
-                                    match resolved_deepgram_config(&current_config) {
-                                        Ok(config) => config,
-                                        Err(error) => {
-                                            log::error!(
+                                let deepgram_config = match resolved_deepgram_config(
+                                    &current_config,
+                                ) {
+                                    Ok(config) => config,
+                                    Err(error) => {
+                                        log::error!(
                                                 "failed to resolve Deepgram config for resume after correction: {}",
                                                 error
                                             );
-                                            state.set_state(STATE_BUFFER_READY);
-                                            state.report_error(error.to_string());
-                                            continue;
-                                        }
-                                    };
+                                        state.set_state(STATE_BUFFER_READY);
+                                        state.report_error(error.to_string());
+                                        continue;
+                                    }
+                                };
 
                                 match start_session(
                                     state.clone(),
@@ -546,7 +572,11 @@ pub fn spawn_transcription_thread(
                                         active_session = Some(session);
                                     }
                                     Err(SessionError::Cancelled) => {
-                                        complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                                        complete_session_cancellation(
+                                            &state,
+                                            &mut buffered_text,
+                                            SessionKind::Dictation,
+                                        );
                                     }
                                     Err(error) => {
                                         log::error!(
@@ -586,7 +616,9 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 if state.consume_abort_request() {
-                                    log::info!("discarding transformation because abort was requested");
+                                    log::info!(
+                                        "discarding transformation because abort was requested"
+                                    );
                                     buffered_text.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
@@ -595,14 +627,15 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 let current_config = config_store.current();
-                                let transformation_config =
-                                    match resolve_transformation_config(&current_config) {
-                                        Ok(config) => Some(config),
-                                        Err(error) => {
-                                            log::info!("transformation provider not active ({}); pasting raw transcript", error);
-                                            None
-                                        }
-                                    };
+                                let transformation_config = match resolve_transformation_config(
+                                    &current_config,
+                                ) {
+                                    Ok(config) => Some(config),
+                                    Err(error) => {
+                                        log::info!("transformation provider not active ({}); pasting raw transcript", error);
+                                        None
+                                    }
+                                };
 
                                 if let Some(transformation_config) = transformation_config {
                                     match runtime.block_on(transformation_history.finish_automatic(
@@ -645,11 +678,7 @@ pub fn spawn_transcription_thread(
                                     }
                                 } else {
                                     state.set_overlay_text_opacity(1.0);
-                                    flush_buffered_text_or_paste(
-                                        &state,
-                                        &mut buffered_text,
-                                        true,
-                                    );
+                                    flush_buffered_text_or_paste(&state, &mut buffered_text, true);
                                 }
                             }
                             Err(error) => {
@@ -683,7 +712,9 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 if state.consume_abort_request() {
-                                    log::info!("discarding transformation because abort was requested");
+                                    log::info!(
+                                        "discarding transformation because abort was requested"
+                                    );
                                     buffered_text.clear();
                                     state.clear_overlay_text();
                                     state.set_overlay_text_opacity(1.0);
@@ -692,14 +723,15 @@ pub fn spawn_transcription_thread(
                                 }
 
                                 let current_config = config_store.current();
-                                let transformation_config =
-                                    match resolve_transformation_config(&current_config) {
-                                        Ok(config) => Some(config),
-                                        Err(error) => {
-                                            log::info!("transformation provider not active ({}); resuming with raw transcript", error);
-                                            None
-                                        }
-                                    };
+                                let transformation_config = match resolve_transformation_config(
+                                    &current_config,
+                                ) {
+                                    Ok(config) => Some(config),
+                                    Err(error) => {
+                                        log::info!("transformation provider not active ({}); resuming with raw transcript", error);
+                                        None
+                                    }
+                                };
 
                                 if let Some(transformation_config) = transformation_config {
                                     state.set_state(STATE_TRANSFORMING);
@@ -736,8 +768,7 @@ pub fn spawn_transcription_thread(
 
                                 recording_prefix = buffered_text.clone();
                                 if !recording_prefix.is_empty()
-                                    && !recording_prefix
-                                        .ends_with(|c: char| c.is_whitespace())
+                                    && !recording_prefix.ends_with(|c: char| c.is_whitespace())
                                 {
                                     recording_prefix.push(' ');
                                 }
@@ -772,7 +803,11 @@ pub fn spawn_transcription_thread(
                                         active_session = Some(session);
                                     }
                                     Err(SessionError::Cancelled) => {
-                                        complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                                        complete_session_cancellation(
+                                            &state,
+                                            &mut buffered_text,
+                                            SessionKind::Dictation,
+                                        );
                                     }
                                     Err(error) => {
                                         log::error!("failed to resume session: {}", error);
@@ -840,7 +875,11 @@ pub fn spawn_transcription_thread(
                 Command::DiscardBuffer => {
                     recording_prefix.clear();
                     resume_after_correction = false;
-                    complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                    complete_session_cancellation(
+                        &state,
+                        &mut buffered_text,
+                        SessionKind::Dictation,
+                    );
                     log::info!("discarded the ready buffer");
                 }
                 Command::AbortSession => {
@@ -849,7 +888,11 @@ pub fn spawn_transcription_thread(
                     drop(active_session.take());
                     recording_prefix.clear();
                     resume_after_correction = false;
-                    complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                    complete_session_cancellation(
+                        &state,
+                        &mut buffered_text,
+                        SessionKind::Dictation,
+                    );
                     log::info!("discarded the aborted dictation session");
                 }
             }
@@ -908,12 +951,15 @@ fn apply_correction_request(
         let correction_config = transformation_correction_runtime_config(&transformation_config);
         let prompt_input = build_correction_transform_input(buffered_text, correction_request);
         state.set_state(STATE_TRANSFORMING);
-        let transformed = runtime.block_on(finish_transformation(state, transform_text(
-            state.clone(),
-            &correction_config,
-            &prompt_input,
-            TransformationPreviewMode::ReplaceOverlay,
-        )))?;
+        let transformed = runtime.block_on(finish_transformation(
+            state,
+            transform_text(
+                state.clone(),
+                &correction_config,
+                &prompt_input,
+                TransformationPreviewMode::ReplaceOverlay,
+            ),
+        ))?;
         let Some(transformed) = transformed else {
             buffered_text.clear();
             return Ok(None);
@@ -1009,9 +1055,7 @@ fn resolved_deepgram_config(config: &Config) -> Result<DeepgramConfig, String> {
     Ok(deepgram)
 }
 
-fn resolve_transformation_config(
-    config: &Config,
-) -> Result<TransformationRuntimeConfig, String> {
+fn resolve_transformation_config(config: &Config) -> Result<TransformationRuntimeConfig, String> {
     config.resolve_transformation_config()
 }
 
@@ -1172,10 +1216,15 @@ mod tests {
             state.request_abort();
             std::future::pending::<Result<String, String>>().await
         };
-        let result = runtime.block_on(async {
-            tokio::time::timeout(std::time::Duration::from_secs(1),
-                super::finish_transformation(&state, request)).await
-        }).expect("cancellation must not wait for another LLM response");
+        let result = runtime
+            .block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    super::finish_transformation(&state, request),
+                )
+                .await
+            })
+            .expect("cancellation must not wait for another LLM response");
         assert_eq!(result.unwrap(), None);
         assert_eq!(state.get_state(), crate::state::STATE_IDLE);
         assert!(state.is_overlay_dismissed());
@@ -1189,21 +1238,34 @@ mod tests {
     #[test]
     fn settings_cancellation_wins_a_transformation_result_or_error() {
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        for result in [Ok("Discard this rewrite".to_owned()), Err("A late error".to_owned())] {
+        for result in [
+            Ok("Discard this rewrite".to_owned()),
+            Err("A late error".to_owned()),
+        ] {
             let state = crate::state::AppState::new();
             state.set_state(crate::state::STATE_TRANSFORMING);
             state.dismiss_overlay();
-            assert_eq!(runtime.block_on(super::finish_transformation(&state, async {
-                state.request_abort();
-                result
-            })).unwrap(), None);
+            assert_eq!(
+                runtime
+                    .block_on(super::finish_transformation(&state, async {
+                        state.request_abort();
+                        result
+                    }))
+                    .unwrap(),
+                None
+            );
             assert!(state.is_overlay_dismissed());
             assert!(state.overlay_error_text().is_empty());
             assert_eq!(state.get_state(), crate::state::STATE_IDLE);
             // The abort is consumed, so subsequent work can finish normally.
-            assert_eq!(runtime.block_on(super::finish_transformation(&state,
-                async { Ok("The next rewrite".to_owned()) })).unwrap(),
-                Some("The next rewrite".to_owned()));
+            assert_eq!(
+                runtime
+                    .block_on(super::finish_transformation(&state, async {
+                        Ok("The next rewrite".to_owned())
+                    }))
+                    .unwrap(),
+                Some("The next rewrite".to_owned())
+            );
         }
     }
 
@@ -1222,7 +1284,10 @@ mod tests {
         let super::Command::StartSession { recording_prefix } = command_rx.recv().unwrap() else {
             panic!("expected a dictation start");
         };
-        assert_eq!(recording_prefix, "The annotation, including keyboard edits.");
+        assert_eq!(
+            recording_prefix,
+            "The annotation, including keyboard edits."
+        );
     }
 
     #[test]
@@ -1239,9 +1304,14 @@ mod tests {
             let _resuming = super::ResumingDictation::new(&state, true);
 
             let prefix = super::apply_correction_request(
-                &runtime, &state, &crate::config::Config::default(),
-                &mut annotation, request, true,
-            ).unwrap();
+                &runtime,
+                &state,
+                &crate::config::Config::default(),
+                &mut annotation,
+                request,
+                true,
+            )
+            .unwrap();
 
             assert_eq!(prefix, Some("Keep the entire narration. ".to_owned()));
             assert_eq!(&*state.overlay_text(), "Keep the entire narration. ");
@@ -1261,10 +1331,18 @@ mod tests {
         let mut annotation = "A buffered annotation.".to_owned();
         state.set_overlay_text(annotation.clone());
 
-        assert_eq!(super::apply_correction_request(
-            &runtime, &state, &crate::config::Config::default(),
-            &mut annotation, "", false,
-        ).unwrap(), None);
+        assert_eq!(
+            super::apply_correction_request(
+                &runtime,
+                &state,
+                &crate::config::Config::default(),
+                &mut annotation,
+                "",
+                false,
+            )
+            .unwrap(),
+            None
+        );
 
         assert_eq!(state.get_state(), crate::state::STATE_BUFFER_READY);
         assert_eq!(&*state.overlay_text(), "A buffered annotation.");
@@ -1280,9 +1358,14 @@ mod tests {
         let mut annotation = "The earlier narration.".to_owned();
 
         let prefix = super::apply_correction_request(
-            &runtime, &state, &crate::config::Config::default(),
-            &mut annotation, "", true,
-        ).unwrap();
+            &runtime,
+            &state,
+            &crate::config::Config::default(),
+            &mut annotation,
+            "",
+            true,
+        )
+        .unwrap();
 
         assert_eq!(prefix, Some("The edited narration. ".to_owned()));
         assert_eq!(annotation, "The edited narration.");
@@ -1299,7 +1382,11 @@ mod tests {
         state.request_abort();
         state.dismiss_overlay();
         let mut buffered_text = "must not be pasted".to_owned();
-        super::complete_session_cancellation(&state, &mut buffered_text, super::SessionKind::Dictation);
+        super::complete_session_cancellation(
+            &state,
+            &mut buffered_text,
+            super::SessionKind::Dictation,
+        );
         assert_eq!(state.get_state(), STATE_IDLE);
         assert!(state.is_overlay_dismissed());
         assert!(!state.is_abort_requested());
@@ -1317,7 +1404,11 @@ mod tests {
         state.set_overlay_correction_active(true);
         state.set_overlay_correction_text("unfinished correction");
         let mut buffered_text = "the annotation".to_owned();
-        super::complete_session_cancellation(&state, &mut buffered_text, super::SessionKind::Correction);
+        super::complete_session_cancellation(
+            &state,
+            &mut buffered_text,
+            super::SessionKind::Correction,
+        );
         assert_eq!(state.get_state(), STATE_BUFFER_READY);
         assert_eq!(&*state.overlay_text(), "the annotation");
         assert!(!state.is_overlay_correction_active());
@@ -1357,7 +1448,10 @@ mod tests {
         state.set_state(crate::state::STATE_PROCESSING);
         state.request_abort();
 
-        assert_eq!(super::settle_session_finish(Ok(String::new()), &state), Ok(None));
+        assert_eq!(
+            super::settle_session_finish(Ok(String::new()), &state),
+            Ok(None)
+        );
         assert!(!state.is_abort_requested());
         assert_eq!(state.get_state(), crate::state::STATE_IDLE);
     }
@@ -1367,7 +1461,8 @@ mod tests {
         let state = crate::state::AppState::new();
         state.set_overlay_text("incomplete words");
         let result = super::settle_session_finish(
-            Err(super::SessionError::Failed("shutdown timed out".to_owned())), &state,
+            Err(super::SessionError::Failed("shutdown timed out".to_owned())),
+            &state,
         );
         assert_eq!(result, Err("shutdown timed out".to_owned()));
     }
@@ -1500,7 +1595,9 @@ mod tests {
 
     #[test]
     fn dictation_without_deepgram_key_reports_guidance_and_keeps_buffer() {
-        if run_without_deepgram_key("dictation_without_deepgram_key_reports_guidance_and_keeps_buffer") {
+        if run_without_deepgram_key(
+            "dictation_without_deepgram_key_reports_guidance_and_keeps_buffer",
+        ) {
             return;
         }
         use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
@@ -1522,7 +1619,9 @@ mod tests {
 
     #[test]
     fn correction_without_deepgram_key_reports_guidance_and_keeps_buffer() {
-        if run_without_deepgram_key("correction_without_deepgram_key_reports_guidance_and_keeps_buffer") {
+        if run_without_deepgram_key(
+            "correction_without_deepgram_key_reports_guidance_and_keeps_buffer",
+        ) {
             return;
         }
         use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
@@ -1574,12 +1673,21 @@ mod tests {
             return false;
         }
         let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &format!("transcription::tests::{test_name}"), "--nocapture"])
+            .args([
+                "--exact",
+                &format!("transcription::tests::{test_name}"),
+                "--nocapture",
+            ])
             .env("SIMPLE_PTT_MISSING_KEY_TEST", test_name)
             .env_remove("DEEPGRAM_API_KEY")
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
         true
     }
 }

@@ -188,7 +188,11 @@ unsafe extern "C-unwind" fn raw_event_callback(
 }
 
 fn hotkey_event_from_cg_event(event_type: CGEventType, cg_event: &CGEvent) -> Option<HotkeyEvent> {
-    hotkey_event(event_type, event_keycode(cg_event)?, CGEvent::flags(Some(cg_event)))
+    hotkey_event(
+        event_type,
+        event_keycode(cg_event)?,
+        CGEvent::flags(Some(cg_event)),
+    )
 }
 
 /// The hotkey event for a keyboard event of `event_type` for key `code`,
@@ -218,12 +222,36 @@ fn modifier_bits(key: Key) -> Option<(CGEventFlags, u64, u64)> {
     match key {
         Key::ShiftLeft => Some((CGEventFlags::MaskShift, LEFT_SHIFT_BIT, RIGHT_SHIFT_BIT)),
         Key::ShiftRight => Some((CGEventFlags::MaskShift, RIGHT_SHIFT_BIT, LEFT_SHIFT_BIT)),
-        Key::ControlLeft => Some((CGEventFlags::MaskControl, LEFT_CONTROL_BIT, RIGHT_CONTROL_BIT)),
-        Key::ControlRight => Some((CGEventFlags::MaskControl, RIGHT_CONTROL_BIT, LEFT_CONTROL_BIT)),
-        Key::AltLeft => Some((CGEventFlags::MaskAlternate, LEFT_OPTION_BIT, RIGHT_OPTION_BIT)),
-        Key::AltRight => Some((CGEventFlags::MaskAlternate, RIGHT_OPTION_BIT, LEFT_OPTION_BIT)),
-        Key::MetaLeft => Some((CGEventFlags::MaskCommand, LEFT_COMMAND_BIT, RIGHT_COMMAND_BIT)),
-        Key::MetaRight => Some((CGEventFlags::MaskCommand, RIGHT_COMMAND_BIT, LEFT_COMMAND_BIT)),
+        Key::ControlLeft => Some((
+            CGEventFlags::MaskControl,
+            LEFT_CONTROL_BIT,
+            RIGHT_CONTROL_BIT,
+        )),
+        Key::ControlRight => Some((
+            CGEventFlags::MaskControl,
+            RIGHT_CONTROL_BIT,
+            LEFT_CONTROL_BIT,
+        )),
+        Key::AltLeft => Some((
+            CGEventFlags::MaskAlternate,
+            LEFT_OPTION_BIT,
+            RIGHT_OPTION_BIT,
+        )),
+        Key::AltRight => Some((
+            CGEventFlags::MaskAlternate,
+            RIGHT_OPTION_BIT,
+            LEFT_OPTION_BIT,
+        )),
+        Key::MetaLeft => Some((
+            CGEventFlags::MaskCommand,
+            LEFT_COMMAND_BIT,
+            RIGHT_COMMAND_BIT,
+        )),
+        Key::MetaRight => Some((
+            CGEventFlags::MaskCommand,
+            RIGHT_COMMAND_BIT,
+            LEFT_COMMAND_BIT,
+        )),
         _ => None,
     }
 }
@@ -247,11 +275,12 @@ fn modifier_is_down(key: Key, flags: CGEventFlags) -> bool {
 /// side is left out, so the press reports the modifiers held before it, as a
 /// binding like "Shift+Cmd" or a modifier-only binding expects.
 fn modifiers_held(flags: CGEventFlags, except: Option<Key>) -> HotkeyModifiers {
-    let held = |mask: CGEventFlags| {
-        match except.and_then(modifier_bits).filter(|(except_mask, _, _)| *except_mask == mask) {
-            Some((_, _, other_side)) => flags.bits() & other_side != 0,
-            None => flags.contains(mask),
-        }
+    let held = |mask: CGEventFlags| match except
+        .and_then(modifier_bits)
+        .filter(|(except_mask, _, _)| *except_mask == mask)
+    {
+        Some((_, _, other_side)) => flags.bits() & other_side != 0,
+        None => flags.contains(mask),
     };
     HotkeyModifiers {
         shift: held(CGEventFlags::MaskShift),
@@ -377,7 +406,7 @@ mod tests {
 
     use objc2_core_graphics::{CGEventFlags, CGEventType};
 
-    use super::{hotkey_event, META_LEFT, META_RIGHT, F5, SHIFT_LEFT};
+    use super::{hotkey_event, F5, META_LEFT, META_RIGHT, SHIFT_LEFT};
     use crate::hotkey::HotkeyEvent;
 
     #[test]
@@ -539,7 +568,13 @@ mod tests {
         );
         assert_eq!(
             hotkey_event(CGEventType::KeyDown, F5, left_command()),
-            Some(HotkeyEvent::KeyPress(Key::F5, HotkeyModifiers { meta: true, ..no_modifiers() }))
+            Some(HotkeyEvent::KeyPress(
+                Key::F5,
+                HotkeyModifiers {
+                    meta: true,
+                    ..no_modifiers()
+                }
+            ))
         );
     }
 
@@ -561,15 +596,28 @@ mod tests {
     #[test]
     fn caps_lock_flag_changes_are_keys_without_becoming_chord_modifiers() {
         assert_eq!(
-            hotkey_event(CGEventType::FlagsChanged, super::CAPS_LOCK, CGEventFlags::MaskAlphaShift),
+            hotkey_event(
+                CGEventType::FlagsChanged,
+                super::CAPS_LOCK,
+                CGEventFlags::MaskAlphaShift
+            ),
             Some(HotkeyEvent::KeyPress(Key::CapsLock, no_modifiers()))
         );
         assert_eq!(
-            hotkey_event(CGEventType::FlagsChanged, super::CAPS_LOCK, CGEventFlags::empty()),
+            hotkey_event(
+                CGEventType::FlagsChanged,
+                super::CAPS_LOCK,
+                CGEventFlags::empty()
+            ),
             Some(HotkeyEvent::KeyRelease(Key::CapsLock, no_modifiers()))
         );
-        assert_eq!(hotkey_event(CGEventType::FlagsChanged, F5, CGEventFlags::empty()), None);
-        assert!(!HotkeyModifiers::default().with_key_pressed(Key::CapsLock).any());
+        assert_eq!(
+            hotkey_event(CGEventType::FlagsChanged, F5, CGEventFlags::empty()),
+            None
+        );
+        assert!(!HotkeyModifiers::default()
+            .with_key_pressed(Key::CapsLock)
+            .any());
     }
 
     #[test]
@@ -596,8 +644,18 @@ mod tests {
         // Right Command pressed while left Command is held: the modifiers
         // before it already include Command.
         assert_eq!(
-            hotkey_event(CGEventType::FlagsChanged, META_RIGHT, left_command() | right_command()),
-            Some(HotkeyEvent::KeyPress(Key::MetaRight, HotkeyModifiers { meta: true, ..no_modifiers() }))
+            hotkey_event(
+                CGEventType::FlagsChanged,
+                META_RIGHT,
+                left_command() | right_command()
+            ),
+            Some(HotkeyEvent::KeyPress(
+                Key::MetaRight,
+                HotkeyModifiers {
+                    meta: true,
+                    ..no_modifiers()
+                }
+            ))
         );
     }
 
@@ -605,8 +663,18 @@ mod tests {
     fn a_modifier_press_reports_the_other_modifiers_held() {
         let shift_left = CGEventFlags::MaskShift | CGEventFlags::from_bits_retain(0x02);
         assert_eq!(
-            hotkey_event(CGEventType::FlagsChanged, META_LEFT, left_command() | shift_left),
-            Some(HotkeyEvent::KeyPress(Key::MetaLeft, HotkeyModifiers { shift: true, ..no_modifiers() }))
+            hotkey_event(
+                CGEventType::FlagsChanged,
+                META_LEFT,
+                left_command() | shift_left
+            ),
+            Some(HotkeyEvent::KeyPress(
+                Key::MetaLeft,
+                HotkeyModifiers {
+                    shift: true,
+                    ..no_modifiers()
+                }
+            ))
         );
         assert_eq!(
             hotkey_event(CGEventType::FlagsChanged, SHIFT_LEFT, shift_left),
@@ -618,12 +686,22 @@ mod tests {
     fn a_synthetic_event_without_side_bits_still_reads_its_modifier() {
         // Some synthetic events set only the device-independent mask.
         assert_eq!(
-            hotkey_event(CGEventType::FlagsChanged, META_LEFT, CGEventFlags::MaskCommand),
+            hotkey_event(
+                CGEventType::FlagsChanged,
+                META_LEFT,
+                CGEventFlags::MaskCommand
+            ),
             Some(HotkeyEvent::KeyPress(Key::MetaLeft, no_modifiers()))
         );
         assert_eq!(
             hotkey_event(CGEventType::KeyDown, F5, CGEventFlags::MaskCommand),
-            Some(HotkeyEvent::KeyPress(Key::F5, HotkeyModifiers { meta: true, ..no_modifiers() }))
+            Some(HotkeyEvent::KeyPress(
+                Key::F5,
+                HotkeyModifiers {
+                    meta: true,
+                    ..no_modifiers()
+                }
+            ))
         );
     }
 

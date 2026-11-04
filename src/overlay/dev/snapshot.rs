@@ -8,8 +8,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSFloatingWindowLevel,
-    NSFont, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindow, NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor,
+    NSFloatingWindowLevel, NSFont, NSScreen, NSTextAlignment, NSTextField, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_core_foundation::CGPoint;
 use objc2_foundation::{NSArray, NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString};
@@ -19,8 +20,8 @@ use crate::app::overlay_style_from_config;
 use crate::config::Config;
 use crate::overlay::OverlayWindow;
 use crate::state::{
-    AppState, MicMeterSnapshot, OverlayText,
-    STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
+    AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
+    STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 fn pump(seconds: f64) {
@@ -61,7 +62,10 @@ fn backdrop(mtm: MainThreadMarker, visible: NSRect, dark: bool) -> Retained<NSWi
     };
     unsafe { window.setReleasedWhenClosed(false) };
     window.setLevel(NSFloatingWindowLevel - 1);
-    let view = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+    let view = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), frame.size),
+    );
     view.setWantsLayer(true);
     let gradient = CAGradientLayer::new();
     gradient.setFrame(view.bounds());
@@ -79,7 +83,10 @@ fn backdrop(mtm: MainThreadMarker, visible: NSRect, dark: bool) -> Retained<NSWi
         ]
     };
     let cg: Vec<_> = colors.iter().map(|color| color.CGColor()).collect();
-    let refs: Vec<&AnyObject> = cg.iter().map(|color| color.as_ref() as &AnyObject).collect();
+    let refs: Vec<&AnyObject> = cg
+        .iter()
+        .map(|color| color.as_ref() as &AnyObject)
+        .collect();
     unsafe { gradient.setColors(Some(&NSArray::from_slice(&refs))) };
     gradient.setStartPoint(CGPoint::new(0.0, 0.0));
     gradient.setEndPoint(CGPoint::new(1.0, 1.0));
@@ -90,7 +97,9 @@ fn backdrop(mtm: MainThreadMarker, visible: NSRect, dark: bool) -> Retained<NSWi
     let first_row_y = (frame.size.height - (rows as f64 * BACKDROP_ROW_PITCH)) / 2.0;
     for row in 0..rows {
         let label = NSTextField::labelWithString(
-            &NSString::from_str("The quick brown fox jumps over the lazy dog — backdrop text 0123456789"),
+            &NSString::from_str(
+                "The quick brown fox jumps over the lazy dog — backdrop text 0123456789",
+            ),
             mtm,
         );
         label.setFont(Some(&NSFont::boldSystemFontOfSize(26.0)));
@@ -143,7 +152,10 @@ fn capture(mtm: MainThreadMarker, dir: &str, name: &str) {
     );
     let path = format!("{dir}/{name}.png");
     let full = format!("{dir}/full.png");
-    Command::new("/usr/sbin/screencapture").args(["-x", &full]).status().expect("screencapture runs");
+    Command::new("/usr/sbin/screencapture")
+        .args(["-x", &full])
+        .status()
+        .expect("screencapture runs");
     let scale = NSScreen::mainScreen(mtm).unwrap().backingScaleFactor();
     let crop = format!(
         "{}x{}+{}+{}",
@@ -152,7 +164,10 @@ fn capture(mtm: MainThreadMarker, dir: &str, name: &str) {
         (x * scale).round().max(0.0),
         (y * scale).round().max(0.0)
     );
-    let status = Command::new("magick").args([&full, "-crop", &crop, "+repage", &path]).status().expect("magick runs");
+    let status = Command::new("magick")
+        .args([&full, "-crop", &crop, "+repage", &path])
+        .status()
+        .expect("magick runs");
     println!("{name}: {region} -> {path} ({status})");
 }
 
@@ -170,7 +185,12 @@ pub fn run(dir: &str) {
     let dictated = "Let's move the standup to Thursday afternoon so the design review has a full morning, and ask Priya to share the";
     let interim_tail = "updated mockups before lunch";
     let full = format!("{dictated} {interim_tail} ");
-    let meter = MicMeterSnapshot { clip_event_counter: 0, level: 150, peak: 200, mic_active: true };
+    let meter = MicMeterSnapshot {
+        clip_event_counter: 0,
+        level: 150,
+        peak: 200,
+        mic_active: true,
+    };
     let empty = text("", None);
 
     let screen = NSScreen::mainScreen(mtm).unwrap().visibleFrame();
@@ -186,7 +206,15 @@ pub fn run(dir: &str) {
                       correction_active: bool,
                       mic: MicMeterSnapshot| {
             overlay.update(
-                mtm, state_value, false, main, error, correction, correction_active, 1.0, mic,
+                mtm,
+                state_value,
+                false,
+                main,
+                error,
+                correction,
+                correction_active,
+                1.0,
+                mic,
                 state_value == STATE_RECORDING,
             );
         };
@@ -204,7 +232,9 @@ pub fn run(dir: &str) {
 
         let interim = text(&full, Some(interim_tail));
         state.set_state(STATE_RECORDING);
-        ticks("1-pop-in", 8, &|| update(STATE_RECORDING, &interim, "", &empty, false, meter));
+        ticks("1-pop-in", 8, &|| {
+            update(STATE_RECORDING, &interim, "", &empty, false, meter)
+        });
         capture(mtm, dir, &format!("{theme}-2-recording-interim"));
 
         let final_text = text(&full, None);
@@ -217,7 +247,14 @@ pub fn run(dir: &str) {
         state.set_overlay_text(full.clone());
         state.begin_finishing_dictation();
         state.set_deepgram_waiting(true);
-        update(STATE_PROCESSING, &final_text, "", &empty, false, MicMeterSnapshot::default());
+        update(
+            STATE_PROCESSING,
+            &final_text,
+            "",
+            &empty,
+            false,
+            MicMeterSnapshot::default(),
+        );
         pump(0.6);
         capture(mtm, dir, &format!("{theme}-10-waiting-finish"));
         state.set_deepgram_waiting(false);
@@ -231,16 +268,37 @@ pub fn run(dir: &str) {
         // The corrected text streams into the overlay while transforming.
         let corrected = text(&full.replace("Thursday", "Friday"), None);
         ticks("4-correction-retract", 8, &|| {
-            update(STATE_TRANSFORMING, &corrected, "", &empty, false, MicMeterSnapshot::default())
+            update(
+                STATE_TRANSFORMING,
+                &corrected,
+                "",
+                &empty,
+                false,
+                MicMeterSnapshot::default(),
+            )
         });
         capture(mtm, dir, &format!("{theme}-5-transforming"));
 
         let done = text(&full.replace("Thursday", "Friday"), None);
-        update(STATE_BUFFER_READY, &done, "", &empty, false, MicMeterSnapshot::default());
+        update(
+            STATE_BUFFER_READY,
+            &done,
+            "",
+            &empty,
+            false,
+            MicMeterSnapshot::default(),
+        );
         pump(0.6);
         capture(mtm, dir, &format!("{theme}-6-buffer-ready"));
 
-        update(STATE_ERROR, &empty, "Deepgram connection failed: 401 Unauthorized", &empty, false, MicMeterSnapshot::default());
+        update(
+            STATE_ERROR,
+            &empty,
+            "Deepgram connection failed: 401 Unauthorized",
+            &empty,
+            false,
+            MicMeterSnapshot::default(),
+        );
         pump(0.6);
         capture(mtm, dir, &format!("{theme}-7-error"));
 

@@ -117,7 +117,11 @@ impl VariableBlur {
         } else {
             set_value(&self.filter, "inputRadius", &NSNumber::new_f64(radius));
             set_value(&self.filter, "inputMaskImage", cg_image_object(mask));
-            set_value(&self.filter, "inputNormalizeEdges", &NSNumber::new_bool(true));
+            set_value(
+                &self.filter,
+                "inputNormalizeEdges",
+                &NSNumber::new_bool(true),
+            );
             let filters = NSArray::from_slice(&[&*self.filter as &AnyObject]);
             // SAFETY: `filters` holds one CAFilter, the type `CALayer.filters`
             // takes; the layer array copies it.
@@ -150,9 +154,11 @@ pub fn apply_glass_internals(glass: &NSView, internals: &GlassInternals) -> bool
         return false;
     };
     let Some(background) = find_layer(&root, &|layer| {
-        layer
-            .filters()
-            .is_some_and(|filters| filters.iter().any(|filter| filter_name(&filter).as_deref() == Some("glassBackground")))
+        layer.filters().is_some_and(|filters| {
+            filters
+                .iter()
+                .any(|filter| filter_name(&filter).as_deref() == Some("glassBackground"))
+        })
     }) else {
         return false;
     };
@@ -208,9 +214,11 @@ pub fn apply_glass_internals(glass: &NSView, internals: &GlassInternals) -> bool
 pub fn read_glass_internals(glass: &NSView) -> Option<GlassInternals> {
     let root = glass.layer()?;
     let background = find_layer(&root, &|layer| {
-        layer
-            .filters()
-            .is_some_and(|filters| filters.iter().any(|filter| filter_name(&filter).as_deref() == Some("glassBackground")))
+        layer.filters().is_some_and(|filters| {
+            filters
+                .iter()
+                .any(|filter| filter_name(&filter).as_deref() == Some("glassBackground"))
+        })
     })?;
     let input = |key: &str| -> Option<f64> {
         let value = value_for_key_path(&background, &format!("filters.glassBackground.{key}"))?;
@@ -245,10 +253,13 @@ pub fn read_glass_internals(glass: &NSView) -> Option<GlassInternals> {
                     .and_then(|value| value.downcast::<NSNumber>().ok())
                     .map(|value| value.doubleValue())
             };
-            internals.highlight_key_amount = number("keyAmount").unwrap_or(internals.highlight_key_amount);
-            internals.highlight_fill_amount = number("fillAmount").unwrap_or(internals.highlight_fill_amount);
+            internals.highlight_key_amount =
+                number("keyAmount").unwrap_or(internals.highlight_key_amount);
+            internals.highlight_fill_amount =
+                number("fillAmount").unwrap_or(internals.highlight_fill_amount);
             internals.highlight_spread = number("keySpread").unwrap_or(internals.highlight_spread);
-            internals.highlight_curvature = number("curvature").unwrap_or(internals.highlight_curvature);
+            internals.highlight_curvature =
+                number("curvature").unwrap_or(internals.highlight_curvature);
         }
     }
     Some(internals)
@@ -296,7 +307,9 @@ fn find_layer(layer: &CALayer, matches: &dyn Fn(&CALayer) -> bool) -> Option<Ret
     }
     // SAFETY: reading the sublayer array of a live layer on the main thread.
     let sublayers = unsafe { layer.sublayers() }?;
-    sublayers.iter().find_map(|sublayer| find_layer(&sublayer, matches))
+    sublayers
+        .iter()
+        .find_map(|sublayer| find_layer(&sublayer, matches))
 }
 
 fn for_each_layer(layer: &CALayer, visit: &mut dyn FnMut(&CALayer)) {
@@ -310,7 +323,9 @@ fn for_each_layer(layer: &CALayer, visit: &mut dyn FnMut(&CALayer)) {
 }
 
 fn filter_name(filter: &AnyObject) -> Option<String> {
-    value_for_key(filter, "name").and_then(|name| name.downcast::<NSString>().ok()).map(|name| name.to_string())
+    value_for_key(filter, "name")
+        .and_then(|name| name.downcast::<NSString>().ok())
+        .map(|name| name.to_string())
 }
 
 fn value_for_key(object: &AnyObject, key: &str) -> Option<Retained<AnyObject>> {

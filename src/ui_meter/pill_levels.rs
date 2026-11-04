@@ -70,15 +70,24 @@ impl PillLevels {
             if now - latest.at <= STALE_SECONDS {
                 targets = self.frame_heights(&levels);
             }
-            if let Some((band, level)) = levels.iter().copied().enumerate().max_by(|a, b| a.1.total_cmp(&b.1)) {
+            if let Some((band, level)) = levels
+                .iter()
+                .copied()
+                .enumerate()
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+            {
                 self.loudest = (level, latest.centres_hz[band]);
             }
         }
-        let fall = self
-            .updated_at
-            .map_or(1.0, |updated_at| (now - updated_at).max(0.0) as f32 * self.tuning.fall_per_second as f32);
+        let fall = self.updated_at.map_or(1.0, |updated_at| {
+            (now - updated_at).max(0.0) as f32 * self.tuning.fall_per_second as f32
+        });
         for (height, target) in self.heights.iter_mut().zip(targets) {
-            *height = if target >= *height { target } else { (*height - fall).max(target) };
+            *height = if target >= *height {
+                target
+            } else {
+                (*height - fall).max(target)
+            };
         }
         self.updated_at = Some(now);
     }
@@ -87,9 +96,14 @@ impl PillLevels {
     /// steadies the noise of the narrow low bands (a few FFT bins each, whose
     /// level jumps by up to 9 dB from frame to frame).
     fn averaged(&self, frames: &[SpectrumFrame]) -> [f32; SPECTRUM_BANDS] {
-        let tilted: Vec<[f32; SPECTRUM_BANDS]> = frames.iter().map(|frame| self.tilted(frame)).collect();
+        let tilted: Vec<[f32; SPECTRUM_BANDS]> =
+            frames.iter().map(|frame| self.tilted(frame)).collect();
         std::array::from_fn(|band| {
-            let power: f32 = tilted.iter().map(|levels| 10f32.powf(levels[band] / 10.0)).sum::<f32>() / tilted.len() as f32;
+            let power: f32 = tilted
+                .iter()
+                .map(|levels| 10f32.powf(levels[band] / 10.0))
+                .sum::<f32>()
+                / tilted.len() as f32;
             (10.0 * power.log10()).max(SILENCE_DB)
         })
     }
@@ -101,7 +115,11 @@ impl PillLevels {
         let tilt = self.tuning.tilt_db_per_octave as f32;
         std::array::from_fn(|band| {
             let level = frame.levels_db[band];
-            if level <= SILENCE_DB { level } else { level + (tilt * (frame.centres_hz[band] / 1_000.0).log2()) }
+            if level <= SILENCE_DB {
+                level
+            } else {
+                level + (tilt * (frame.centres_hz[band] / 1_000.0).log2())
+            }
         })
     }
 
@@ -114,7 +132,10 @@ impl PillLevels {
         let floor_since = at - self.tuning.floor_seconds;
         for (recent, level) in self.recent.iter_mut().zip(levels) {
             recent.push_back((at, *level));
-            while recent.front().is_some_and(|(heard_at, _)| *heard_at < floor_since) {
+            while recent
+                .front()
+                .is_some_and(|(heard_at, _)| *heard_at < floor_since)
+            {
                 recent.pop_front();
             }
         }
@@ -124,7 +145,11 @@ impl PillLevels {
             }
         }
         let top_since = at - self.tuning.top_seconds;
-        while self.loud.front().is_some_and(|(heard_at, _)| *heard_at < top_since) {
+        while self
+            .loud
+            .front()
+            .is_some_and(|(heard_at, _)| *heard_at < top_since)
+        {
             self.loud.pop_front();
         }
     }
@@ -149,9 +174,16 @@ impl PillLevels {
     }
 
     fn floor(&self, band: usize) -> f32 {
-        let floor = self.recent[band].iter().map(|(_, level)| *level).fold(f32::INFINITY, f32::min);
+        let floor = self.recent[band]
+            .iter()
+            .map(|(_, level)| *level)
+            .fold(f32::INFINITY, f32::min);
         // Before anything is heard, the floor is silence.
-        if floor.is_finite() { floor } else { SILENCE_DB }
+        if floor.is_finite() {
+            floor
+        } else {
+            SILENCE_DB
+        }
     }
 
     fn gate(&self, band: usize) -> f32 {
@@ -165,7 +197,8 @@ impl PillLevels {
         if loud.is_empty() {
             return f32::NEG_INFINITY;
         }
-        let index = ((loud.len() - 1) as f64 * self.tuning.top_quantile.clamp(0.0, 1.0)).round() as usize;
+        let index =
+            ((loud.len() - 1) as f64 * self.tuning.top_quantile.clamp(0.0, 1.0)).round() as usize;
         // Selecting rather than sorting: there are tens of thousands of
         // levels in the window.
         *loud.select_nth_unstable_by(index, f32::total_cmp).1
@@ -187,7 +220,10 @@ impl PillLevels {
     /// The range as it stands.
     pub(super) fn range_now(&self) -> PillRange {
         let bands = SPECTRUM_BANDS as f32;
-        let floor_db = (0..SPECTRUM_BANDS).map(|band| self.floor(band)).sum::<f32>() / bands;
+        let floor_db = (0..SPECTRUM_BANDS)
+            .map(|band| self.floor(band))
+            .sum::<f32>()
+            / bands;
         let gate_db = (0..SPECTRUM_BANDS).map(|band| self.gate(band)).sum::<f32>() / bands;
         PillRange {
             floor_db,
@@ -216,7 +252,11 @@ mod tests {
     }
 
     fn frame(at: f64, level: impl Fn(usize) -> f32) -> SpectrumFrame {
-        SpectrumFrame { at, levels_db: std::array::from_fn(level), centres_hz: centres() }
+        SpectrumFrame {
+            at,
+            levels_db: std::array::from_fn(level),
+            centres_hz: centres(),
+        }
     }
 
     /// The room: every band at -80 dB, a little uneven.
@@ -242,11 +282,18 @@ mod tests {
     /// Updates as the overlay does, every 75 ms with the frames heard since
     /// (one every 25 ms), from `start` for `seconds`, hearing `level`, with
     /// no tilt unless `tuning` sets one.
-    fn play(levels: &mut PillLevels, start: f64, seconds: f64, level: impl Fn(usize) -> f32) -> f64 {
+    fn play(
+        levels: &mut PillLevels,
+        start: f64,
+        seconds: f64,
+        level: impl Fn(usize) -> f32,
+    ) -> f64 {
         let mut at = start;
         let end = start + seconds;
         while at < end - 1e-9 {
-            let frames: Vec<SpectrumFrame> = (1..=3).map(|step| frame(at + (0.025 * f64::from(step)), &level)).collect();
+            let frames: Vec<SpectrumFrame> = (1..=3)
+                .map(|step| frame(at + (0.025 * f64::from(step)), &level))
+                .collect();
             at += 0.075;
             levels.update(&frames, at);
         }
@@ -255,7 +302,10 @@ mod tests {
 
     fn untilted() -> PillLevels {
         let mut levels = PillLevels::new();
-        levels.set_tuning(PillTuning { tilt_db_per_octave: 0.0, ..PillTuning::default() });
+        levels.set_tuning(PillTuning {
+            tilt_db_per_octave: 0.0,
+            ..PillTuning::default()
+        });
         levels
     }
 
@@ -263,7 +313,11 @@ mod tests {
     fn the_rooms_noise_keeps_every_pill_down() {
         let mut levels = untilted();
         play(&mut levels, 0.0, 12.0, room);
-        assert!(levels.heights().iter().all(|height| *height == 0.0), "{:?}", levels.heights());
+        assert!(
+            levels.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            levels.heights()
+        );
     }
 
     #[test]
@@ -276,13 +330,21 @@ mod tests {
         for update in 0..200 {
             let frames: Vec<SpectrumFrame> = (1..=3)
                 .map(|step| {
-                    let spike = if update % 2 == 1 && step == 3 { 14.0 } else { 0.0 };
+                    let spike = if update % 2 == 1 && step == 3 {
+                        14.0
+                    } else {
+                        0.0
+                    };
                     frame(at + (0.025 * f64::from(step)), |_| -85.0 + spike)
                 })
                 .collect();
             at += 0.075;
             levels.update(&frames, at);
-            assert!(levels.heights().iter().all(|height| *height == 0.0), "update {update}: {:?}", levels.heights());
+            assert!(
+                levels.heights().iter().all(|height| *height == 0.0),
+                "update {update}: {:?}",
+                levels.heights()
+            );
         }
     }
 
@@ -294,7 +356,10 @@ mod tests {
         let heights = levels.heights();
         // The formants stand above the trough between them, and the trough
         // above the quiet top.
-        assert!(heights[8] > heights[16] && heights[23] > heights[16], "{heights:?}");
+        assert!(
+            heights[8] > heights[16] && heights[23] > heights[16],
+            "{heights:?}"
+        );
         assert!(heights[16] > heights[35], "{heights:?}");
         assert!(heights[8] > 0.8, "{heights:?}");
     }
@@ -333,7 +398,11 @@ mod tests {
         // all the way.
         let fallen = before - levels.heights()[8];
         let expected = (PillTuning::default().fall_per_second * 0.075) as f32;
-        assert!((fallen - expected).abs() < 1e-4, "{before} -> {}", levels.heights()[8]);
+        assert!(
+            (fallen - expected).abs() < 1e-4,
+            "{before} -> {}",
+            levels.heights()[8]
+        );
         play(&mut levels, at + 0.075, 1.0, room);
         assert_eq!(levels.heights()[8], 0.0);
     }
@@ -346,7 +415,11 @@ mod tests {
         for step in 1..=20 {
             levels.update(&[], at + (0.075 * f64::from(step)));
         }
-        assert!(levels.heights().iter().all(|height| *height == 0.0), "{:?}", levels.heights());
+        assert!(
+            levels.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            levels.heights()
+        );
     }
 
     #[test]
@@ -355,7 +428,13 @@ mod tests {
         // only the hum, it is the floor there.
         let mut levels = untilted();
         let at = play(&mut levels, 0.0, 3.0, room);
-        play(&mut levels, at, 15.0, |band| if (2..=3).contains(&band) { -40.0 } else { room(band) });
+        play(&mut levels, at, 15.0, |band| {
+            if (2..=3).contains(&band) {
+                -40.0
+            } else {
+                room(band)
+            }
+        });
         assert_eq!(levels.heights()[2], 0.0, "{:?}", levels.heights());
     }
 
@@ -365,7 +444,11 @@ mod tests {
         let at = play(&mut levels, 0.0, 12.0, room);
         let at = play(&mut levels, at, 5.0, |_| -140.0);
         play(&mut levels, at, 1.0, room);
-        assert!(levels.heights().iter().all(|height| *height == 0.0), "{:?}", levels.heights());
+        assert!(
+            levels.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            levels.heights()
+        );
     }
 
     #[test]
@@ -374,7 +457,11 @@ mod tests {
         // bands) from the first frame on.
         let mut levels = untilted();
         play(&mut levels, 0.0, 1.0, |band| room(band) + 14.0);
-        assert!(levels.heights().iter().all(|height| *height == 0.0), "{:?}", levels.heights());
+        assert!(
+            levels.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            levels.heights()
+        );
     }
 
     #[test]
@@ -391,8 +478,16 @@ mod tests {
         let mut levels = untilted();
         let at = play(&mut levels, 0.0, 3.0, room);
         levels.update(&[frame(at, voice(0.0))], at + 1.0);
-        assert!(levels.heights().iter().all(|height| *height == 0.0), "{:?}", levels.heights());
-        assert!(levels.range_now().loudest_db > -40.0, "{:?}", levels.range_now());
+        assert!(
+            levels.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            levels.heights()
+        );
+        assert!(
+            levels.range_now().loudest_db > -40.0,
+            "{:?}",
+            levels.range_now()
+        );
     }
 
     #[test]
@@ -401,17 +496,29 @@ mod tests {
         let at = play(&mut flat, 0.0, 3.0, room);
         play(&mut flat, at, 2.0, voice(0.0));
         let mut tilted = PillLevels::new();
-        tilted.set_tuning(PillTuning { tilt_db_per_octave: 6.0, ..PillTuning::default() });
+        tilted.set_tuning(PillTuning {
+            tilt_db_per_octave: 6.0,
+            ..PillTuning::default()
+        });
         let at = play(&mut tilted, 0.0, 3.0, room);
         play(&mut tilted, at, 2.0, voice(0.0));
-        assert!(tilted.heights()[23] - tilted.heights()[8] > flat.heights()[23] - flat.heights()[8], "{:?} {:?}", flat.heights(), tilted.heights());
+        assert!(
+            tilted.heights()[23] - tilted.heights()[8] > flat.heights()[23] - flat.heights()[8],
+            "{:?} {:?}",
+            flat.heights(),
+            tilted.heights()
+        );
     }
 
     #[test]
     fn a_higher_noise_gate_keeps_more_of_a_quiet_voice_down() {
         let mut levels = untilted();
         let at = play(&mut levels, 0.0, 12.0, room);
-        levels.set_tuning(PillTuning { tilt_db_per_octave: 0.0, noise_gate_db: 25.0, ..PillTuning::default() });
+        levels.set_tuning(PillTuning {
+            tilt_db_per_octave: 0.0,
+            noise_gate_db: 25.0,
+            ..PillTuning::default()
+        });
         play(&mut levels, at, 1.0, voice(-25.0));
         // The quiet top (-85 dB) and trough (-75 dB) stay down; the formants
         // (-55 and -63 dB) clear the -55 dB gate barely or not at all.
@@ -427,11 +534,23 @@ mod tests {
         let at = play(&mut long, 0.0, 3.0, room);
         play(&mut long, at, 2.0, louder);
         let mut short = PillLevels::new();
-        short.set_tuning(PillTuning { tilt_db_per_octave: 0.0, floor_seconds: 1.0, ..PillTuning::default() });
+        short.set_tuning(PillTuning {
+            tilt_db_per_octave: 0.0,
+            floor_seconds: 1.0,
+            ..PillTuning::default()
+        });
         let at = play(&mut short, 0.0, 3.0, room);
         play(&mut short, at, 2.0, louder);
-        assert!(long.heights().iter().any(|height| *height > 0.0), "{:?}", long.heights());
-        assert!(short.heights().iter().all(|height| *height == 0.0), "{:?}", short.heights());
+        assert!(
+            long.heights().iter().any(|height| *height > 0.0),
+            "{:?}",
+            long.heights()
+        );
+        assert!(
+            short.heights().iter().all(|height| *height == 0.0),
+            "{:?}",
+            short.heights()
+        );
     }
 
     #[test]
@@ -440,10 +559,19 @@ mod tests {
         let at = play(&mut narrow, 0.0, 3.0, room);
         play(&mut narrow, at, 0.3, voice(-30.0));
         let mut wide = PillLevels::new();
-        wide.set_tuning(PillTuning { tilt_db_per_octave: 0.0, min_span_db: 60.0, ..PillTuning::default() });
+        wide.set_tuning(PillTuning {
+            tilt_db_per_octave: 0.0,
+            min_span_db: 60.0,
+            ..PillTuning::default()
+        });
         let at = play(&mut wide, 0.0, 3.0, room);
         play(&mut wide, at, 0.3, voice(-30.0));
-        assert!(wide.heights()[8] + 0.1 < narrow.heights()[8], "{:?} {:?}", narrow.heights()[8], wide.heights()[8]);
+        assert!(
+            wide.heights()[8] + 0.1 < narrow.heights()[8],
+            "{:?} {:?}",
+            narrow.heights()[8],
+            wide.heights()[8]
+        );
     }
 
     #[test]
@@ -452,7 +580,11 @@ mod tests {
         // fills the pills sooner.
         let run = |top_seconds: f64| {
             let mut levels = PillLevels::new();
-            levels.set_tuning(PillTuning { tilt_db_per_octave: 0.0, top_seconds, ..PillTuning::default() });
+            levels.set_tuning(PillTuning {
+                tilt_db_per_octave: 0.0,
+                top_seconds,
+                ..PillTuning::default()
+            });
             let at = play(&mut levels, 0.0, 3.0, room);
             let at = play(&mut levels, at, 1.0, voice(20.0));
             play(&mut levels, at, 2.0, voice(-10.0));
@@ -465,7 +597,11 @@ mod tests {
     fn a_lower_top_quantile_fills_the_pills_more() {
         let run = |top_quantile: f64| {
             let mut levels = PillLevels::new();
-            levels.set_tuning(PillTuning { tilt_db_per_octave: 0.0, top_quantile, ..PillTuning::default() });
+            levels.set_tuning(PillTuning {
+                tilt_db_per_octave: 0.0,
+                top_quantile,
+                ..PillTuning::default()
+            });
             let at = play(&mut levels, 0.0, 3.0, room);
             play(&mut levels, at, 2.0, voice(0.0));
             levels.heights().iter().sum::<f32>()

@@ -9,10 +9,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSApplication, NSButton,
-    NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu, NSMenuItem,
-    NSStatusBar, NSStatusItem, NSTextDelegate, NSTextViewDelegate, NSWindowDelegate, NSWorkspace,
-    NSWorkspaceOpenConfiguration,
+    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSButton, NSImageScaling, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSTextDelegate,
+    NSTextViewDelegate, NSWindowDelegate, NSWorkspace, NSWorkspaceOpenConfiguration,
 };
 use objc2_foundation::{
     ns_string, MainThreadMarker, NSNotification, NSObject, NSObjectNSDelayedPerforming,
@@ -767,7 +766,8 @@ impl AppDelegate {
                     Ok(written) => (written, None),
                     Err(error) => (Default::default(), Some(error)),
                 };
-            let mut load_problems = settings_window.load_from_config(&current_file_config, &written);
+            let mut load_problems =
+                settings_window.load_from_config(&current_file_config, &written);
             load_problems.extend(written_problem);
             let transformation_status =
                 self.sync_transformation_provider_controls(ModelListTrigger::Resync);
@@ -934,7 +934,9 @@ impl AppDelegate {
         )
         .map(|request| {
             request.with_ollama_base_url(
-                settings_window.transformation_ollama_base_url_value().as_deref(),
+                settings_window
+                    .transformation_ollama_base_url_value()
+                    .as_deref(),
             )
         })
     }
@@ -947,7 +949,9 @@ impl AppDelegate {
         let mut effective_config = self.ivars().config_store.current_file();
         effective_config.deepgram.api_key = settings_window.deepgram_api_key_value();
 
-        Ok(DeepgramCheckRequest::new(effective_config.resolve_deepgram_api_key()?))
+        Ok(DeepgramCheckRequest::new(
+            effective_config.resolve_deepgram_api_key()?,
+        ))
     }
 
     fn sync_transformation_provider_ui(&self, trigger: ModelListTrigger) {
@@ -972,7 +976,9 @@ impl AppDelegate {
         let provider_selected = provider.is_some();
         settings_window.set_transformation_model_controls_enabled(provider_selected);
         settings_window.set_transformation_ollama_server_enabled(
-            provider.as_deref().and_then(|provider| provider.parse().ok())
+            provider
+                .as_deref()
+                .and_then(|provider| provider.parse().ok())
                 == Some(config::TransformationProvider::Ollama),
         );
         settings_window.sync_transformation_model_placeholder();
@@ -988,8 +994,12 @@ impl AppDelegate {
                 // Only a loaded config selects an unsupported provider; the
                 // message matches its `config::problems` line so the status
                 // shows it once.
-                let provider = settings_window.transformation_provider_value().unwrap_or_default();
-                return Some(config::unsupported_provider_problem(&provider).describe(settings_name));
+                let provider = settings_window
+                    .transformation_provider_value()
+                    .unwrap_or_default();
+                return Some(
+                    config::unsupported_provider_problem(&provider).describe(settings_name),
+                );
             }
         };
         let saved = self.ivars().config_store.current_file().transformation;
@@ -1218,14 +1228,20 @@ impl AppDelegate {
 
         self.ivars().audio_controller.clear_preview_audio_device();
 
-        let audio_apply_effect = match self.ivars().audio_controller.apply_mic_config(&runtime_config.mic) {
+        let audio_apply_effect = match self
+            .ivars()
+            .audio_controller
+            .apply_mic_config(&runtime_config.mic)
+        {
             Ok(effect) => effect,
             Err(error) => {
-                let login_item_restore = (started_on_login != start_on_login).then(|| {
-                    crate::auto_launch::set_start_on_login(started_on_login).map(|_| ())
-                });
-                let error =
-                    settings_rollback_error(error, config_file_snapshot.restore(), login_item_restore);
+                let login_item_restore = (started_on_login != start_on_login)
+                    .then(|| crate::auto_launch::set_start_on_login(started_on_login).map(|_| ()));
+                let error = settings_rollback_error(
+                    error,
+                    config_file_snapshot.restore(),
+                    login_item_restore,
+                );
                 settings_window.set_status(&error);
                 show_modal_alert("Couldn't apply audio settings", &error);
                 return;
@@ -1508,9 +1524,8 @@ fn open_system_settings_url(url: &'static str, fallback: Option<&'static str>) {
                         message,
                         fallback
                     );
-                    DispatchQueue::main().exec_async(move || {
-                        open_system_settings_url(fallback, None)
-                    });
+                    DispatchQueue::main()
+                        .exec_async(move || open_system_settings_url(fallback, None));
                 }
                 None => log::error!("failed to open System Settings at {}: {}", url, message),
             }
@@ -1963,10 +1978,9 @@ mod tests {
     use super::{
         audio_startup_failure_alert_text, config_file_is_missing, config_problems_alert_text,
         deepgram_status_title, missing_config_alert_text, overlay_style_from_config,
-        settings_deepgram_api_key_problem, settings_presentation_turn_selector, settings_rollback_error, status_poll_selector,
-        validate_settings_config,
-        AppDelegate, StatusPollOutcome, StatusPollState, UiSnapshot,
-        STATUS_POLL_BACKGROUND_REFRESH_TICKS,
+        settings_deepgram_api_key_problem, settings_presentation_turn_selector,
+        settings_rollback_error, status_poll_selector, validate_settings_config, AppDelegate,
+        StatusPollOutcome, StatusPollState, UiSnapshot, STATUS_POLL_BACKGROUND_REFRESH_TICKS,
     };
     use crate::config::{self, Config};
     use crate::settings_window::actions::SettingsAction;
@@ -2043,17 +2057,34 @@ mod tests {
         let state = AppState::new();
         for phase in [STATE_RECORDING, STATE_PROCESSING] {
             state.set_state(phase);
-            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+            assert_eq!(
+                deepgram_status_title(state.get_state(), state.is_deepgram_waiting()),
+                ""
+            );
             state.set_deepgram_waiting(true);
             state.dismiss_overlay();
-            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "Waiting…");
+            assert_eq!(
+                deepgram_status_title(state.get_state(), state.is_deepgram_waiting()),
+                "Waiting…"
+            );
             state.set_deepgram_waiting(false);
-            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+            assert_eq!(
+                deepgram_status_title(state.get_state(), state.is_deepgram_waiting()),
+                ""
+            );
         }
         state.set_deepgram_waiting(true);
-        for phase in [STATE_IDLE, STATE_ERROR, STATE_BUFFER_READY, STATE_TRANSFORMING] {
+        for phase in [
+            STATE_IDLE,
+            STATE_ERROR,
+            STATE_BUFFER_READY,
+            STATE_TRANSFORMING,
+        ] {
             state.set_state(phase);
-            assert_eq!(deepgram_status_title(state.get_state(), state.is_deepgram_waiting()), "");
+            assert_eq!(
+                deepgram_status_title(state.get_state(), state.is_deepgram_waiting()),
+                ""
+            );
         }
     }
 
@@ -2119,7 +2150,10 @@ mod tests {
 
     #[test]
     fn a_missing_deepgram_key_on_save_names_its_settings_row() {
-        assert_eq!(settings_deepgram_api_key_problem(Ok("key".to_owned())), None);
+        assert_eq!(
+            settings_deepgram_api_key_problem(Ok("key".to_owned())),
+            None
+        );
         assert_eq!(
             settings_deepgram_api_key_problem(Err("Deepgram API key is missing.".to_owned()))
                 .as_deref(),
@@ -2235,9 +2269,15 @@ mod tests {
         let mut poll = StatusPollState::new();
         poll.advance(&UiSnapshot::capture(&state), false);
         state.set_deepgram_waiting(true);
-        assert_eq!(poll.advance(&UiSnapshot::capture(&state), false), StatusPollOutcome::Refresh { ui_changed: true });
+        assert_eq!(
+            poll.advance(&UiSnapshot::capture(&state), false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
         state.set_deepgram_waiting(false);
-        assert_eq!(poll.advance(&UiSnapshot::capture(&state), false), StatusPollOutcome::Refresh { ui_changed: true });
+        assert_eq!(
+            poll.advance(&UiSnapshot::capture(&state), false),
+            StatusPollOutcome::Refresh { ui_changed: true }
+        );
     }
 
     #[test]

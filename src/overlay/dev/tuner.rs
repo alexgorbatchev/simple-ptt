@@ -12,25 +12,27 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSControlStateValueOn,
-    NSFloatingWindowLevel, NSGridView, NSPasteboard, NSPasteboardTypeString, NSPopUpButton, NSScreen,
-    NSSlider, NSStackView, NSStackViewGravity, NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton,
+    NSControlStateValueOn, NSFloatingWindowLevel, NSGridView, NSPasteboard, NSPasteboardTypeString,
+    NSPopUpButton, NSScreen, NSSlider, NSStackView, NSStackViewGravity, NSTextField,
+    NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer};
+use objc2_foundation::{
+    NSArray, NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSString, NSTimer,
+};
 
 use crate::app::overlay_style_from_config;
 use crate::audio::{normalize_meter_amplitude, AudioController};
 use crate::config::Config;
-use crate::settings::LiveConfigStore;
-use crate::transcription::{spawn_transcription_thread, TranscriptionController};
-use crate::state::SPECTRUM_BANDS;
-use crate::ui_meter::{PillRange, PillTuning};
-use crate::overlay::OverlayStyle;
-use crate::settings_window::form::METER_STYLE_TITLES;
 use crate::overlay::glass::{
     CorrectionEasing, CorrectionEffect, GlassStyle, GlassTuning, HaloCurve, OverlayAppearance,
 };
+use crate::overlay::OverlayStyle;
+use crate::settings::LiveConfigStore;
+use crate::settings_window::form::METER_STYLE_TITLES;
+use crate::state::SPECTRUM_BANDS;
+use crate::transcription::{spawn_transcription_thread, TranscriptionController};
+use crate::ui_meter::{PillRange, PillTuning};
 
 const EFFECTS: [CorrectionEffect; 5] = [
     CorrectionEffect::Emerge,
@@ -53,9 +55,8 @@ const CURVE_PRESETS: [(&str, HaloCurve); 4] = [
 ];
 use crate::overlay::OverlayWindow;
 use crate::state::{
-    normalized_meter_value,
-    AppState, MicMeterSnapshot, OverlayText,
-    STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
+    normalized_meter_value, AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY,
+    STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
 };
 
 const SCENARIOS: [&str; 4] = ["Recording", "Transforming", "Buffer ready", "Error"];
@@ -77,8 +78,16 @@ fn voice_level_db(tick: u64) -> f32 {
     if tick % 32 >= 28 || tick % 80 >= 60 {
         return VOICE_ROOM_DB;
     }
-    let louder = if (tick / VOICE_PHASE_TICKS) % 2 == 1 { VOICE_LOUDER_DB } else { 0.0 };
-    let syllable = if tick % 8 == 7 { -50.0 } else { -44.0 + (7.0 * ((tick as f32) * 0.9).sin().abs()) };
+    let louder = if (tick / VOICE_PHASE_TICKS) % 2 == 1 {
+        VOICE_LOUDER_DB
+    } else {
+        0.0
+    };
+    let syllable = if tick % 8 == 7 {
+        -50.0
+    } else {
+        -44.0 + (7.0 * ((tick as f32) * 0.9).sin().abs())
+    };
     syllable + louder
 }
 
@@ -96,7 +105,9 @@ fn voice_spectrum_db(tick: u64, level_db: f32, centre_hz: f32) -> f32 {
         return VOICE_ROOM_SPECTRUM_DB + wobble;
     }
     let time = tick as f32 * 0.075;
-    let formant = |hz: f32, height: f32| height * (-(centre_hz / hz).log2().powi(2) / (2.0 * 0.3 * 0.3)).exp();
+    let formant = |hz: f32, height: f32| {
+        height * (-(centre_hz / hz).log2().powi(2) / (2.0 * 0.3 * 0.3)).exp()
+    };
     let first = formant(500.0 + (250.0 * (time * 2.1).sin()), 14.0);
     let second = formant(1_500.0 + (700.0 * ((time * 1.3) + 1.0).sin()), 10.0);
     let slope = -6.0 * (centre_hz / 300.0).log2().max(0.0);
@@ -110,7 +121,11 @@ const NARRATED_CORRECTION: &str = "make it Friday instead and keep the review on
 const SHOW_CORRECTION: &str = "Show correction";
 const HIDE_CORRECTION: &str = "Hide correction";
 const STYLES: [GlassStyle; 2] = [GlassStyle::Regular, GlassStyle::Clear];
-const APPEARANCES: [OverlayAppearance; 3] = [OverlayAppearance::System, OverlayAppearance::Light, OverlayAppearance::Dark];
+const APPEARANCES: [OverlayAppearance; 3] = [
+    OverlayAppearance::System,
+    OverlayAppearance::Light,
+    OverlayAppearance::Dark,
+];
 const STYLE_TITLES: [&str; 2] = ["Regular", "Clear"];
 const APPEARANCE_TITLES: [&str; 3] = ["System", "Light", "Dark"];
 
@@ -160,19 +175,34 @@ const CHOICES: [ChoiceField; 5] = [
     ChoiceField {
         name: "appearance",
         titles: &APPEARANCE_TITLES,
-        get: |t| APPEARANCES.iter().position(|v| *v == t.appearance).unwrap_or(0),
+        get: |t| {
+            APPEARANCES
+                .iter()
+                .position(|v| *v == t.appearance)
+                .unwrap_or(0)
+        },
         set: |t, i| t.appearance = APPEARANCES[i],
     },
     ChoiceField {
         name: "correction_effect",
         titles: &EFFECT_TITLES,
-        get: |t| EFFECTS.iter().position(|v| *v == t.correction_effect).unwrap_or(0),
+        get: |t| {
+            EFFECTS
+                .iter()
+                .position(|v| *v == t.correction_effect)
+                .unwrap_or(0)
+        },
         set: |t, i| t.correction_effect = EFFECTS[i],
     },
     ChoiceField {
         name: "correction_easing",
         titles: &EASING_TITLES,
-        get: |t| EASINGS.iter().position(|v| *v == t.correction_easing).unwrap_or(0),
+        get: |t| {
+            EASINGS
+                .iter()
+                .position(|v| *v == t.correction_easing)
+                .unwrap_or(0)
+        },
         set: |t, i| t.correction_easing = EASINGS[i],
     },
     ChoiceField {
@@ -208,17 +238,37 @@ static GENERAL: [NumberField; 14] = [
 
 static INTERNALS: [NumberField; 12] = [
     number!("blur_radius", 0.0, 60.0, internals.blur_radius),
-    number!("refraction_amount", -300.0, 300.0, internals.refraction_amount),
+    number!(
+        "refraction_amount",
+        -300.0,
+        300.0,
+        internals.refraction_amount
+    ),
     number!("refraction_height", 0.0, 120.0, internals.refraction_height),
     number!("face_opacity", 0.0, 1.0, internals.face_opacity),
     number!("face_white", 0.0, 1.5, internals.face_white),
     number!("face_black", 0.0, 1.0, internals.face_black),
     number!("face_saturation", 0.0, 3.0, internals.face_saturation),
     number!("shadow_opacity", 0.0, 1.0, internals.shadow_opacity),
-    number!("highlight_key_amount", 0.0, 2.0, internals.highlight_key_amount),
-    number!("highlight_fill_amount", 0.0, 2.0, internals.highlight_fill_amount),
+    number!(
+        "highlight_key_amount",
+        0.0,
+        2.0,
+        internals.highlight_key_amount
+    ),
+    number!(
+        "highlight_fill_amount",
+        0.0,
+        2.0,
+        internals.highlight_fill_amount
+    ),
     number!("highlight_spread", 0.0, 6.0, internals.highlight_spread),
-    number!("highlight_curvature", 0.0, 2.0, internals.highlight_curvature),
+    number!(
+        "highlight_curvature",
+        0.0,
+        2.0,
+        internals.highlight_curvature
+    ),
 ];
 
 /// The pills' values (`PillTuning`), each with the range worth trying.
@@ -237,7 +287,11 @@ static PILLS: [NumberField<PillTuning>; 8] = [
 /// app's own audio path.
 const VOICES: [&str; 2] = ["Synthetic", "Microphone"];
 
-type NumberControl<T = GlassTuning> = (&'static NumberField<T>, Retained<NSSlider>, Retained<NSTextField>);
+type NumberControl<T = GlassTuning> = (
+    &'static NumberField<T>,
+    Retained<NSSlider>,
+    Retained<NSTextField>,
+);
 
 /// The microphone, captured as the app captures it while recording: the
 /// audio controller builds the stream, whose callback feeds the meter and
@@ -253,7 +307,10 @@ impl Microphone {
     /// Captures the microphone set in the user's config (`[mic]`: device,
     /// gain, sample rate), publishing to `state`.
     fn start(state: &std::sync::Arc<AppState>) -> Result<Self, String> {
-        let config = Config { mic: crate::config::load_config().mic, ..Config::default() };
+        let config = Config {
+            mic: crate::config::load_config().mic,
+            ..Config::default()
+        };
         let store = LiveConfigStore::new(config.clone(), config, crate::config::config_path()?);
         let transcription = spawn_transcription_thread(state.clone(), store.clone());
         let (audio, error) = AudioController::new(state.clone(), transcription.clone(), store);
@@ -261,7 +318,10 @@ impl Microphone {
             return Err(error);
         }
         state.set_state(STATE_RECORDING);
-        Ok(Self { _audio: audio, _transcription: transcription })
+        Ok(Self {
+            _audio: audio,
+            _transcription: transcription,
+        })
     }
 }
 
@@ -368,10 +428,16 @@ fn narration_frame(word_count: usize, step: u64) -> NarrationFrame {
     let speaking = word_count as u64 * NARRATION_TICKS_PER_WORD;
     let step = step % (speaking + NARRATION_HOLD_TICKS);
     if step >= speaking {
-        return NarrationFrame { spoken: word_count, finals: word_count };
+        return NarrationFrame {
+            spoken: word_count,
+            finals: word_count,
+        };
     }
     let spoken = ((step / NARRATION_TICKS_PER_WORD) as usize + 1).min(word_count);
-    NarrationFrame { spoken, finals: spoken.saturating_sub(NARRATION_INTERIM_WORDS) }
+    NarrationFrame {
+        spoken,
+        finals: spoken.saturating_sub(NARRATION_INTERIM_WORDS),
+    }
 }
 
 /// The first `frame.spoken` words of `words`, with the ones after
@@ -433,12 +499,12 @@ impl TunerState {
     /// or why the microphone could not start.
     fn show_pill_readout(&self) {
         let controls = self.controls.borrow();
-        let Some(controls) = controls.as_ref() else { return };
+        let Some(controls) = controls.as_ref() else {
+            return;
+        };
         let text = match self.microphone_error.borrow().as_deref() {
             Some(error) => format!("microphone: {error}"),
-            None => {
-                pill_readout_text(self.overlay.pill_range_now())
-            }
+            None => pill_readout_text(self.overlay.pill_range_now()),
         };
         let text = NSString::from_str(&text);
         controls.pill_readout.setStringValue(&text);
@@ -485,7 +551,10 @@ impl TunerState {
             if let Some(own) = self.overlay.glass_internals_now() {
                 tuning.internals = own;
                 for (field, slider, label) in &controls.numbers {
-                    if INTERNALS.iter().any(|internal| std::ptr::eq(internal, *field)) {
+                    if INTERNALS
+                        .iter()
+                        .any(|internal| std::ptr::eq(internal, *field))
+                    {
                         let value = (field.get)(&tuning);
                         slider.setDoubleValue(value);
                         label.setStringValue(&NSString::from_str(&format_value(value)));
@@ -493,7 +562,9 @@ impl TunerState {
                 }
             }
         }
-        controls.curve_values.setStringValue(&NSString::from_str(&format_curve(tuning.halo_curve)));
+        controls
+            .curve_values
+            .setStringValue(&NSString::from_str(&format_curve(tuning.halo_curve)));
         self.refresh_enabled(&tuning);
         tuning
     }
@@ -551,9 +622,13 @@ impl TunerState {
         let y_max = curve_editor::default_y_max(tuning.halo_curve);
         controls.curve_editor.set_y_max(y_max);
         controls.curve_range.setDoubleValue(y_max);
-        controls.curve_range_value.setStringValue(&NSString::from_str(&format_value(y_max)));
+        controls
+            .curve_range_value
+            .setStringValue(&NSString::from_str(&format_value(y_max)));
         controls.curve_editor.set_curve(tuning.halo_curve);
-        controls.curve_values.setStringValue(&NSString::from_str(&format_curve(tuning.halo_curve)));
+        controls
+            .curve_values
+            .setStringValue(&NSString::from_str(&format_curve(tuning.halo_curve)));
         self.refresh_enabled(tuning);
     }
 
@@ -563,7 +638,9 @@ impl TunerState {
     fn publish_voice(&self, tick: u64, level_db: f32) {
         let frame = crate::state::SpectrumFrame {
             at: objc2_quartz_core::CACurrentMediaTime(),
-            levels_db: std::array::from_fn(|band| voice_spectrum_db(tick, level_db, self.spectrum_centres_hz[band])),
+            levels_db: std::array::from_fn(|band| {
+                voice_spectrum_db(tick, level_db, self.spectrum_centres_hz[band])
+            }),
             centres_hz: self.spectrum_centres_hz,
         };
         let _ = self.app_state.spectrum_sender().try_send(frame);
@@ -576,7 +653,8 @@ impl TunerState {
             if changed_at.elapsed() >= Duration::from_millis(300) {
                 self.repop_after.set(None);
                 let pop_out = Duration::from_secs_f64(self.overlay.glass_tuning().pop_seconds);
-                self.hidden_until.set(Some(Instant::now() + pop_out + Duration::from_millis(60)));
+                self.hidden_until
+                    .set(Some(Instant::now() + pop_out + Duration::from_millis(60)));
             }
         }
         if let Some(until) = self.hidden_until.get() {
@@ -624,10 +702,20 @@ impl TunerState {
             // The corrected text streams into the overlay while transforming.
             1 => (STATE_TRANSFORMING, &corrected_text, "", &live, quiet),
             2 => (STATE_BUFFER_READY, &corrected_text, "", &live, quiet),
-            _ => (STATE_ERROR, &live, "Deepgram connection failed: 401 Unauthorized", &live, quiet),
+            _ => (
+                STATE_ERROR,
+                &live,
+                "Deepgram connection failed: 401 Unauthorized",
+                &live,
+                quiet,
+            ),
         };
         let correction_active = self.correction_shown.get();
-        let correction = if correction_active { &correction_text } else { scenario_correction };
+        let correction = if correction_active {
+            &correction_text
+        } else {
+            scenario_correction
+        };
         // The narration loop speaks the transcript, or, with the correction
         // shown, holds the transcript final and speaks the correction.
         let (narrated_main, narrated_correction);
@@ -640,7 +728,13 @@ impl TunerState {
             let words = |text: &str| text.split_whitespace().count();
             if correction_active {
                 let all = words(NARRATED_TRANSCRIPT);
-                narrated_main = narration_text(NARRATED_TRANSCRIPT, NarrationFrame { spoken: all, finals: all });
+                narrated_main = narration_text(
+                    NARRATED_TRANSCRIPT,
+                    NarrationFrame {
+                        spoken: all,
+                        finals: all,
+                    },
+                );
                 narrated_correction = narration_text(
                     NARRATED_CORRECTION,
                     narration_frame(words(NARRATED_CORRECTION), step),
@@ -657,7 +751,18 @@ impl TunerState {
             (main, correction)
         };
         let mtm = MainThreadMarker::new().expect("main thread");
-        self.overlay.update(mtm, state, false, main, error, correction, correction_active, 1.0, mic, state == STATE_RECORDING);
+        self.overlay.update(
+            mtm,
+            state,
+            false,
+            main,
+            error,
+            correction,
+            correction_active,
+            1.0,
+            mic,
+            state == STATE_RECORDING,
+        );
     }
 }
 
@@ -813,13 +918,27 @@ fn name_label(mtm: MainThreadMarker, text: &str) -> Retained<NSTextField> {
 /// so its changing numbers never resize the grid and move the controls.
 /// Longer text (a microphone error) is cut short, and whole in its tooltip.
 fn readout_label(mtm: MainThreadMarker) -> Retained<NSTextField> {
-    let label = name_label(mtm, &pill_readout_text(PillRange { floor_db: -100.0, gate_db: -100.0, top_db: -100.0, loudest_db: -100.0, loudest_hz: 10_000.0 }));
-    label.setFont(Some(&objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
-        objc2_app_kit::NSFont::smallSystemFontSize(),
-        unsafe { objc2_app_kit::NSFontWeightRegular },
-    )));
+    let label = name_label(
+        mtm,
+        &pill_readout_text(PillRange {
+            floor_db: -100.0,
+            gate_db: -100.0,
+            top_db: -100.0,
+            loudest_db: -100.0,
+            loudest_hz: 10_000.0,
+        }),
+    );
+    label.setFont(Some(
+        &objc2_app_kit::NSFont::monospacedDigitSystemFontOfSize_weight(
+            objc2_app_kit::NSFont::smallSystemFontSize(),
+            unsafe { objc2_app_kit::NSFontWeightRegular },
+        ),
+    ));
     label.setLineBreakMode(objc2_app_kit::NSLineBreakMode::ByTruncatingTail);
-    label.widthAnchor().constraintEqualToConstant(label.fittingSize().width).setActive(true);
+    label
+        .widthAnchor()
+        .constraintEqualToConstant(label.fittingSize().width)
+        .setActive(true);
     label.setStringValue(&NSString::from_str(""));
     label
 }
@@ -841,7 +960,12 @@ fn small(control: &objc2_app_kit::NSControl) {
     )));
 }
 
-fn popup(mtm: MainThreadMarker, titles: &[&str], target: &AnyObject, action: objc2::runtime::Sel) -> Retained<NSPopUpButton> {
+fn popup(
+    mtm: MainThreadMarker,
+    titles: &[&str],
+    target: &AnyObject,
+    action: objc2::runtime::Sel,
+) -> Retained<NSPopUpButton> {
     let popup = NSPopUpButton::initWithFrame_pullsDown(
         NSPopUpButton::alloc(mtm),
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(200.0, 26.0)),
@@ -880,10 +1004,17 @@ fn slider_rows<T: 'static>(
         };
         slider.setContinuous(true);
         small(&slider);
-        slider.widthAnchor().constraintEqualToConstant(150.0).setActive(true);
+        slider
+            .widthAnchor()
+            .constraintEqualToConstant(150.0)
+            .setActive(true);
         let value_label = name_label(mtm, "0.00");
         let name = name_label(mtm, field.name);
-        rows.push(NSArray::from_retained_slice(&[view(&name), view(&slider), view(&value_label)]));
+        rows.push(NSArray::from_retained_slice(&[
+            view(&name),
+            view(&slider),
+            view(&value_label),
+        ]));
         numbers.push((field, slider, value_label));
         names.push((field.name, name));
     }
@@ -932,7 +1063,9 @@ pub fn run() {
         microphone: RefCell::new(None),
         microphone_error: RefCell::new(None),
     });
-    let tuner = OverlayTuner::alloc(mtm).set_ivars(TunerIvars { state: state.clone() });
+    let tuner = OverlayTuner::alloc(mtm).set_ivars(TunerIvars {
+        state: state.clone(),
+    });
     let tuner: Retained<OverlayTuner> = unsafe { msg_send![super(tuner), init] };
     let target: &AnyObject = &tuner;
 
@@ -940,7 +1073,10 @@ pub fn run() {
     let meter_titles: Vec<&str> = METER_STYLE_TITLES.iter().map(|(_, title)| *title).collect();
     let meter = popup(mtm, &meter_titles, target, sel!(meterChanged:));
     let configured_meter_style = state.overlay_style.borrow().meter_style;
-    if let Some(index) = METER_STYLE_TITLES.iter().position(|(meter_style, _)| *meter_style == configured_meter_style) {
+    if let Some(index) = METER_STYLE_TITLES
+        .iter()
+        .position(|(meter_style, _)| *meter_style == configured_meter_style)
+    {
         meter.selectItemAtIndex(index as isize);
     }
     let mut left_rows = vec![
@@ -952,25 +1088,62 @@ pub fn run() {
     for field in &CHOICES {
         let choice = popup(mtm, field.titles, target, sel!(controlChanged:));
         let name = name_label(mtm, field.name);
-        left_rows.push(NSArray::from_retained_slice(&[view(&name), view(&choice), label(mtm, "")]));
+        left_rows.push(NSArray::from_retained_slice(&[
+            view(&name),
+            view(&choice),
+            label(mtm, ""),
+        ]));
         choices.push(choice);
         names.push((field.name, name));
     }
     let mut switches = Vec::new();
     for field in &SWITCHES {
         let checkbox = unsafe {
-            NSButton::checkboxWithTitle_target_action(&NSString::from_str(field.name), Some(target), Some(sel!(controlChanged:)), mtm)
+            NSButton::checkboxWithTitle_target_action(
+                &NSString::from_str(field.name),
+                Some(target),
+                Some(sel!(controlChanged:)),
+                mtm,
+            )
         };
         small(&checkbox);
         switches.push(checkbox);
     }
-    left_rows.push(NSArray::from_retained_slice(&[label(mtm, ""), view(&switches[0]), label(mtm, "")]));
-    left_rows.push(NSArray::from_retained_slice(&[label(mtm, ""), view(&switches[1]), label(mtm, "")]));
+    left_rows.push(NSArray::from_retained_slice(&[
+        label(mtm, ""),
+        view(&switches[0]),
+        label(mtm, ""),
+    ]));
+    left_rows.push(NSArray::from_retained_slice(&[
+        label(mtm, ""),
+        view(&switches[1]),
+        label(mtm, ""),
+    ]));
     let mut numbers = Vec::new();
-    slider_rows(mtm, &GENERAL, target, sel!(controlChanged:), &mut left_rows, &mut numbers, &mut names);
+    slider_rows(
+        mtm,
+        &GENERAL,
+        target,
+        sel!(controlChanged:),
+        &mut left_rows,
+        &mut numbers,
+        &mut names,
+    );
 
-    let mut right_rows = vec![NSArray::from_retained_slice(&[label(mtm, "glass internals"), view(&switches[2]), label(mtm, "")])];
-    slider_rows(mtm, &INTERNALS, target, sel!(controlChanged:), &mut right_rows, &mut numbers, &mut names);
+    let mut right_rows = vec![NSArray::from_retained_slice(&[
+        label(mtm, "glass internals"),
+        view(&switches[2]),
+        label(mtm, ""),
+    ])];
+    slider_rows(
+        mtm,
+        &INTERNALS,
+        target,
+        sel!(controlChanged:),
+        &mut right_rows,
+        &mut numbers,
+        &mut names,
+    );
 
     let weak_state = Rc::downgrade(&state);
     let curve_editor = CurveEditor::new(mtm, move |_curve| {
@@ -993,7 +1166,12 @@ pub fn run() {
         .enumerate()
         .map(|(index, (title, _))| {
             let button = unsafe {
-                NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(target), Some(sel!(curvePreset:)), mtm)
+                NSButton::buttonWithTitle_target_action(
+                    &NSString::from_str(title),
+                    Some(target),
+                    Some(sel!(curvePreset:)),
+                    mtm,
+                )
             };
             button.setTag(index as isize);
             small(&button);
@@ -1017,7 +1195,10 @@ pub fn run() {
     };
     curve_range.setContinuous(true);
     small(&curve_range);
-    curve_range.widthAnchor().constraintEqualToConstant(150.0).setActive(true);
+    curve_range
+        .widthAnchor()
+        .constraintEqualToConstant(150.0)
+        .setActive(true);
     let curve_range_value = name_label(mtm, &format_value(range_max));
     let curve_range_name = name_label(mtm, "curve_y_max");
     names.push(("halo_curve", curve_range_name.clone()));
@@ -1026,9 +1207,21 @@ pub fn run() {
         view(&curve_range),
         view(&curve_range_value),
     ]));
-    right_rows.push(NSArray::from_retained_slice(&[view(&curve_name), view(&curve_editor), label(mtm, "")]));
-    right_rows.push(NSArray::from_retained_slice(&[label(mtm, "x: halo edge → panel"), view(&curve_values), label(mtm, "")]));
-    right_rows.push(NSArray::from_retained_slice(&[label(mtm, "y: blur strength"), view(&presets_row), label(mtm, "")]));
+    right_rows.push(NSArray::from_retained_slice(&[
+        view(&curve_name),
+        view(&curve_editor),
+        label(mtm, ""),
+    ]));
+    right_rows.push(NSArray::from_retained_slice(&[
+        label(mtm, "x: halo edge → panel"),
+        view(&curve_values),
+        label(mtm, ""),
+    ]));
+    right_rows.push(NSArray::from_retained_slice(&[
+        label(mtm, "y: blur strength"),
+        view(&presets_row),
+        label(mtm, ""),
+    ]));
 
     let right_grid = grid(mtm, &right_rows);
     // The curve editor, its readout, and the preset buttons span the slider
@@ -1042,17 +1235,37 @@ pub fn run() {
     }
     let voice = popup(mtm, &VOICES, target, sel!(voiceChanged:));
     let pill_readout = readout_label(mtm);
-    let mut pill_rows = vec![NSArray::from_retained_slice(&[label(mtm, "pills voice"), view(&voice), label(mtm, "")])];
+    let mut pill_rows = vec![NSArray::from_retained_slice(&[
+        label(mtm, "pills voice"),
+        view(&voice),
+        label(mtm, ""),
+    ])];
     let mut pill_numbers = Vec::new();
-    slider_rows(mtm, &PILLS, target, sel!(pillChanged:), &mut pill_rows, &mut pill_numbers, &mut names);
-    pill_rows.push(NSArray::from_retained_slice(&[label(mtm, "pills range"), view(&pill_readout), label(mtm, "")]));
+    slider_rows(
+        mtm,
+        &PILLS,
+        target,
+        sel!(pillChanged:),
+        &mut pill_rows,
+        &mut pill_numbers,
+        &mut names,
+    );
+    pill_rows.push(NSArray::from_retained_slice(&[
+        label(mtm, "pills range"),
+        view(&pill_readout),
+        label(mtm, ""),
+    ]));
     let pill_grid = grid(mtm, &pill_rows);
     // The readout spans the slider and value columns.
     pill_grid
         .rowAtIndex(pill_grid.numberOfRows() - 1)
         .mergeCellsInRange(objc2_foundation::NSRange::new(1, 2));
     let columns = NSStackView::stackViewWithViews(
-        &NSArray::from_retained_slice(&[view(&grid(mtm, &left_rows)), view(&right_grid), view(&pill_grid)]),
+        &NSArray::from_retained_slice(&[
+            view(&grid(mtm, &left_rows)),
+            view(&right_grid),
+            view(&pill_grid),
+        ]),
         mtm,
     );
     columns.setSpacing(24.0);
@@ -1060,7 +1273,12 @@ pub fn run() {
 
     let button = |title: &str, action| {
         let button = unsafe {
-            NSButton::buttonWithTitle_target_action(&NSString::from_str(title), Some(target), Some(action), mtm)
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str(title),
+                Some(target),
+                Some(action),
+                mtm,
+            )
         };
         small(&button);
         view(&button)
@@ -1096,17 +1314,34 @@ pub fn run() {
     content.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
     content.setSpacing(10.0);
     // Across the whole width, so its two ends reach the window's edges.
-    bottom_row.widthAnchor().constraintEqualToAnchor(&content.widthAnchor()).setActive(true);
-    divider.widthAnchor().constraintEqualToAnchor(&content.widthAnchor()).setActive(true);
-    let container = NSView::initWithFrame(NSView::alloc(mtm), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    bottom_row
+        .widthAnchor()
+        .constraintEqualToAnchor(&content.widthAnchor())
+        .setActive(true);
+    divider
+        .widthAnchor()
+        .constraintEqualToAnchor(&content.widthAnchor())
+        .setActive(true);
+    let container = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+    );
     content.setTranslatesAutoresizingMaskIntoConstraints(false);
     container.addSubview(&content);
     const PADDING: f64 = 20.0;
     objc2_app_kit::NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
-        content.leadingAnchor().constraintEqualToAnchor_constant(&container.leadingAnchor(), PADDING),
-        container.trailingAnchor().constraintEqualToAnchor_constant(&content.trailingAnchor(), PADDING),
-        content.topAnchor().constraintEqualToAnchor_constant(&container.topAnchor(), PADDING),
-        container.bottomAnchor().constraintEqualToAnchor_constant(&content.bottomAnchor(), PADDING),
+        content
+            .leadingAnchor()
+            .constraintEqualToAnchor_constant(&container.leadingAnchor(), PADDING),
+        container
+            .trailingAnchor()
+            .constraintEqualToAnchor_constant(&content.trailingAnchor(), PADDING),
+        content
+            .topAnchor()
+            .constraintEqualToAnchor_constant(&container.topAnchor(), PADDING),
+        container
+            .bottomAnchor()
+            .constraintEqualToAnchor_constant(&content.bottomAnchor(), PADDING),
     ]));
 
     state.controls.replace(Some(Controls {
@@ -1129,7 +1364,10 @@ pub fn run() {
     let size = container.fittingSize();
     let screen = NSScreen::mainScreen(mtm).expect("screen").visibleFrame();
     let frame = NSRect::new(
-        NSPoint::new(screen.origin.x + (screen.size.width - size.width) / 2.0, screen.origin.y + 8.0),
+        NSPoint::new(
+            screen.origin.x + (screen.size.width - size.width) / 2.0,
+            screen.origin.y + 8.0,
+        ),
         size,
     );
     let window = unsafe {
@@ -1166,26 +1404,80 @@ mod tests {
     fn narration_speaks_a_word_at_a_time_and_settles_its_tail() {
         let frame = |step| narration_frame(6, step);
         // The first word is interim; a word arrives every few ticks.
-        assert_eq!(frame(0), NarrationFrame { spoken: 1, finals: 0 });
-        assert_eq!(frame(NARRATION_TICKS_PER_WORD - 1), NarrationFrame { spoken: 1, finals: 0 });
-        assert_eq!(frame(NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 2, finals: 0 });
+        assert_eq!(
+            frame(0),
+            NarrationFrame {
+                spoken: 1,
+                finals: 0
+            }
+        );
+        assert_eq!(
+            frame(NARRATION_TICKS_PER_WORD - 1),
+            NarrationFrame {
+                spoken: 1,
+                finals: 0
+            }
+        );
+        assert_eq!(
+            frame(NARRATION_TICKS_PER_WORD),
+            NarrationFrame {
+                spoken: 2,
+                finals: 0
+            }
+        );
         // While speaking, the last words stay interim.
-        assert_eq!(frame(4 * NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 5, finals: 2 });
-        assert_eq!(frame(5 * NARRATION_TICKS_PER_WORD), NarrationFrame { spoken: 6, finals: 3 });
+        assert_eq!(
+            frame(4 * NARRATION_TICKS_PER_WORD),
+            NarrationFrame {
+                spoken: 5,
+                finals: 2
+            }
+        );
+        assert_eq!(
+            frame(5 * NARRATION_TICKS_PER_WORD),
+            NarrationFrame {
+                spoken: 6,
+                finals: 3
+            }
+        );
         // Once every word is spoken, all of them turn final and hold.
         let spoken = 6 * NARRATION_TICKS_PER_WORD;
-        assert_eq!(frame(spoken), NarrationFrame { spoken: 6, finals: 6 });
-        assert_eq!(frame(spoken + NARRATION_HOLD_TICKS - 1), NarrationFrame { spoken: 6, finals: 6 });
+        assert_eq!(
+            frame(spoken),
+            NarrationFrame {
+                spoken: 6,
+                finals: 6
+            }
+        );
+        assert_eq!(
+            frame(spoken + NARRATION_HOLD_TICKS - 1),
+            NarrationFrame {
+                spoken: 6,
+                finals: 6
+            }
+        );
         // Then it starts over.
         assert_eq!(frame(spoken + NARRATION_HOLD_TICKS), frame(0));
     }
 
     #[test]
     fn narration_text_marks_its_interim_tail() {
-        let text = narration_text("make it Friday instead", NarrationFrame { spoken: 3, finals: 1 });
+        let text = narration_text(
+            "make it Friday instead",
+            NarrationFrame {
+                spoken: 3,
+                finals: 1,
+            },
+        );
         assert_eq!(&*text.text, "make it Friday ");
         assert_eq!(text.provisional_start, Some("make ".len()));
-        let settled = narration_text("make it Friday instead", NarrationFrame { spoken: 4, finals: 4 });
+        let settled = narration_text(
+            "make it Friday instead",
+            NarrationFrame {
+                spoken: 4,
+                finals: 4,
+            },
+        );
         assert_eq!(&*settled.text, "make it Friday instead ");
         assert_eq!(settled.provisional_start, None);
     }

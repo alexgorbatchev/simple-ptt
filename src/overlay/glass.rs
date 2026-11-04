@@ -21,18 +21,19 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAnimatablePropertyContainer, NSAnimationContext, NSAppearanceCustomization, NSAutoresizingMaskOptions, NSBackingStoreType,
-    NSBezierPath, NSBitmapImageRep, NSBox, NSBoxType, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace,
-    NSFloatingWindowLevel, NSGlassEffectContainerView, NSGlassEffectView, NSGlassEffectViewStyle,
-    NSGraphicsContext, NSImage, NSImageInterpolation, NSTitlePosition, NSImageResizingMode, NSPanel, NSResponder, NSScreen, NSView,
-    NSViewFrameDidChangeNotification, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
+    NSAnimatablePropertyContainer, NSAnimationContext, NSAppearanceCustomization,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSBezierPath, NSBitmapImageRep, NSBox,
+    NSBoxType, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace, NSFloatingWindowLevel,
+    NSGlassEffectContainerView, NSGlassEffectView, NSGlassEffectViewStyle, NSGraphicsContext,
+    NSImage, NSImageInterpolation, NSImageResizingMode, NSPanel, NSResponder, NSScreen,
+    NSTitlePosition, NSView, NSViewFrameDidChangeNotification, NSVisualEffectBlendingMode,
+    NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior,
+    NSWindowStyleMask,
 };
 use objc2_core_graphics::CGImage;
 use objc2_foundation::{
-    MainThreadMarker, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint, NSRect,
-    NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
+    MainThreadMarker, NSEdgeInsets, NSNotification, NSNotificationCenter, NSObject, NSPoint,
+    NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
 };
 use objc2_quartz_core::{CALayer, CAMediaTimingFunction, CATransaction, CATransform3D};
 
@@ -98,7 +99,11 @@ const EMERGE_HEIGHT: f64 = 20.0;
 
 /// The frame the correction glass starts from with `effect` when it appears
 /// at `resting` (window coordinates), and ends at when it disappears.
-pub fn correction_start_frame(effect: CorrectionEffect, resting: NSRect, pop_shrink: f64) -> NSRect {
+pub fn correction_start_frame(
+    effect: CorrectionEffect,
+    resting: NSRect,
+    pop_shrink: f64,
+) -> NSRect {
     let main_top = resting.origin.y - STACK_GAP;
     match effect {
         CorrectionEffect::Emerge => {
@@ -112,7 +117,9 @@ pub fn correction_start_frame(effect: CorrectionEffect, resting: NSRect, pop_shr
                 NSSize::new(width, height),
             )
         }
-        CorrectionEffect::Unfold => NSRect::new(resting.origin, NSSize::new(resting.size.width, 1.0)),
+        CorrectionEffect::Unfold => {
+            NSRect::new(resting.origin, NSSize::new(resting.size.width, 1.0))
+        }
         CorrectionEffect::Pop => popped_frame(resting, pop_shrink),
         // The correction glass does not show; the main glass grows instead.
         CorrectionEffect::Expand => resting,
@@ -428,7 +435,10 @@ pub fn expanding_halo_frame(window: NSSize, base_top: f64, glass_top: f64, margi
 
 /// Frame of the main glass inside the window.
 pub fn main_glass_frame(width: f64, main_height: f64, margin: f64) -> NSRect {
-    NSRect::new(NSPoint::new(margin, margin), NSSize::new(width, main_height))
+    NSRect::new(
+        NSPoint::new(margin, margin),
+        NSSize::new(width, main_height),
+    )
 }
 
 /// Resting frame of the correction glass inside the window, above a main
@@ -452,17 +462,23 @@ pub fn popped_frame(frame: NSRect, shrink: f64) -> NSRect {
     let inset_y = frame.size.height * shrink / 2.0;
     NSRect::new(
         NSPoint::new(frame.origin.x + inset_x, frame.origin.y + inset_y),
-        NSSize::new(frame.size.width - (inset_x * 2.0), frame.size.height - (inset_y * 2.0)),
+        NSSize::new(
+            frame.size.width - (inset_x * 2.0),
+            frame.size.height - (inset_y * 2.0),
+        ),
     )
 }
 
 /// Scale about the bounds' centre without changing layout. AppKit backing
 /// layers can use an origin anchor, while standalone layers default to 0.5.
-pub(super) fn centered_scale(bounds: NSRect, anchor: objc2_core_foundation::CGPoint, scale: f64) -> CATransform3D {
+pub(super) fn centered_scale(
+    bounds: NSRect,
+    anchor: objc2_core_foundation::CGPoint,
+    scale: f64,
+) -> CATransform3D {
     let dx = bounds.size.width * (0.5 - anchor.x) * (1.0 - scale);
     let dy = bounds.size.height * (0.5 - anchor.y) * (1.0 - scale);
-    CATransform3D::new_scale(scale, scale, 1.0)
-        .concat(CATransform3D::new_translation(dx, dy, 0.0))
+    CATransform3D::new_scale(scale, scale, 1.0).concat(CATransform3D::new_translation(dx, dy, 0.0))
 }
 
 define_class!(
@@ -510,7 +526,9 @@ define_class!(
 
 impl AppearanceTrackingView {
     fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(AppearanceTrackingIvars { on_change: RefCell::new(None) });
+        let this = Self::alloc(mtm).set_ivars(AppearanceTrackingIvars {
+            on_change: RefCell::new(None),
+        });
         // SAFETY: `initWithFrame:` is NSView's designated initializer.
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
@@ -612,7 +630,12 @@ impl Drop for OverlayGlass {
 }
 
 impl OverlayGlass {
-    pub fn new(mtm: MainThreadMarker, width: f64, main_height: f64, tuning: GlassTuning) -> Rc<Self> {
+    pub fn new(
+        mtm: MainThreadMarker,
+        width: f64,
+        main_height: f64,
+        tuning: GlassTuning,
+    ) -> Rc<Self> {
         let margin = tuning.margin();
         let main_frame = main_glass_frame(width, main_height, margin);
         let window_rect = NSRect::new(
@@ -641,7 +664,8 @@ impl OverlayGlass {
             unsafe { layer.setMask(Some(&halo_mask)) };
         }
 
-        let blur_view = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), window_rect);
+        let blur_view =
+            NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), window_rect);
         blur_view.setMaterial(NSVisualEffectMaterial::HUDWindow);
         blur_view.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
         // The overlay's app is never the active app, and an inactive effect
@@ -657,7 +681,9 @@ impl OverlayGlass {
         }
         let variable_blur = VariableBlur::new();
         if variable_blur.is_none() {
-            log::warn!("the variableBlur filter is unavailable; the overlay halo uses masked glass");
+            log::warn!(
+                "the variableBlur filter is unavailable; the overlay halo uses masked glass"
+            );
         }
 
         let container = NSGlassEffectContainerView::initWithFrame(
@@ -670,7 +696,8 @@ impl OverlayGlass {
         let stack_view = AppearanceTrackingView::new(mtm, window_rect);
         stack_view.setAutoresizingMask(fill);
 
-        let main_glass = NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), main_frame);
+        let main_glass =
+            NSGlassEffectView::initWithFrame(NSGlassEffectView::alloc(mtm), main_frame);
         let main_glass_content = make_glass_content(mtm, &main_glass, main_frame);
         // The transcript, meter, and footer: sized by `set_frames` only, so
         // they stay still while the glass grows at its top (`Expand`) and
@@ -695,7 +722,10 @@ impl OverlayGlass {
 
         let correction_expansion_view = NSView::initWithFrame(
             NSView::alloc(mtm),
-            NSRect::new(NSPoint::new(0.0, main_height), NSSize::new(width, STACK_GAP)),
+            NSRect::new(
+                NSPoint::new(0.0, main_height),
+                NSSize::new(width, STACK_GAP),
+            ),
         );
         // Stays at the top of the main glass as it grows and shrinks.
         correction_expansion_view.setAutoresizingMask(
@@ -736,40 +766,41 @@ impl OverlayGlass {
                 }
             })));
             Self {
-            weak_self: weak_self.clone(),
-            panel,
-            motion_view: root_view,
-            variable_blur,
-            blur_view,
-            blur_mask: RefCell::new(None),
-            dim_view,
-            dim_mask,
-            internals_saved: Cell::new(None),
-            halo_view,
-            halo_glass,
-            halo_mask,
-            container,
-            main_glass,
-            correction_glass,
-            main_dim,
-            correction_dim,
-            main_content_view,
-            correction_content_view,
-            correction_expansion_view,
-            main_extension: Cell::new(0.0),
-            main_resting_frame: Rc::new(Cell::new(main_frame)),
-            main_settle_timer: RefCell::new(None),
-            tuning: Cell::new(tuning),
-            correction_phase: Rc::new(Cell::new(CorrectionPhase::Hidden)),
-            correction_out_timer: RefCell::new(None),
-            pop_out_timer: RefCell::new(None),
-            frame_observers: RefCell::new(Vec::new()),
-        }
+                weak_self: weak_self.clone(),
+                panel,
+                motion_view: root_view,
+                variable_blur,
+                blur_view,
+                blur_mask: RefCell::new(None),
+                dim_view,
+                dim_mask,
+                internals_saved: Cell::new(None),
+                halo_view,
+                halo_glass,
+                halo_mask,
+                container,
+                main_glass,
+                correction_glass,
+                main_dim,
+                correction_dim,
+                main_content_view,
+                correction_content_view,
+                correction_expansion_view,
+                main_extension: Cell::new(0.0),
+                main_resting_frame: Rc::new(Cell::new(main_frame)),
+                main_settle_timer: RefCell::new(None),
+                tuning: Cell::new(tuning),
+                correction_phase: Rc::new(Cell::new(CorrectionPhase::Hidden)),
+                correction_out_timer: RefCell::new(None),
+                pop_out_timer: RefCell::new(None),
+                frame_observers: RefCell::new(Vec::new()),
+            }
         });
         glass.apply_look(tuning);
 
         // Each step of a glass motion sets the glass's frame, which posts this.
-        for (moving, lays_out_halo) in [(&glass.main_glass, true), (&glass.correction_glass, false)] {
+        for (moving, lays_out_halo) in [(&glass.main_glass, true), (&glass.correction_glass, false)]
+        {
             let weak = glass.weak_self.clone();
             let follow = RcBlock::new(move |_notification: NonNull<NSNotification>| {
                 if let Some(glass) = weak.upgrade() {
@@ -838,10 +869,13 @@ impl OverlayGlass {
         self.update_text_appearance();
 
         let progressive = self.variable_blur.is_some();
-        self.blur_view.setHidden(!tuning.halo_enabled || !progressive);
-        self.dim_view.setHidden(!tuning.halo_enabled || !progressive || tuning.halo_dim <= 0.0);
+        self.blur_view
+            .setHidden(!tuning.halo_enabled || !progressive);
+        self.dim_view
+            .setHidden(!tuning.halo_enabled || !progressive || tuning.halo_dim <= 0.0);
         self.dim_view.setAlphaValue(tuning.halo_dim);
-        self.halo_view.setHidden(!tuning.halo_enabled || progressive);
+        self.halo_view
+            .setHidden(!tuning.halo_enabled || progressive);
         self.halo_glass.setStyle(match tuning.halo_style {
             GlassStyle::Regular => NSGlassEffectViewStyle::Regular,
             GlassStyle::Clear => NSGlassEffectViewStyle::Clear,
@@ -849,7 +883,10 @@ impl OverlayGlass {
         let (mask_image, contents_center) =
             halo_mask_image(tuning.margin(), tuning.corner_radius, tuning.halo_curve);
         // SAFETY: an NSImage is a documented type for `CALayer.contents`.
-        unsafe { self.halo_mask.setContents(Some(mask_image.as_ref() as &AnyObject)) };
+        unsafe {
+            self.halo_mask
+                .setContents(Some(mask_image.as_ref() as &AnyObject))
+        };
         self.halo_mask.setContentsCenter(contents_center);
         self.layout_halo();
         self.refresh_internals();
@@ -866,14 +903,19 @@ impl OverlayGlass {
         let glass = text_appearance_of(&self.panel.effectiveAppearance());
         let colors =
             |text| named_appearance(text).and_then(|appearance| appearance_colors(&appearance));
-        let (Some(light), Some(dark)) = (colors(TextAppearance::Light), colors(TextAppearance::Dark))
+        let (Some(light), Some(dark)) =
+            (colors(TextAppearance::Light), colors(TextAppearance::Dark))
         else {
             log::warn!("the system appearances did not resolve; the overlay text keeps the window's appearance");
             return;
         };
         let tint = tint_color(&tuning).and_then(|tint| srgb(&tint));
         let text = text_appearance(glass, tint, light, dark);
-        let appearance = if text == glass { None } else { named_appearance(text) };
+        let appearance = if text == glass {
+            None
+        } else {
+            named_appearance(text)
+        };
         for glass_view in [&self.main_glass, &self.correction_glass] {
             if let Some(content) = glass_view.contentView() {
                 content.setAppearance(appearance.as_deref());
@@ -890,7 +932,10 @@ impl OverlayGlass {
     /// shown or hidden (`set_correction_hidden`).
     fn sync_dims(&self) {
         let dimmed = self.tuning.get().dim > 0.0;
-        for (dim, glass) in [(&self.main_dim, &self.main_glass), (&self.correction_dim, &self.correction_glass)] {
+        for (dim, glass) in [
+            (&self.main_dim, &self.main_glass),
+            (&self.correction_dim, &self.correction_glass),
+        ] {
             let frame = glass.frame();
             if dim.frame() != frame {
                 dim.setFrame(frame);
@@ -927,7 +972,11 @@ impl OverlayGlass {
             under_panels: tuning.halo_under_panels,
             radius: tuning.halo_blur_radius,
         };
-        let cached = self.blur_mask.borrow().as_ref().map(|(cached_key, _)| *cached_key);
+        let cached = self
+            .blur_mask
+            .borrow()
+            .as_ref()
+            .map(|(cached_key, _)| *cached_key);
         if cached != Some(key) {
             let Some(mask) = blur_mask_image(&key) else {
                 return;
@@ -955,7 +1004,8 @@ impl OverlayGlass {
     fn refresh_internals(&self) {
         if self.tuning.get().internals_enabled {
             if self.internals_saved.get().is_none() {
-                self.internals_saved.set(read_glass_internals(&self.container));
+                self.internals_saved
+                    .set(read_glass_internals(&self.container));
             }
             apply_glass_internals(&self.container, &self.tuning.get().internals);
         } else if let Some(own) = self.internals_saved.take() {
@@ -967,7 +1017,6 @@ impl OverlayGlass {
     pub fn glass_internals_now(&self) -> Option<GlassInternals> {
         read_glass_internals(&self.container)
     }
-
 
     pub fn correction_phase(&self) -> CorrectionPhase {
         self.correction_phase.get()
@@ -1053,8 +1102,16 @@ impl OverlayGlass {
         let tuning = self.tuning.get();
         let was_popping_out = cancel_timer(&self.pop_out_timer);
         if !was_popping_out {
-            self.panel.setAlphaValue(pop_edge_opacity(&tuning, reduce_motion));
-            self.motion_view.set_scale(if reduce_motion { 1.0 } else { 1.0 - tuning.pop_shrink }, 0.0);
+            self.panel
+                .setAlphaValue(pop_edge_opacity(&tuning, reduce_motion));
+            self.motion_view.set_scale(
+                if reduce_motion {
+                    1.0
+                } else {
+                    1.0 - tuning.pop_shrink
+                },
+                0.0,
+            );
             self.panel.orderFrontRegardless();
             self.refresh_internals();
         }
@@ -1066,15 +1123,21 @@ impl OverlayGlass {
         } else if was_popping_out {
             self.motion_view.set_scale(1.0, tuning.pop_seconds);
         } else {
-            self.motion_view.pop_in(1.0 - tuning.pop_shrink, tuning.pop_seconds * 1.5);
+            self.motion_view
+                .pop_in(1.0 - tuning.pop_shrink, tuning.pop_seconds * 1.5);
         }
     }
 
     /// Finishing nonempty dictation holds at 80% until its paste is ready.
     /// A transform that resumes editing keeps the full-size overlay.
     pub fn set_finishing(&self, finishing: bool, reduce_motion: bool) {
-        let scale = if finishing && !reduce_motion { 0.8 } else { 1.0 };
-        self.motion_view.set_scale(scale, if reduce_motion { 0.0 } else { 0.16 });
+        let scale = if finishing && !reduce_motion {
+            0.8
+        } else {
+            1.0
+        };
+        self.motion_view
+            .set_scale(scale, if reduce_motion { 0.0 } else { 0.16 });
     }
 
     /// Pops the window out and orders it out when the motion ends. Reduce
@@ -1088,7 +1151,10 @@ impl OverlayGlass {
             self.panel.animator().setAlphaValue(end_opacity);
         });
         if !reduce_motion {
-            self.motion_view.set_scale(self.motion_view.scale().min(1.0 - tuning.pop_shrink), tuning.pop_seconds);
+            self.motion_view.set_scale(
+                self.motion_view.scale().min(1.0 - tuning.pop_shrink),
+                tuning.pop_seconds,
+            );
         }
 
         let glass = self.weak_self.clone();
@@ -1159,7 +1225,8 @@ impl OverlayGlass {
             (CorrectionMotion::Disappear, _) => {
                 let content = &self.correction_content_view;
                 let frame = correction_glass.frame();
-                let end = correction_start_frame(tuning.correction_effect, frame, tuning.pop_shrink);
+                let end =
+                    correction_start_frame(tuning.correction_effect, frame, tuning.pop_shrink);
                 let timing = correction_timing(tuning.correction_easing, false);
                 animate_with(tuning.correction_seconds, timing, || {
                     correction_glass.animator().setFrame(end);
@@ -1188,13 +1255,17 @@ impl OverlayGlass {
         let resting = self.main_resting_frame.get();
         let base = NSRect::new(
             resting.origin,
-            NSSize::new(resting.size.width, resting.size.height - self.main_extension.get()),
+            NSSize::new(
+                resting.size.width,
+                resting.size.height - self.main_extension.get(),
+            ),
         );
         match (motion, resting_frame) {
             (CorrectionMotion::Place | CorrectionMotion::Appear, Some(frame)) => {
                 cancel_timer(&self.correction_out_timer);
                 let grown = expanded_main_frame(base, frame);
-                self.main_extension.set(grown.size.height - base.size.height);
+                self.main_extension
+                    .set(grown.size.height - base.size.height);
                 self.main_resting_frame.set(grown);
                 if motion == CorrectionMotion::Place && resting != grown {
                     main_glass.setFrame(grown);
@@ -1276,8 +1347,12 @@ impl OverlayGlass {
             glass.set_correction_hidden(true);
             glass.correction_expansion_view.setHidden(true);
             let window = glass.panel.frame();
-            let height = glass.main_resting_frame.get().size.height + (glass.tuning.get().margin() * 2.0);
-            glass.resize_window(NSRect::new(window.origin, NSSize::new(window.size.width, height)));
+            let height =
+                glass.main_resting_frame.get().size.height + (glass.tuning.get().margin() * 2.0);
+            glass.resize_window(NSRect::new(
+                window.origin,
+                NSSize::new(window.size.width, height),
+            ));
         });
     }
 }
@@ -1375,7 +1450,11 @@ fn fit_halo_mask(halo_view: &NSView, halo_mask: &CALayer) {
 /// unit coordinates): clear under the panel outline, opaque right outside it,
 /// and fading to clear at the window edge by `halo_strength`. One small image
 /// fits every window size because only its centre pixel stretches.
-fn halo_mask_image(margin: f64, corner_radius: f64, curve: HaloCurve) -> (Retained<NSImage>, NSRect) {
+fn halo_mask_image(
+    margin: f64,
+    corner_radius: f64,
+    curve: HaloCurve,
+) -> (Retained<NSImage>, NSRect) {
     let cap = margin + corner_radius;
     let side = (cap * 2.0) + 1.0;
     let steps = margin.ceil().max(1.0) as usize;
@@ -1414,7 +1493,10 @@ fn draw_halo_rings(
         let inset = margin * step as f64 / steps as f64;
         let ring = NSRect::new(
             NSPoint::new(bounds.origin.x + inset, bounds.origin.y + inset),
-            NSSize::new(bounds.size.width - (inset * 2.0), bounds.size.height - (inset * 2.0)),
+            NSSize::new(
+                bounds.size.width - (inset * 2.0),
+                bounds.size.height - (inset * 2.0),
+            ),
         );
         let radius = corner_radius + margin - inset;
         NSColor::colorWithWhite_alpha(0.0, halo_strength(step, steps, curve)).setFill();
@@ -1424,7 +1506,10 @@ fn draw_halo_rings(
         context.setCompositingOperation(NSCompositingOperation::Clear);
         let panel_outline = NSRect::new(
             NSPoint::new(bounds.origin.x + margin, bounds.origin.y + margin),
-            NSSize::new(bounds.size.width - (margin * 2.0), bounds.size.height - (margin * 2.0)),
+            NSSize::new(
+                bounds.size.width - (margin * 2.0),
+                bounds.size.height - (margin * 2.0),
+            ),
         );
         NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
             panel_outline,
@@ -1484,7 +1569,10 @@ fn draw_bitmap(
     NSGraphicsContext::setCurrentContext(Some(&context));
     draw(
         &context,
-        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width_px as f64, height_px as f64)),
+        NSRect::new(
+            NSPoint::new(0.0, 0.0),
+            NSSize::new(width_px as f64, height_px as f64),
+        ),
     );
     context.flushGraphics();
     NSGraphicsContext::setCurrentContext(previous.as_deref());
@@ -1517,7 +1605,12 @@ fn blur_mask_cap(key: &BlurMaskKey) -> Option<Retained<NSImage>> {
     let image = NSImage::initWithSize(NSImage::alloc(), NSSize::new(side as f64, side as f64));
     image.addRepresentation(&bitmap);
     let cap = cap as f64;
-    image.setCapInsets(NSEdgeInsets { top: cap, left: cap, bottom: cap, right: cap });
+    image.setCapInsets(NSEdgeInsets {
+        top: cap,
+        left: cap,
+        bottom: cap,
+        right: cap,
+    });
     image.setResizingMode(IMAGE_RESIZING_STRETCH);
     Some(image)
 }
@@ -1645,7 +1738,10 @@ mod tests {
             // SAFETY: the rep owns `pixelsHigh` rows of `bytesPerRow` bytes,
             // of which the first `pixelsWide * bitsPerPixel / 8` are pixels.
             let row = unsafe {
-                std::slice::from_raw_parts(rep.bitmapData().add(y * rep.bytesPerRow() as usize), row_bytes)
+                std::slice::from_raw_parts(
+                    rep.bitmapData().add(y * rep.bytesPerRow() as usize),
+                    row_bytes,
+                )
             };
             bytes.extend_from_slice(row);
         }
@@ -1766,7 +1862,8 @@ mod tests {
     #[test]
     fn spring_easing_overshoots_on_the_way_in_only() {
         let [_, spring_in_y1, _, _] = correction_timing(CorrectionEasing::Spring, true);
-        let [_, spring_out_y1, _, spring_out_y2] = correction_timing(CorrectionEasing::Spring, false);
+        let [_, spring_out_y1, _, spring_out_y2] =
+            correction_timing(CorrectionEasing::Spring, false);
         assert!(spring_in_y1 > 1.0);
         assert!(spring_out_y1 <= 1.0 && spring_out_y2 <= 1.0);
         for appearing in [true, false] {
@@ -1792,7 +1889,14 @@ mod tests {
         let tuning = GlassTuning::default();
         assert_eq!(tuning.style, GlassStyle::Clear);
         // A black tint (hue, saturation, and brightness 0) at 69%.
-        assert_eq!((tuning.tint_hue, tuning.tint_saturation, tuning.tint_brightness), (0.0, 0.0, 0.0));
+        assert_eq!(
+            (
+                tuning.tint_hue,
+                tuning.tint_saturation,
+                tuning.tint_brightness
+            ),
+            (0.0, 0.0, 0.0)
+        );
         assert_eq!(tuning.tint_alpha, 0.69);
         assert_eq!(tuning.corner_radius, 16.0);
         assert_eq!(tuning.merge_spacing, 8.0);
@@ -1801,7 +1905,12 @@ mod tests {
         assert_eq!(tuning.halo_margin, 104.63);
         assert_eq!(
             tuning.halo_curve,
-            HaloCurve { start: (0.305, 0.0), control1: (0.605, 0.0), control2: (0.75, 0.04), end: (1.0, 0.04) }
+            HaloCurve {
+                start: (0.305, 0.0),
+                control1: (0.605, 0.0),
+                control2: (0.75, 0.04),
+                end: (1.0, 0.04)
+            }
         );
         assert_eq!(tuning.halo_blur_radius, 11.77);
         assert!(tuning.halo_under_panels);
@@ -1811,7 +1920,10 @@ mod tests {
         // The glass's own inner values, as measured, not the tuner's rounding.
         assert!(!tuning.internals_enabled);
         assert_eq!(tuning.internals, GlassInternals::default());
-        assert_eq!((tuning.pop_seconds, tuning.pop_shrink, tuning.pop_opacity), (0.24, 0.08, 0.0));
+        assert_eq!(
+            (tuning.pop_seconds, tuning.pop_shrink, tuning.pop_opacity),
+            (0.24, 0.08, 0.0)
+        );
         assert_eq!(tuning.correction_effect, CorrectionEffect::Expand);
         assert_eq!(tuning.correction_easing, CorrectionEasing::Spring);
         assert_eq!(tuning.correction_seconds, 0.17);
@@ -1823,11 +1935,23 @@ mod tests {
         let frame = |glass_top| expanding_halo_frame(window, 220.0, glass_top, 40.0);
         // At rest, and part way through growing, to the half point: the
         // bottom and width stay.
-        assert_eq!(frame(220.0), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 260.0)));
-        assert_eq!(frame(271.5), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 311.5)));
-        assert_eq!(frame(322.0), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 362.0)));
+        assert_eq!(
+            frame(220.0),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 260.0))
+        );
+        assert_eq!(
+            frame(271.5),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 311.5))
+        );
+        assert_eq!(
+            frame(322.0),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 362.0))
+        );
         // A pop shrinks the glass about its centre; the halo keeps its base.
-        assert_eq!(frame(212.8), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 260.0)));
+        assert_eq!(
+            frame(212.8),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(640.0, 260.0))
+        );
     }
 
     #[test]
@@ -1857,8 +1981,7 @@ mod tests {
     #[test]
     fn window_spans_the_glass_and_the_margin_around_it() {
         let main_frame = NSRect::new(NSPoint::new(100.0, 200.0), NSSize::new(560.0, 180.0));
-        let correction_frame =
-            NSRect::new(NSPoint::new(100.0, 390.0), NSSize::new(560.0, 92.0));
+        let correction_frame = NSRect::new(NSPoint::new(100.0, 390.0), NSSize::new(560.0, 92.0));
 
         assert_eq!(
             window_frame(main_frame, None, 28.0),
@@ -1896,9 +2019,15 @@ mod tests {
 
     #[test]
     fn margin_is_whole_points_so_the_glass_sits_on_the_pixel_grid() {
-        let tuning = GlassTuning { halo_margin: 90.71, ..GlassTuning::default() };
+        let tuning = GlassTuning {
+            halo_margin: 90.71,
+            ..GlassTuning::default()
+        };
         assert_eq!(tuning.margin(), 91.0);
-        let tuning = GlassTuning { halo_margin: 40.4, ..GlassTuning::default() };
+        let tuning = GlassTuning {
+            halo_margin: 40.4,
+            ..GlassTuning::default()
+        };
         assert_eq!(tuning.margin(), 40.0);
     }
 
@@ -1920,7 +2049,9 @@ mod tests {
         for curve in [ease_in, ease_out, HaloCurve::EASE_IN_OUT] {
             assert_eq!(halo_strength(0, 40, curve), 0.0);
             assert_eq!(halo_strength(40, 40, curve), 1.0);
-            let strengths: Vec<f64> = (0..=40).map(|step| halo_strength(step, 40, curve)).collect();
+            let strengths: Vec<f64> = (0..=40)
+                .map(|step| halo_strength(step, 40, curve))
+                .collect();
             assert!(strengths.windows(2).all(|pair| pair[0] <= pair[1] + 1e-9));
         }
     }

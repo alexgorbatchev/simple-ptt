@@ -112,7 +112,11 @@ pub fn appearance_colors(appearance: &NSAppearance) -> Option<AppearanceColors> 
     let resolve = StackBlock::new(|| {
         let background = srgb(&NSColor::windowBackgroundColor());
         let label = srgb(&NSColor::labelColor());
-        resolved.set(background.zip(label).map(|(background, label)| AppearanceColors { background, label }));
+        resolved.set(
+            background
+                .zip(label)
+                .map(|(background, label)| AppearanceColors { background, label }),
+        );
     });
     appearance.performAsCurrentDrawingAppearance(&resolve);
     resolved.get()
@@ -134,7 +138,8 @@ pub fn named_appearance(text: TextAppearance) -> Option<Retained<NSAppearance>> 
 pub fn text_appearance_of(appearance: &NSAppearance) -> TextAppearance {
     // SAFETY: both names are immutable AppKit constants.
     let (aqua, dark_aqua) = unsafe { (NSAppearanceNameAqua, NSAppearanceNameDarkAqua) };
-    let best = appearance.bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[aqua, dark_aqua]));
+    let best =
+        appearance.bestMatchFromAppearancesWithNames(&NSArray::from_slice(&[aqua, dark_aqua]));
     if best.is_some_and(|name| &*name == dark_aqua) {
         TextAppearance::Dark
     } else {
@@ -147,16 +152,27 @@ mod tests {
     use super::*;
 
     fn grey(value: f64, alpha: f64) -> Srgb {
-        Srgb { red: value, green: value, blue: value, alpha }
+        Srgb {
+            red: value,
+            green: value,
+            blue: value,
+            alpha,
+        }
     }
 
     // As AppKit resolves them on macOS 26.6 (`appkit_resolves_both_appearances`).
     fn light() -> AppearanceColors {
-        AppearanceColors { background: grey(1.0, 1.0), label: grey(0.0, 0.847) }
+        AppearanceColors {
+            background: grey(1.0, 1.0),
+            label: grey(0.0, 0.847),
+        }
     }
 
     fn dark() -> AppearanceColors {
-        AppearanceColors { background: grey(0.118, 1.0), label: grey(1.0, 0.847) }
+        AppearanceColors {
+            background: grey(0.118, 1.0),
+            label: grey(1.0, 0.847),
+        }
     }
 
     fn choose(glass: TextAppearance, tint: Option<Srgb>) -> TextAppearance {
@@ -170,9 +186,12 @@ mod tests {
             assert_eq!(text_appearance_of(&appearance), text);
             appearance_colors(&appearance).expect("colors resolve")
         };
-        let (light_colors, dark_colors) = (colors(TextAppearance::Light), colors(TextAppearance::Dark));
+        let (light_colors, dark_colors) =
+            (colors(TextAppearance::Light), colors(TextAppearance::Dark));
         eprintln!("RESOLVED light={light_colors:?} dark={dark_colors:?}");
-        assert!(light_colors.background.luminance() > 0.5 && dark_colors.background.luminance() < 0.1);
+        assert!(
+            light_colors.background.luminance() > 0.5 && dark_colors.background.luminance() < 0.1
+        );
         assert!(light_colors.label.red < 0.1 && dark_colors.label.red > 0.9);
     }
 
@@ -204,12 +223,22 @@ mod tests {
     fn opaque_tints_get_the_text_that_reads_on_them() {
         // Measured on captures: black text on these read at 1.15 to 1.95.
         let black = Some(grey(0.0, 1.0));
-        let blue = Some(Srgb { red: 0.0, green: 0.294, blue: 0.7, alpha: 1.0 });
+        let blue = Some(Srgb {
+            red: 0.0,
+            green: 0.294,
+            blue: 0.7,
+            alpha: 1.0,
+        });
         assert_eq!(choose(TextAppearance::Light, black), TextAppearance::Dark);
         assert_eq!(choose(TextAppearance::Light, blue), TextAppearance::Dark);
         // And white text on these read at 1.07 to 1.22.
         let white = Some(grey(1.0, 1.0));
-        let yellow = Some(Srgb { red: 0.9, green: 1.0, blue: 0.0, alpha: 1.0 });
+        let yellow = Some(Srgb {
+            red: 0.9,
+            green: 1.0,
+            blue: 0.0,
+            alpha: 1.0,
+        });
         assert_eq!(choose(TextAppearance::Dark, white), TextAppearance::Light);
         assert_eq!(choose(TextAppearance::Dark, yellow), TextAppearance::Light);
         // Mid grey: black text measured 5.3, white text 3.4.
@@ -222,11 +251,23 @@ mod tests {
     fn partial_tints_blend_with_the_glass_appearance() {
         // Half white over dark glass measured 0.25 to 0.34 luminance, where
         // white text read at 2.4 to 3.0; black text reads better.
-        assert_eq!(choose(TextAppearance::Dark, Some(grey(1.0, 0.5))), TextAppearance::Light);
+        assert_eq!(
+            choose(TextAppearance::Dark, Some(grey(1.0, 0.5))),
+            TextAppearance::Light
+        );
         // Half black over light glass: black text still reads better.
-        assert_eq!(choose(TextAppearance::Light, Some(grey(0.0, 0.5))), TextAppearance::Light);
+        assert_eq!(
+            choose(TextAppearance::Light, Some(grey(0.0, 0.5))),
+            TextAppearance::Light
+        );
         // A light tint on light glass, or a dark one on dark glass, changes nothing.
-        assert_eq!(choose(TextAppearance::Light, Some(grey(1.0, 0.8))), TextAppearance::Light);
-        assert_eq!(choose(TextAppearance::Dark, Some(grey(0.0, 0.8))), TextAppearance::Dark);
+        assert_eq!(
+            choose(TextAppearance::Light, Some(grey(1.0, 0.8))),
+            TextAppearance::Light
+        );
+        assert_eq!(
+            choose(TextAppearance::Dark, Some(grey(0.0, 0.8))),
+            TextAppearance::Dark
+        );
     }
 }

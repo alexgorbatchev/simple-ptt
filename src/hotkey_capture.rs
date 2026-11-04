@@ -37,9 +37,7 @@ pub enum HotkeyCaptureOutcome {
 impl HotkeyCaptureOutcome {
     pub fn captured_binding(self) -> Option<(HotkeyCaptureTarget, String)> {
         match self {
-            Self::Captured { target, binding } => {
-                Some((target, format_hotkey_binding(binding)))
-            }
+            Self::Captured { target, binding } => Some((target, format_hotkey_binding(binding))),
             Self::CorrectionModifiersCaptured { modifiers } => {
                 Some((HotkeyCaptureTarget::Correction, format_modifiers(modifiers)))
             }

@@ -1,16 +1,16 @@
-pub mod devices;
 mod device_changes;
+pub mod devices;
 mod input_choice;
-mod stream_activity;
 mod spectrum;
+mod stream_activity;
 pub use spectrum::SpectrumAnalyzer;
 pub mod stream;
 
 pub use devices::*;
-pub use input_choice::{MICROPHONE_LOST_MESSAGE, NO_MICROPHONE_MESSAGE};
 use input_choice::{device_uid, BuiltInPreference};
-use stream_activity::StreamActivity;
+pub use input_choice::{MICROPHONE_LOST_MESSAGE, NO_MICROPHONE_MESSAGE};
 pub use stream::*;
+use stream_activity::StreamActivity;
 
 use cpal::traits::{HostTrait, StreamTrait};
 use cpal::Stream;
@@ -333,7 +333,9 @@ impl AudioController {
                 StreamCommand::LeaveForRebuild => {}
             }
             if active.activity.is_stalled_at(Instant::now()) {
-                log::warn!("audio stream stalled (no audio callbacks for >1.5s); marking unhealthy");
+                log::warn!(
+                    "audio stream stalled (no audio callbacks for >1.5s); marking unhealthy"
+                );
                 active.healthy.store(false, Ordering::SeqCst);
             }
         }
@@ -399,8 +401,14 @@ impl AudioController {
                 log::info!("successfully rebuilt audio input stream");
             }
             Err(error) => {
-                *last_failed_rebuild = Some(FailedRebuild { at: now, generation });
-                log::error!("failed to switch or reconnect audio input device: {}", error);
+                *last_failed_rebuild = Some(FailedRebuild {
+                    at: now,
+                    generation,
+                });
+                log::error!(
+                    "failed to switch or reconnect audio input device: {}",
+                    error
+                );
             }
         }
     }
@@ -416,14 +424,17 @@ impl AudioController {
             mic_config,
             prefer_built_in,
         );
-        self.state.set_microphone_available(microphone_found(&built));
+        self.state
+            .set_microphone_available(microphone_found(&built));
         let handle = built?;
 
-        self.transcription_controller.set_sample_rate(handle.sample_rate);
+        self.transcription_controller
+            .set_sample_rate(handle.sample_rate);
         let mut active_stream = self.lock_active_stream();
         *active_stream = Some(ActiveAudioStream::new(handle, mic_config));
         #[cfg(target_os = "macos")]
-        self.hardware_generation.store(hardware_generation, Ordering::SeqCst);
+        self.hardware_generation
+            .store(hardware_generation, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -447,7 +458,11 @@ impl AudioController {
         let host = cpal::default_host();
         let connected = host
             .input_devices()
-            .map(|devices| devices.filter_map(|device| device_uid(&device)).collect::<Vec<_>>())
+            .map(|devices| {
+                devices
+                    .filter_map(|device| device_uid(&device))
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let device_in_use_lost = self
             .lock_active_stream()
@@ -460,9 +475,15 @@ impl AudioController {
         let Ok(mut preference) = self.built_in_preference.lock() else {
             return false;
         };
-        *preference = preference.next(device_in_use_lost, follows_system_default, default_uid.as_deref());
+        *preference = preference.next(
+            device_in_use_lost,
+            follows_system_default,
+            default_uid.as_deref(),
+        );
         if device_in_use_lost {
-            log::info!("the audio input device in use disappeared; preferring the built-in microphone");
+            log::info!(
+                "the audio input device in use disappeared; preferring the built-in microphone"
+            );
         }
         preference.is_active()
     }
@@ -538,10 +559,9 @@ fn microphone_found<T>(built: &Result<T, String>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_audio_input_device_choices, encode_pcm_mono,
-        config_with_preferred_rate, normalize_meter_amplitude,
-        smooth_meter_value, stream_error_response, AudioController, AudioInputDeviceChoice,
-        InputDeviceDescriptor, StreamErrorResponse,
+        build_audio_input_device_choices, config_with_preferred_rate, encode_pcm_mono,
+        normalize_meter_amplitude, smooth_meter_value, stream_error_response, AudioController,
+        AudioInputDeviceChoice, InputDeviceDescriptor, StreamErrorResponse,
     };
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
 
@@ -584,11 +604,18 @@ mod tests {
         use super::{rebuild_waits_for_retry, FailedRebuild, REBUILD_RETRY_INTERVAL};
 
         let failed_at = std::time::Instant::now();
-        let failed = Some(FailedRebuild { at: failed_at, generation: 7 });
+        let failed = Some(FailedRebuild {
+            at: failed_at,
+            generation: 7,
+        });
 
         assert!(!rebuild_waits_for_retry(None, failed_at, 7));
         assert!(rebuild_waits_for_retry(failed, failed_at, 7));
-        assert!(!rebuild_waits_for_retry(failed, failed_at + REBUILD_RETRY_INTERVAL, 7));
+        assert!(!rebuild_waits_for_retry(
+            failed,
+            failed_at + REBUILD_RETRY_INTERVAL,
+            7
+        ));
         // A microphone plugged in after the failure is tried at once.
         assert!(!rebuild_waits_for_retry(failed, failed_at, 8));
     }
@@ -673,9 +700,13 @@ mod tests {
 
     #[test]
     fn only_finding_no_device_counts_as_no_microphone() {
-        assert!(!super::microphone_found::<()>(&Err(super::NO_MICROPHONE_MESSAGE.to_owned())));
+        assert!(!super::microphone_found::<()>(&Err(
+            super::NO_MICROPHONE_MESSAGE.to_owned()
+        )));
         // Another failure is reported as itself, not as a missing microphone.
-        assert!(super::microphone_found::<()>(&Err("unsupported audio input sample format".to_owned())));
+        assert!(super::microphone_found::<()>(&Err(
+            "unsupported audio input sample format".to_owned()
+        )));
         assert!(super::microphone_found(&Ok(())));
     }
 
@@ -689,10 +720,7 @@ mod tests {
 
     #[test]
     fn stream_failures_are_rebuilt_and_reported() {
-        for kind in [
-            ErrorKind::BackendError,
-            ErrorKind::Other,
-        ] {
+        for kind in [ErrorKind::BackendError, ErrorKind::Other] {
             assert_eq!(
                 stream_error_response(&kind.into()),
                 StreamErrorResponse::RebuildAndReport,
@@ -769,13 +797,28 @@ mod tests {
     #[test]
     fn a_device_is_saved_by_name_only_when_that_name_finds_it_again() {
         let choices = build_audio_input_device_choices(&[
-            InputDeviceDescriptor { index: 0, name: Some("USB Mic".to_owned()) },
-            InputDeviceDescriptor { index: 1, name: Some(" usb mic ".to_owned()) },
-            InputDeviceDescriptor { index: 2, name: Some("2".to_owned()) },
-            InputDeviceDescriptor { index: 3, name: Some(" Shure MV7 ".to_owned()) },
+            InputDeviceDescriptor {
+                index: 0,
+                name: Some("USB Mic".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 1,
+                name: Some(" usb mic ".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 2,
+                name: Some("2".to_owned()),
+            },
+            InputDeviceDescriptor {
+                index: 3,
+                name: Some(" Shure MV7 ".to_owned()),
+            },
         ]);
 
-        let values = choices.iter().map(|choice| choice.value.as_str()).collect::<Vec<_>>();
+        let values = choices
+            .iter()
+            .map(|choice| choice.value.as_str())
+            .collect::<Vec<_>>();
         assert_eq!(values, ["0", "1", "2", "Shure MV7"]);
     }
 
@@ -784,10 +827,19 @@ mod tests {
         let names = [Some("Shure MV7"), None, Some(" MacBook Pro Microphone ")];
 
         assert_eq!(super::configured_device_position(&names, "1"), Some(1));
-        assert_eq!(super::configured_device_position(&names, "macbook pro microphone"), Some(2));
-        assert_eq!(super::configured_device_position(&names, " shure mv7 "), Some(0));
+        assert_eq!(
+            super::configured_device_position(&names, "macbook pro microphone"),
+            Some(2)
+        );
+        assert_eq!(
+            super::configured_device_position(&names, " shure mv7 "),
+            Some(0)
+        );
         assert_eq!(super::configured_device_position(&names, "3"), None);
-        assert_eq!(super::configured_device_position(&names, "Missing Mic"), None);
+        assert_eq!(
+            super::configured_device_position(&names, "Missing Mic"),
+            None
+        );
     }
 
     #[test]
@@ -905,7 +957,10 @@ mod tests {
 
         assert!(!state.is_recording());
         assert_eq!(state.get_state(), crate::state::STATE_ERROR);
-        assert_eq!(&*state.overlay_text(), "words captured before disconnecting");
+        assert_eq!(
+            &*state.overlay_text(),
+            "words captured before disconnecting"
+        );
         assert!(!state.overlay_error_text().is_empty());
         assert!(controller.should_rebuild_stream());
     }
@@ -916,10 +971,26 @@ mod tests {
         mic_config.audio_device = Some("Shure MV7".to_owned());
         let rate = mic_config.sample_rate;
 
-        assert!(!super::stream_opened_for_another_config(rate, Some("Shure MV7"), &mic_config));
-        assert!(super::stream_opened_for_another_config(rate + 1, Some("Shure MV7"), &mic_config));
-        assert!(super::stream_opened_for_another_config(rate, Some("Built-in"), &mic_config));
-        assert!(super::stream_opened_for_another_config(rate, None, &mic_config));
+        assert!(!super::stream_opened_for_another_config(
+            rate,
+            Some("Shure MV7"),
+            &mic_config
+        ));
+        assert!(super::stream_opened_for_another_config(
+            rate + 1,
+            Some("Shure MV7"),
+            &mic_config
+        ));
+        assert!(super::stream_opened_for_another_config(
+            rate,
+            Some("Built-in"),
+            &mic_config
+        ));
+        assert!(super::stream_opened_for_another_config(
+            rate,
+            None,
+            &mic_config
+        ));
     }
 
     #[test]
@@ -934,7 +1005,8 @@ mod tests {
         );
         let transcription_controller =
             crate::transcription::spawn_transcription_thread(state.clone(), config_store.clone());
-        let controller = AudioController::inactive(state, transcription_controller, config_store.clone());
+        let controller =
+            AudioController::inactive(state, transcription_controller, config_store.clone());
 
         assert!(controller.should_rebuild_stream());
 
@@ -984,7 +1056,10 @@ mod core_audio_listener {
     /// input in `DEVICE_CHANGES`, which the status poll checks on each tick.
     pub fn register_hardware_listeners() {
         for (selector, name) in [
-            (kAudioHardwarePropertyDevices, "kAudioHardwarePropertyDevices"),
+            (
+                kAudioHardwarePropertyDevices,
+                "kAudioHardwarePropertyDevices",
+            ),
             (
                 kAudioHardwarePropertyDefaultInputDevice,
                 "kAudioHardwarePropertyDefaultInputDevice",

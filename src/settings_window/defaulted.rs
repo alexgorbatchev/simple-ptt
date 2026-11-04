@@ -74,7 +74,9 @@ impl DefaultedRow {
     }
 
     pub fn from_tag(tag: isize) -> Option<Self> {
-        usize::try_from(tag).ok().and_then(|index| Self::ALL.get(index).copied())
+        usize::try_from(tag)
+            .ok()
+            .and_then(|index| Self::ALL.get(index).copied())
     }
 }
 
@@ -87,12 +89,17 @@ mod tests {
     fn every_row_edits_a_defaulted_key_and_round_trips_through_its_tag() {
         for row in DefaultedRow::ALL {
             assert!(
-                DEFAULTED_KEYS.iter().any(|(key, _)| *key == row.config_key()),
+                DEFAULTED_KEYS
+                    .iter()
+                    .any(|(key, _)| *key == row.config_key()),
                 "{row:?}"
             );
             assert_eq!(DefaultedRow::from_tag(row.tag()), Some(row));
         }
         assert_eq!(DefaultedRow::from_tag(-1), None);
-        assert_eq!(DefaultedRow::from_tag(DefaultedRow::ALL.len() as isize), None);
+        assert_eq!(
+            DefaultedRow::from_tag(DefaultedRow::ALL.len() as isize),
+            None
+        );
     }
 }

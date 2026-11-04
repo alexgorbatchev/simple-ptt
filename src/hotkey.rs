@@ -149,7 +149,11 @@ fn handle_key_press(
         if !open_settings
             && !matches!(
                 current_state,
-                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
+                STATE_RECORDING
+                    | STATE_PROCESSING
+                    | STATE_BUFFER_READY
+                    | STATE_TRANSFORMING
+                    | STATE_ERROR
             )
         {
             return false;
@@ -465,7 +469,9 @@ fn handle_key_release(
             STATE_RECORDING if state.is_overlay_correction_active() => {
                 log::info!("ignoring transform hotkey while correction is recording");
             }
-            STATE_RECORDING => stop_recording_and_transform_and_resume(state, controller, "transform hotkey"),
+            STATE_RECORDING => {
+                stop_recording_and_transform_and_resume(state, controller, "transform hotkey")
+            }
             STATE_BUFFER_READY => {
                 state.set_state(STATE_TRANSFORMING);
                 match controller.transform_buffer() {
@@ -494,9 +500,8 @@ fn handle_key_release(
 fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig {
     let config = config_store.current();
     let record_hotkey = parse_hotkey_binding(&config.ui.hotkey).ok();
-    let correction_key = parse_correction_key(config.ui.correction_key.as_str()).filter(|key| {
-        !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey))
-    });
+    let correction_key = parse_correction_key(config.ui.correction_key.as_str())
+        .filter(|key| !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey)));
     let transform_hotkey = config
         .resolve_transformation_config()
         .ok()
@@ -539,7 +544,10 @@ fn parse_correction_key(raw: &str) -> Option<CorrectionBinding> {
 fn stop_recording_and_paste(state: &AppState, controller: &TranscriptionController, reason: &str) {
     if !state.is_recording() || state.is_overlay_correction_active() {
         if state.is_overlay_correction_active() {
-            log::info!("ignoring record hotkey paste release while correction is active ({})", reason);
+            log::info!(
+                "ignoring record hotkey paste release while correction is active ({})",
+                reason
+            );
         }
         return;
     }
@@ -592,12 +600,18 @@ fn start_recording(
     mic_gain_problem: Option<&str>,
 ) -> Option<RecordHotkeyAction> {
     if let Some(problem) = mic_gain_problem {
-        log::warn!("record hotkey pressed with an invalid gain (state {})", current_state);
+        log::warn!(
+            "record hotkey pressed with an invalid gain (state {})",
+            current_state
+        );
         state.report_error(problem);
         return None;
     }
     if !state.is_microphone_available() {
-        log::warn!("record hotkey pressed with no microphone available (state {})", current_state);
+        log::warn!(
+            "record hotkey pressed with no microphone available (state {})",
+            current_state
+        );
         state.report_error(NO_MICROPHONE_MESSAGE);
         return None;
     }
@@ -629,7 +643,10 @@ fn stop_recording_and_transform_and_resume(
     state.set_state(STATE_PROCESSING);
     match controller.stop_session_and_transform_and_resume() {
         Ok(()) => {
-            log::info!("stopping recording, transforming buffered text, and resuming ({})", reason);
+            log::info!(
+                "stopping recording, transforming buffered text, and resuming ({})",
+                reason
+            );
         }
         Err(error) => {
             log::error!("failed to stop recording for transformation: {}", error);
@@ -664,7 +681,9 @@ mod tests {
         stop_recording_and_transform_and_paste, stop_recording_and_transform_and_resume,
     };
 
-    fn test_controller(state: &std::sync::Arc<crate::state::AppState>) -> crate::transcription::TranscriptionController {
+    fn test_controller(
+        state: &std::sync::Arc<crate::state::AppState>,
+    ) -> crate::transcription::TranscriptionController {
         let config = crate::config::Config::default();
         let config_store = crate::settings::LiveConfigStore::new(
             config.clone(),
@@ -684,7 +703,10 @@ mod tests {
         state.set_microphone_available(false);
         let controller = crate::transcription::TranscriptionController::without_worker();
 
-        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE, None), None);
+        assert_eq!(
+            super::start_recording(&state, &controller, STATE_IDLE, None),
+            None
+        );
 
         assert_eq!(state.get_state(), STATE_ERROR);
         assert_eq!(&*state.overlay_error_text(), NO_MICROPHONE_MESSAGE);
@@ -698,7 +720,9 @@ mod tests {
         use std::cell::Cell;
 
         let state = AppState::new();
-        state.report_error("failed to start Deepgram session: HTTP error: 500 Internal Server Error");
+        state.report_error(
+            "failed to start Deepgram session: HTTP error: 500 Internal Server Error",
+        );
         let config = crate::config::Config::default();
         let config_store = crate::settings::LiveConfigStore::new(
             config.clone(),
@@ -731,13 +755,18 @@ mod tests {
 
     #[test]
     fn command_comma_discards_the_overlay_and_requests_settings() {
-        use super::{AppState, Cell, Instant, LiveConfigStore, TranscriptionController,
-            STATE_RECORDING, STATE_BUFFER_READY, STATE_PROCESSING, STATE_TRANSFORMING,
-            STATE_ERROR, STATE_IDLE};
+        use super::{
+            AppState, Cell, Instant, LiveConfigStore, TranscriptionController, STATE_BUFFER_READY,
+            STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
+        };
         for (current_state, correcting) in [
-            (STATE_RECORDING, false), (STATE_RECORDING, true),
-            (STATE_BUFFER_READY, false), (STATE_PROCESSING, false),
-            (STATE_TRANSFORMING, false), (STATE_ERROR, false), (STATE_IDLE, false),
+            (STATE_RECORDING, false),
+            (STATE_RECORDING, true),
+            (STATE_BUFFER_READY, false),
+            (STATE_PROCESSING, false),
+            (STATE_TRANSFORMING, false),
+            (STATE_ERROR, false),
+            (STATE_IDLE, false),
         ] {
             let state = AppState::new();
             state.set_state(current_state);
@@ -745,31 +774,51 @@ mod tests {
             state.set_overlay_window_visible(true);
             state.set_overlay_text("Do not paste or transform this narration");
             let config = crate::config::Config::default();
-            let store = LiveConfigStore::new(config.clone(), config,
-                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
+            let store = LiveConfigStore::new(
+                config.clone(),
+                config,
+                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"),
+            );
             let controller = TranscriptionController::without_worker();
             let pressed_at = Cell::new(Some(Instant::now()));
-            let record_action = Cell::new(Some(super::RecordHotkeyAction::StopAndTransformAndPaste));
+            let record_action =
+                Cell::new(Some(super::RecordHotkeyAction::StopAndTransformAndPaste));
             let correction_origin = Cell::new(Some(super::CorrectionOrigin::Dictation));
             let transform_down = Cell::new(true);
             let clipboard_down = Cell::new(true);
 
-            assert!(super::handle_key_press(Key::Comma,
-                HotkeyModifiers { meta: true, ..HotkeyModifiers::default() },
-                &store, &state, &controller, &pressed_at, &record_action,
-                &correction_origin, &transform_down, &clipboard_down));
+            assert!(super::handle_key_press(
+                Key::Comma,
+                HotkeyModifiers {
+                    meta: true,
+                    ..HotkeyModifiers::default()
+                },
+                &store,
+                &state,
+                &controller,
+                &pressed_at,
+                &record_action,
+                &correction_origin,
+                &transform_down,
+                &clipboard_down
+            ));
 
             assert!(state.is_overlay_dismissed());
             assert!(state.overlay_text().is_empty());
             assert!(state.take_settings_request());
-            assert!(!state.take_settings_request(), "present Settings once per request");
+            assert!(
+                !state.take_settings_request(),
+                "present Settings once per request"
+            );
             assert!(pressed_at.get().is_none());
             assert!(record_action.get().is_none());
             assert!(correction_origin.get().is_none());
             assert!(!transform_down.get());
             assert!(!clipboard_down.get());
-            assert_eq!(state.is_abort_requested(),
-                !matches!(current_state, STATE_IDLE | STATE_ERROR));
+            assert_eq!(
+                state.is_abort_requested(),
+                !matches!(current_state, STATE_IDLE | STATE_ERROR)
+            );
 
             // Releasing held record, transform, or correction keys after the
             // shortcut must not trigger another operation.
@@ -795,25 +844,64 @@ mod tests {
     #[test]
     fn command_comma_leaves_other_apps_and_other_comma_chords_alone() {
         use super::{AppState, Cell, LiveConfigStore, TranscriptionController, STATE_RECORDING};
-        let command = HotkeyModifiers { meta: true, ..HotkeyModifiers::default() };
+        let command = HotkeyModifiers {
+            meta: true,
+            ..HotkeyModifiers::default()
+        };
         for (visible, dismissed, modifiers) in [
-            (false, false, command), (true, true, command),
+            (false, false, command),
+            (true, true, command),
             (true, false, HotkeyModifiers::default()),
-            (true, false, HotkeyModifiers { shift: true, ..command }),
-            (true, false, HotkeyModifiers { alt: true, ..command }),
-            (true, false, HotkeyModifiers { control: true, ..command }),
+            (
+                true,
+                false,
+                HotkeyModifiers {
+                    shift: true,
+                    ..command
+                },
+            ),
+            (
+                true,
+                false,
+                HotkeyModifiers {
+                    alt: true,
+                    ..command
+                },
+            ),
+            (
+                true,
+                false,
+                HotkeyModifiers {
+                    control: true,
+                    ..command
+                },
+            ),
         ] {
             let state = AppState::new();
             state.set_state(STATE_RECORDING);
             state.set_overlay_window_visible(visible);
             state.set_overlay_text("Keep this narration");
-            if dismissed { state.dismiss_overlay(); }
+            if dismissed {
+                state.dismiss_overlay();
+            }
             let config = crate::config::Config::default();
-            let store = LiveConfigStore::new(config.clone(), config,
-                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
-            assert!(!super::handle_key_press(Key::Comma, modifiers, &store, &state,
-                &TranscriptionController::without_worker(), &Cell::new(None),
-                &Cell::new(None), &Cell::new(None), &Cell::new(false), &Cell::new(false)));
+            let store = LiveConfigStore::new(
+                config.clone(),
+                config,
+                std::path::PathBuf::from(".tmp/overlay-settings/config.toml"),
+            );
+            assert!(!super::handle_key_press(
+                Key::Comma,
+                modifiers,
+                &store,
+                &state,
+                &TranscriptionController::without_worker(),
+                &Cell::new(None),
+                &Cell::new(None),
+                &Cell::new(None),
+                &Cell::new(false),
+                &Cell::new(false)
+            ));
             assert_eq!(&*state.overlay_text(), "Keep this narration");
             assert!(!state.is_abort_requested());
             assert!(!state.take_settings_request());
@@ -828,13 +916,28 @@ mod tests {
         state.set_overlay_window_visible(true);
         state.set_overlay_text("Only the editable overlay holds this text");
         let config = crate::config::Config::default();
-        let store = LiveConfigStore::new(config.clone(), config,
-            std::path::PathBuf::from(".tmp/overlay-settings/config.toml"));
-        let controller = crate::transcription::spawn_transcription_thread(state.clone(), store.clone());
-        assert!(super::handle_key_press(Key::Comma,
-            HotkeyModifiers { meta: true, ..HotkeyModifiers::default() },
-            &store, &state, &controller, &Cell::new(None), &Cell::new(None),
-            &Cell::new(None), &Cell::new(false), &Cell::new(false)));
+        let store = LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from(".tmp/overlay-settings/config.toml"),
+        );
+        let controller =
+            crate::transcription::spawn_transcription_thread(state.clone(), store.clone());
+        assert!(super::handle_key_press(
+            Key::Comma,
+            HotkeyModifiers {
+                meta: true,
+                ..HotkeyModifiers::default()
+            },
+            &store,
+            &state,
+            &controller,
+            &Cell::new(None),
+            &Cell::new(None),
+            &Cell::new(None),
+            &Cell::new(false),
+            &Cell::new(false)
+        ));
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while state.get_state() != STATE_IDLE && Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -855,7 +958,10 @@ mod tests {
         let controller = crate::transcription::TranscriptionController::without_worker();
         let problem = "Microphone > Mic gain (dB): \"40 dB\" is outside the 0 to 10 dB range. Fix it in Settings, then record again.";
 
-        assert_eq!(super::start_recording(&state, &controller, STATE_IDLE, Some(problem)), None);
+        assert_eq!(
+            super::start_recording(&state, &controller, STATE_IDLE, Some(problem)),
+            None
+        );
 
         assert_eq!(state.get_state(), STATE_ERROR);
         assert_eq!(&*state.overlay_error_text(), problem);
@@ -1073,7 +1179,8 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.ui.correction_key = "LeftAlt".to_owned();
         let store = crate::settings::LiveConfigStore::new(
-            config.clone(), config,
+            config.clone(),
+            config,
             std::path::PathBuf::from(".tmp/correction/config.toml"),
         );
         let controller = crate::transcription::TranscriptionController::without_worker();
@@ -1082,10 +1189,20 @@ mod tests {
         let correction_down = std::cell::Cell::new(None);
         let transform_down = std::cell::Cell::new(false);
         let clipboard_down = std::cell::Cell::new(false);
-        let press = |key, modifiers| super::handle_key_press(
-            key, modifiers, &store, &state, &controller, &pressed_at,
-            &record_action, &correction_down, &transform_down, &clipboard_down,
-        );
+        let press = |key, modifiers| {
+            super::handle_key_press(
+                key,
+                modifiers,
+                &store,
+                &state,
+                &controller,
+                &pressed_at,
+                &record_action,
+                &correction_down,
+                &transform_down,
+                &clipboard_down,
+            )
+        };
         let release = |key| {
             super::handle_key_release(
                 key,
@@ -1100,7 +1217,10 @@ mod tests {
                 &clipboard_down,
             )
         };
-        let command = HotkeyModifiers { meta: true, ..HotkeyModifiers::default() };
+        let command = HotkeyModifiers {
+            meta: true,
+            ..HotkeyModifiers::default()
+        };
 
         assert!(!press(Key::MetaLeft, HotkeyModifiers::default()));
         assert!(!state.is_overlay_correction_active());
@@ -1218,7 +1338,8 @@ mod tests {
             config,
             std::path::PathBuf::from("/tmp/config.toml"),
         );
-        let controller = crate::transcription::spawn_transcription_thread(state.clone(), config_store);
+        let controller =
+            crate::transcription::spawn_transcription_thread(state.clone(), config_store);
 
         stop_recording_and_transform_and_paste(&state, &controller, "test");
         stop_recording_and_paste(&state, &controller, "test");

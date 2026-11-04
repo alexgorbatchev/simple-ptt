@@ -230,7 +230,10 @@ pub const DEFAULTED_KEYS: &[(&str, &[&str])] = &[
     ("transformation.auto", &[]),
     ("transformation.model", &[]),
     ("transformation.system_prompt", &[]),
-    ("transformation.correction_system_prompt", &["instruction_system_prompt"]),
+    (
+        "transformation.correction_system_prompt",
+        &["instruction_system_prompt"],
+    ),
 ];
 
 /// Defaulted keys (`DEFAULTED_KEYS`) the user reset to their built-in default
@@ -262,12 +265,16 @@ impl FromIterator<&'static str> for DefaultResets {
 
 /// The defaulted keys (`DEFAULTED_KEYS`) the config file at `path` has,
 /// under their name or an alias. A missing file has none.
-pub fn defaulted_keys_in_file(path: &Path) -> Result<std::collections::BTreeSet<&'static str>, String> {
+pub fn defaulted_keys_in_file(
+    path: &Path,
+) -> Result<std::collections::BTreeSet<&'static str>, String> {
     let document = load_document(path)?;
     Ok(DEFAULTED_KEYS
         .iter()
         .filter(|(path, aliases)| {
-            let (section, key) = path.split_once('.').expect("defaulted keys are section.key");
+            let (section, key) = path
+                .split_once('.')
+                .expect("defaulted keys are section.key");
             document
                 .get(section)
                 .and_then(Item::as_table_like)
@@ -511,7 +518,9 @@ impl Config {
         Ok(TransformationRuntimeConfig {
             provider,
             api_key,
-            ollama_base_url: resolve_ollama_base_url(self.transformation.ollama_base_url.as_deref()),
+            ollama_base_url: resolve_ollama_base_url(
+                self.transformation.ollama_base_url.as_deref(),
+            ),
             model,
             system_prompt: if system_prompt.is_empty() {
                 default_transformation_system_prompt()
@@ -736,7 +745,12 @@ fn existing_key_name(table: &dyn TableLike, primary_key: &str, aliases: &[&str])
         .to_owned()
 }
 
-fn set_required_string_key(table: &mut dyn TableLike, key: &str, aliases: &[&str], field_value: &str) {
+fn set_required_string_key(
+    table: &mut dyn TableLike,
+    key: &str,
+    aliases: &[&str],
+    field_value: &str,
+) {
     write_key_value(table, key, aliases, field_value.into());
 }
 
@@ -860,7 +874,14 @@ fn write_ui_table(
     resets: &DefaultResets,
 ) -> Result<(), String> {
     let table = ensure_named_table(document, "ui")?;
-    set_defaulted_key(table, "start_on_login", &[], ui.start_on_login, false, resets.contains("ui.start_on_login"));
+    set_defaulted_key(
+        table,
+        "start_on_login",
+        &[],
+        ui.start_on_login,
+        false,
+        resets.contains("ui.start_on_login"),
+    );
     set_defaulted_key(
         table,
         "auto_check_updates",
@@ -869,7 +890,14 @@ fn write_ui_table(
         default_auto_check_updates(),
         resets.contains("ui.auto_check_updates"),
     );
-    set_defaulted_key(table, "hotkey", &[], ui.hotkey.as_str(), &default_hotkey(), resets.contains("ui.hotkey"));
+    set_defaulted_key(
+        table,
+        "hotkey",
+        &[],
+        ui.hotkey.as_str(),
+        &default_hotkey(),
+        resets.contains("ui.hotkey"),
+    );
     set_defaulted_key(
         table,
         "correction_key",
@@ -884,7 +912,14 @@ fn write_ui_table(
         &["overlay_font_family"],
         ui.font_name.as_deref(),
     );
-    set_defaulted_key(table, "font_size", &[], ui.font_size, default_overlay_font_size(), resets.contains("ui.font_size"));
+    set_defaulted_key(
+        table,
+        "font_size",
+        &[],
+        ui.font_size,
+        default_overlay_font_size(),
+        resets.contains("ui.font_size"),
+    );
     match ui.footer_font_size {
         Some(footer_font_size) => set_float_key(table, "footer_font_size", footer_font_size),
         None => {
@@ -917,7 +952,14 @@ fn write_mic_table(
         i64::from(default_sample_rate()),
         resets.contains("mic.sample_rate"),
     );
-    set_defaulted_key(table, "gain", &[], f64::from(mic.gain), f64::from(default_gain()), resets.contains("mic.gain"));
+    set_defaulted_key(
+        table,
+        "gain",
+        &[],
+        f64::from(mic.gain),
+        f64::from(default_gain()),
+        resets.contains("mic.gain"),
+    );
     set_defaulted_key(
         table,
         "hold_ms",
@@ -926,7 +968,14 @@ fn write_mic_table(
         i64::try_from(default_hold_ms()).unwrap_or(i64::MAX),
         resets.contains("mic.hold_ms"),
     );
-    set_defaulted_key(table, "always_on", &[], mic.always_on, default_always_on(), resets.contains("mic.always_on"));
+    set_defaulted_key(
+        table,
+        "always_on",
+        &[],
+        mic.always_on,
+        default_always_on(),
+        resets.contains("mic.always_on"),
+    );
     Ok(())
 }
 
@@ -945,7 +994,14 @@ fn write_deepgram_table(
         &default_deepgram_language(),
         resets.contains("deepgram.language"),
     );
-    set_defaulted_key(table, "model", &[], deepgram.model.as_str(), &default_deepgram_model(), resets.contains("deepgram.model"));
+    set_defaulted_key(
+        table,
+        "model",
+        &[],
+        deepgram.model.as_str(),
+        &default_deepgram_model(),
+        resets.contains("deepgram.model"),
+    );
     set_defaulted_key(
         table,
         "endpointing_ms",
@@ -980,7 +1036,14 @@ fn write_transformation_table(
         &default_transformation_hotkey(),
         resets.contains("transformation.hotkey"),
     );
-    set_defaulted_key(table, "auto", &[], transformation.auto, default_transformation_auto(), resets.contains("transformation.auto"));
+    set_defaulted_key(
+        table,
+        "auto",
+        &[],
+        transformation.auto,
+        default_transformation_auto(),
+        resets.contains("transformation.auto"),
+    );
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
     set_optional_string_key(
@@ -1033,13 +1096,10 @@ fn meter_style_name(meter_style: UiMeterStyle) -> &'static str {
     }
 }
 
-pub fn save_config(
-    path: &Path,
-    config: &Config,
-    resets: &DefaultResets,
-) -> Result<(), String> {
+pub fn save_config(path: &Path, config: &Config, resets: &DefaultResets) -> Result<(), String> {
     let mut document = load_document(path)?;
-    let sections_in_file = CONFIG_SECTIONS.map(|section| root_table(&mut document).contains_key(section));
+    let sections_in_file =
+        CONFIG_SECTIONS.map(|section| root_table(&mut document).contains_key(section));
     write_ui_table(&mut document, &config.ui, resets)?;
     write_mic_table(&mut document, &config.mic, resets)?;
     write_deepgram_table(&mut document, &config.deepgram, resets)?;
@@ -1241,8 +1301,8 @@ mod tests {
 
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
-        materialize_runtime_config, save_config, Config, ConfigFileSnapshot,
-        DefaultResets, UiMeterStyle,
+        materialize_runtime_config, save_config, Config, ConfigFileSnapshot, DefaultResets,
+        UiMeterStyle,
     };
 
     fn env_lock() -> MutexGuard<'static, ()> {
@@ -1326,8 +1386,10 @@ mod tests {
 
     #[test]
     fn pills_meter_style_is_saved_and_read_as_pills() {
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-config-pills-test-{}", std::process::id()));
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-config-pills-test-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
         std::fs::write(&path, "[ui]\nmeter_style = \"animated-height\"\n").unwrap();
@@ -1542,14 +1604,20 @@ mod tests {
             .parse::<toml_edit::DocumentMut>()
             .unwrap()
             .get("transformation")
-            .map(|item| item.as_table().expect("[transformation] is a table").clone())
+            .map(|item| {
+                item.as_table()
+                    .expect("[transformation] is a table")
+                    .clone()
+            })
             .unwrap_or_default()
     }
 
     #[test]
     fn saving_the_default_config_to_a_new_file_writes_no_defaulted_key() {
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-defaults-everywhere-{}", std::process::id()));
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-defaults-everywhere-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
 
@@ -1562,8 +1630,8 @@ mod tests {
 
     #[test]
     fn a_reset_key_the_file_has_is_removed_while_it_equals_its_default() {
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-reset-keys-{}", std::process::id()));
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-reset-keys-{}", std::process::id()));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
         std::fs::write(
@@ -1591,8 +1659,10 @@ mod tests {
     /// reset, removes again.
     #[test]
     fn every_defaulted_key_is_written_when_changed_and_removed_when_reset() {
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-every-defaulted-key-{}", std::process::id()));
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-every-defaulted-key-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
         let mut changed = Config::default();
@@ -1618,8 +1688,14 @@ mod tests {
 
         save_config(&path, &changed, &DefaultResets::default()).unwrap();
         let written = super::defaulted_keys_in_file(&path).unwrap();
-        let every_key = super::DEFAULTED_KEYS.iter().map(|(key, _)| *key).collect::<Vec<_>>();
-        assert_eq!(written.into_iter().collect::<Vec<_>>().len(), every_key.len());
+        let every_key = super::DEFAULTED_KEYS
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            written.into_iter().collect::<Vec<_>>().len(),
+            every_key.len()
+        );
 
         let all_reset = DefaultResets::from_iter(every_key.iter().copied());
         save_config(&path, &Config::default(), &all_reset).unwrap();
@@ -1640,8 +1716,10 @@ mod tests {
 
     #[test]
     fn save_config_writes_only_the_values_that_differ_from_their_defaults() {
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-changed-defaults-{}", std::process::id()));
+        let temp_directory = std::env::temp_dir().join(format!(
+            "simple-ptt-changed-defaults-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
         let mut config = Config::default();
@@ -1657,8 +1735,15 @@ mod tests {
 
         assert_eq!(document["mic"].as_table().unwrap().len(), 1, "{document}");
         assert_eq!(document["mic"]["gain"].as_float(), Some(6.0));
-        assert_eq!(document["deepgram"].as_table().unwrap().len(), 1, "{document}");
-        assert_eq!(document["deepgram"]["endpointing_ms"].as_integer(), Some(450));
+        assert_eq!(
+            document["deepgram"].as_table().unwrap().len(),
+            1,
+            "{document}"
+        );
+        assert_eq!(
+            document["deepgram"]["endpointing_ms"].as_integer(),
+            Some(450)
+        );
         assert!(!document.contains_key("ui"), "{document}");
         assert!(!document.contains_key("transformation"), "{document}");
     }
@@ -1693,8 +1778,8 @@ mod tests {
             defaults.transformation.hotkey,
             defaults.transformation.auto,
         );
-        let temp_directory = std::env::temp_dir()
-            .join(format!("simple-ptt-defaults-kept-{}", std::process::id()));
+        let temp_directory =
+            std::env::temp_dir().join(format!("simple-ptt-defaults-kept-{}", std::process::id()));
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
         std::fs::write(&path, &initial_contents).unwrap();
@@ -1760,8 +1845,14 @@ mod tests {
     fn an_unset_model_resolves_per_provider_or_is_required() {
         let mut config = Config::default();
         config.transformation.provider = Some("anthropic".to_owned());
-        assert_eq!(config.resolve_transformation_config().unwrap().model, "claude-haiku-5-5");
-        assert_eq!(materialize_runtime_config(&config).transformation.model, "claude-haiku-5-5");
+        assert_eq!(
+            config.resolve_transformation_config().unwrap().model,
+            "claude-haiku-5-5"
+        );
+        assert_eq!(
+            materialize_runtime_config(&config).transformation.model,
+            "claude-haiku-5-5"
+        );
 
         config.transformation.provider = Some("ollama".to_owned());
         let error = config.resolve_transformation_config().unwrap_err();

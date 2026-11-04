@@ -151,7 +151,12 @@ mod tests {
 
     #[test]
     fn no_provider_selects_the_disabled_entry() {
-        for title in [None, Some(""), Some("  "), Some(TRANSFORMATION_PROVIDER_DISABLED_LABEL)] {
+        for title in [
+            None,
+            Some(""),
+            Some("  "),
+            Some(TRANSFORMATION_PROVIDER_DISABLED_LABEL),
+        ] {
             assert_eq!(
                 provider_selection(title),
                 ProviderSelection::Listed(TRANSFORMATION_PROVIDER_DISABLED_LABEL),
@@ -162,7 +167,10 @@ mod tests {
 
     #[test]
     fn a_supported_provider_selects_its_canonical_title() {
-        assert_eq!(provider_selection(Some(" OpenAI ")), ProviderSelection::Listed("openai"));
+        assert_eq!(
+            provider_selection(Some(" OpenAI ")),
+            ProviderSelection::Listed("openai")
+        );
     }
 
     #[test]

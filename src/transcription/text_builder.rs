@@ -105,7 +105,10 @@ mod tests {
         let provisional_start = live_text
             .provisional_start
             .expect("interim text should be marked provisional");
-        assert_eq!(&live_text.text[..provisional_start], "Prefix text final segment ");
+        assert_eq!(
+            &live_text.text[..provisional_start],
+            "Prefix text final segment "
+        );
         assert_eq!(&live_text.text[provisional_start..], "still talking ");
     }
 
@@ -121,8 +124,14 @@ mod tests {
     fn build_overlay_text_has_no_provisional_text_without_an_interim_transcript() {
         let parts = vec!["final segment".to_owned()];
 
-        assert_eq!(build_overlay_text("Prefix", &parts, None).provisional_start, None);
-        assert_eq!(build_overlay_text("Prefix", &parts, Some("   ")).provisional_start, None);
+        assert_eq!(
+            build_overlay_text("Prefix", &parts, None).provisional_start,
+            None
+        );
+        assert_eq!(
+            build_overlay_text("Prefix", &parts, Some("   ")).provisional_start,
+            None
+        );
     }
 
     #[test]

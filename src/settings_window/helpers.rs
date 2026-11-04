@@ -124,7 +124,10 @@ fn audio_device_options(
     // A configured index or name selects the connected device it resolves
     // to, the same way the input stream finds it.
     if !is_system_default_audio_device_value(configured_audio_device) {
-        let names = choice_names.iter().map(Option::as_deref).collect::<Vec<_>>();
+        let names = choice_names
+            .iter()
+            .map(Option::as_deref)
+            .collect::<Vec<_>>();
         if let Some(position) = configured_device_position(&names, configured_audio_device) {
             let title = audio_device_options[position + 1].title.clone();
             return (audio_device_options, title);
@@ -232,8 +235,7 @@ pub fn unreadable_model_cache_message(error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_audio_device_title, find_mic_audio_device_option_title,
-        manual_model_fetch_message,
+        default_audio_device_title, find_mic_audio_device_option_title, manual_model_fetch_message,
         mic_audio_device_popup_state, settings_load_status, unreadable_model_cache_message,
         MicAudioDeviceOption, SYSTEM_DEFAULT_AUDIO_DEVICE_LABEL,
     };

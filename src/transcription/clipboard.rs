@@ -267,9 +267,7 @@ mod tests {
     #[test]
     fn query_paste_diagnostics_runs_on_background_thread_without_panicking() {
         let state = AppState::new();
-        let handle = std::thread::spawn(move || {
-            query_paste_diagnostics(&state)
-        });
+        let handle = std::thread::spawn(move || query_paste_diagnostics(&state));
 
         let diagnostics = handle.join().expect("background thread must not panic");
         assert_eq!(diagnostics.state, crate::state::STATE_IDLE);

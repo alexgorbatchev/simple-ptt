@@ -18,9 +18,8 @@ use super::labels::{
 };
 use crate::config::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
-    unsupported_provider_problem,
-    Config, DeepgramConfig, DefaultResets, MicConfig, TransformationConfig,
-    TransformationProvider, UiConfig, UiMeterStyle,
+    unsupported_provider_problem, Config, DeepgramConfig, DefaultResets, MicConfig,
+    TransformationConfig, TransformationProvider, UiConfig, UiMeterStyle,
 };
 
 /// The font popup's title for an unset `ui.font_name`: the overlay then uses
@@ -130,7 +129,8 @@ impl PromptsForm {
             }
             Prompt::Correction => {
                 self.correction_system_prompt = default_transformation_correction_system_prompt();
-                self.resets.insert("transformation.correction_system_prompt");
+                self.resets
+                    .insert("transformation.correction_system_prompt");
             }
         }
     }
@@ -182,7 +182,11 @@ impl SettingsForm {
                         .unwrap_or_else(|| TRANSFORMATION_PROVIDER_DISABLED_LABEL.to_owned()),
                 ),
                 api_key: config.transformation.api_key.clone().unwrap_or_default(),
-                ollama_base_url: config.transformation.ollama_base_url.clone().unwrap_or_default(),
+                ollama_base_url: config
+                    .transformation
+                    .ollama_base_url
+                    .clone()
+                    .unwrap_or_default(),
                 model: config.transformation.model.clone(),
             },
             prompts: PromptsForm {
@@ -288,7 +292,10 @@ impl SettingsForm {
                 start_on_login: general.start_on_login,
                 auto_check_updates: general.auto_check_updates,
                 hotkey: text_or_default(&general.hotkey, &defaults.ui.hotkey),
-                correction_key: text_or_default(&general.correction_key, &defaults.ui.correction_key),
+                correction_key: text_or_default(
+                    &general.correction_key,
+                    &defaults.ui.correction_key,
+                ),
                 font_name: optional_popup_value(
                     general.font_name_title.as_deref(),
                     SYSTEM_MONOSPACED_FONT_LABEL,
@@ -302,7 +309,11 @@ impl SettingsForm {
             },
             mic: MicConfig {
                 audio_device: microphone.audio_device.clone(),
-                sample_rate: integer_or_default(microphone.sample_rate, defaults.mic.sample_rate, SAMPLE_RATE)?,
+                sample_rate: integer_or_default(
+                    microphone.sample_rate,
+                    defaults.mic.sample_rate,
+                    SAMPLE_RATE,
+                )?,
                 gain: microphone.gain,
                 hold_ms: integer_or_default(general.hold_ms, defaults.mic.hold_ms, HOLD_THRESHOLD)?,
                 always_on: microphone.always_on,
@@ -395,7 +406,10 @@ fn required_text(value: &str, field: SettingsField) -> Result<String, String> {
     optional_text(value).ok_or_else(|| format!("{}: required", field))
 }
 
-fn required_popup_title(selected_title: Option<&str>, field: SettingsField) -> Result<String, String> {
+fn required_popup_title(
+    selected_title: Option<&str>,
+    field: SettingsField,
+) -> Result<String, String> {
     required_text(selected_title.unwrap_or_default(), field)
 }
 
@@ -465,8 +479,8 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::{
-        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt, METER_STYLE_TITLES,
-        PromptsForm, SettingsForm, TransformationForm,
+        mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt, PromptsForm,
+        SettingsForm, TransformationForm, METER_STYLE_TITLES,
     };
     use crate::config::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
@@ -778,7 +792,10 @@ mod tests {
         assert_eq!(config.ui.font_size, defaults.ui.font_size);
         assert_eq!(config.mic.sample_rate, defaults.mic.sample_rate);
         assert_eq!(config.deepgram.language, defaults.deepgram.language);
-        assert_eq!(config.deepgram.endpointing_ms, defaults.deepgram.endpointing_ms);
+        assert_eq!(
+            config.deepgram.endpointing_ms,
+            defaults.deepgram.endpointing_ms
+        );
         assert_eq!(config.transformation.hotkey, defaults.transformation.hotkey);
         assert_eq!(config.ui.correction_key, "Alt+Cmd");
 
@@ -814,7 +831,10 @@ mod tests {
         assert_eq!(form.deepgram.utterance_end_ms, None);
         assert_eq!(form.transformation.hotkey, "");
         // Controls that cannot be blank keep showing the value.
-        assert_eq!(form.general.meter_style_title.as_deref(), Some("animated-height"));
+        assert_eq!(
+            form.general.meter_style_title.as_deref(),
+            Some("animated-height")
+        );
         assert!(form.general.start_on_login);
         assert_eq!(form.microphone.gain, 2.25);
         assert_eq!(form.deepgram.model_title.as_deref(), Some("nova-2-meeting"));
@@ -837,14 +857,27 @@ mod tests {
             Some(super::meter_style_title(defaults.ui.meter_style))
         );
         assert_eq!(form.general.start_on_login, defaults.ui.start_on_login);
-        assert_eq!(form.general.auto_check_updates, defaults.ui.auto_check_updates);
+        assert_eq!(
+            form.general.auto_check_updates,
+            defaults.ui.auto_check_updates
+        );
         assert_eq!(form.microphone.gain, defaults.mic.gain);
         assert_eq!(form.microphone.always_on, defaults.mic.always_on);
-        assert_eq!(form.deepgram.model_title.as_deref(), Some(defaults.deepgram.model.as_str()));
+        assert_eq!(
+            form.deepgram.model_title.as_deref(),
+            Some(defaults.deepgram.model.as_str())
+        );
         assert_eq!(form.transformation.auto, defaults.transformation.auto);
 
         let config = form.to_config().unwrap();
-        assert_eq!(config.ui, UiConfig { font_name: Some("Menlo".to_owned()), footer_font_size: Some(10.25), ..defaults.ui.clone() });
+        assert_eq!(
+            config.ui,
+            UiConfig {
+                font_name: Some("Menlo".to_owned()),
+                footer_font_size: Some(10.25),
+                ..defaults.ui.clone()
+            }
+        );
         let resets = form.resets();
         for row in DefaultedRow::ALL {
             assert!(resets.contains(row.config_key()), "{row:?}");
@@ -854,15 +887,18 @@ mod tests {
     #[test]
     fn integers_outside_the_config_type_range_are_rejected() {
         let cases: [(&str, fn(&mut SettingsForm)); 3] = [
-            ("Microphone > Sample rate: must be an unsigned integer", |form| {
-                form.microphone.sample_rate = Some(u64::from(u32::MAX) + 1)
-            }),
-            ("Deepgram > Endpointing (ms): must be an unsigned integer", |form| {
-                form.deepgram.endpointing_ms = Some(u64::from(u16::MAX) + 1)
-            }),
-            ("Deepgram > Utterance end (ms): must be an unsigned integer", |form| {
-                form.deepgram.utterance_end_ms = Some(u64::from(u16::MAX) + 1)
-            }),
+            (
+                "Microphone > Sample rate: must be an unsigned integer",
+                |form| form.microphone.sample_rate = Some(u64::from(u32::MAX) + 1),
+            ),
+            (
+                "Deepgram > Endpointing (ms): must be an unsigned integer",
+                |form| form.deepgram.endpointing_ms = Some(u64::from(u16::MAX) + 1),
+            ),
+            (
+                "Deepgram > Utterance end (ms): must be an unsigned integer",
+                |form| form.deepgram.utterance_end_ms = Some(u64::from(u16::MAX) + 1),
+            ),
         ];
 
         for (expected_prefix, edit) in cases {
@@ -905,7 +941,10 @@ mod tests {
 
         let error = form.to_config().unwrap_err();
 
-        assert!(error.starts_with("General > Meter style: must be one of: "), "{error}");
+        assert!(
+            error.starts_with("General > Meter style: must be one of: "),
+            "{error}"
+        );
         assert!(error.ends_with(" (got \"sparkles\")"), "{error}");
         for (_, title) in METER_STYLE_TITLES {
             assert!(error.contains(title), "{title} missing from {error}");
@@ -970,8 +1009,14 @@ mod tests {
     fn the_model_placeholder_names_the_providers_default_or_requires_a_model() {
         use super::transformation_model_placeholder;
 
-        assert_eq!(transformation_model_placeholder(Some("anthropic")), "Default: claude-haiku-5-5");
-        assert_eq!(transformation_model_placeholder(Some("ollama")), "Required for ollama");
+        assert_eq!(
+            transformation_model_placeholder(Some("anthropic")),
+            "Default: claude-haiku-5-5"
+        );
+        assert_eq!(
+            transformation_model_placeholder(Some("ollama")),
+            "Required for ollama"
+        );
         assert_eq!(transformation_model_placeholder(Some("galadriel")), "");
         assert_eq!(transformation_model_placeholder(None), "");
     }

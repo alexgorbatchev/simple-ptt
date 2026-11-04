@@ -96,7 +96,10 @@ mod tests {
 
     #[test]
     fn fields_are_named_by_pane_and_label() {
-        assert_eq!(DICTATION_SHORTCUT.to_string(), "General > Dictation shortcut");
+        assert_eq!(
+            DICTATION_SHORTCUT.to_string(),
+            "General > Dictation shortcut"
+        );
         assert_eq!(HOLD_THRESHOLD.row_title(), "Hold threshold (ms):");
     }
 
@@ -110,7 +113,10 @@ mod tests {
         config.mic.gain = 40.0;
         config.transformation.provider = Some("ollama".to_owned());
         config.transformation.hotkey = "Nope".to_owned();
-        let mut keys: Vec<_> = problems(&config).iter().map(|problem| problem.key).collect();
+        let mut keys: Vec<_> = problems(&config)
+            .iter()
+            .map(|problem| problem.key)
+            .collect();
         config.transformation.provider = Some("galadriel".to_owned());
         keys.extend(problems(&config).iter().map(|problem| problem.key));
         config.transformation.provider = Some("ollama".to_owned());
@@ -118,7 +124,10 @@ mod tests {
         keys.extend(problems(&config).iter().map(|problem| problem.key));
 
         for key in keys {
-            assert!(field_for_config_key(key).is_some(), "{key} has no settings row");
+            assert!(
+                field_for_config_key(key).is_some(),
+                "{key} has no settings row"
+            );
         }
     }
 

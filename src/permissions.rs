@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use block2::RcBlock;
-use objc2_av_foundation::{AVCaptureDevice, AVMediaType, AVMediaTypeAudio};
 pub use objc2_av_foundation::AVAuthorizationStatus;
+use objc2_av_foundation::{AVCaptureDevice, AVMediaType, AVMediaTypeAudio};
 use objc2_core_graphics::{CGPreflightListenEventAccess, CGRequestListenEventAccess};
 
 const APP_BUNDLE_IDENTIFIER: &str = "io.github.alexgorbatchev.simple-ptt";

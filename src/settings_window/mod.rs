@@ -38,11 +38,11 @@ use objc2_foundation::{ns_string, MainThreadMarker, NSRange, NSRect, NSSize, NSS
 use std::collections::BTreeSet;
 
 use crate::config::{Config, DefaultResets};
-use defaulted::DefaultedRow;
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
 use actions::SettingsAction;
 use controls::{for_auto_layout, push_button, set_capture_button_state, status_display};
+use defaulted::DefaultedRow;
 use form::{Prompt, SettingsForm};
 use helpers::environment_hint_message;
 use panes::activate;
@@ -114,7 +114,11 @@ impl SettingsWindow {
             (labels::GENERAL_PANE_TITLE, "gearshape", general_view),
             (labels::MICROPHONE_PANE_TITLE, "mic", microphone_view),
             (labels::DEEPGRAM_PANE_TITLE, "waveform", deepgram_view),
-            (labels::TRANSFORMATION_PANE_TITLE, "wand.and.stars", transformation_view),
+            (
+                labels::TRANSFORMATION_PANE_TITLE,
+                "wand.and.stars",
+                transformation_view,
+            ),
         ];
 
         let tab_view_controller = NSTabViewController::new(mtm);
@@ -363,8 +367,10 @@ impl SettingsWindow {
     }
 
     pub fn set_status(&self, message: &str) {
-        self.status_text_view.setString(&NSString::from_str(message));
-        self.status_text_view.scrollRangeToVisible(NSRange::new(0, 0));
+        self.status_text_view
+            .setString(&NSString::from_str(message));
+        self.status_text_view
+            .scrollRangeToVisible(NSRange::new(0, 0));
     }
 
     pub fn update_mic_gain_label(&self, gain_db: f32) {
@@ -497,16 +503,18 @@ impl SettingsWindow {
     fn set_hotkey_capture_state(&self, active_target: Option<HotkeyCaptureTarget>) {
         // Captured keys belong to the shortcut editor, including Return and
         // Escape. Restore the dialog equivalents only after capture ends.
-        self.cancel_button.setKeyEquivalent(if active_target.is_none() {
-            ns_string!("\u{1b}")
-        } else {
-            ns_string!("")
-        });
-        self.save_button.setKeyEquivalent(if active_target.is_none() {
-            ns_string!("\r")
-        } else {
-            ns_string!("")
-        });
+        self.cancel_button
+            .setKeyEquivalent(if active_target.is_none() {
+                ns_string!("\u{1b}")
+            } else {
+                ns_string!("")
+            });
+        self.save_button
+            .setKeyEquivalent(if active_target.is_none() {
+                ns_string!("\r")
+            } else {
+                ns_string!("")
+            });
         for (target, button) in [
             (
                 HotkeyCaptureTarget::Record,

@@ -31,7 +31,12 @@ enum Handle {
     End,
 }
 
-const HANDLES: [Handle; 4] = [Handle::Start, Handle::Control1, Handle::Control2, Handle::End];
+const HANDLES: [Handle; 4] = [
+    Handle::Start,
+    Handle::Control1,
+    Handle::Control2,
+    Handle::End,
+];
 
 fn point_of(curve: &HaloCurve, handle: Handle) -> (f64, f64) {
     match handle {
@@ -74,7 +79,10 @@ pub fn fitted(curve: HaloCurve, y_max: f64) -> HaloCurve {
 fn moved(curve: HaloCurve, handle: Handle, x: f64, y: f64, y_max: f64) -> HaloCurve {
     let mut curve = curve;
     let shift = |point: (f64, f64), dx: f64, dy: f64| {
-        (round((point.0 + dx).clamp(0.0, 1.0)), round((point.1 + dy).clamp(0.0, y_max)))
+        (
+            round((point.0 + dx).clamp(0.0, 1.0)),
+            round((point.1 + dy).clamp(0.0, y_max)),
+        )
     };
     match handle {
         Handle::Start => {
@@ -190,7 +198,9 @@ impl CurveEditor {
     /// Zooms the plot so its top edge is `y_max` blur strength. The curve
     /// keeps its values; points above the top are drawn at the top edge.
     pub fn set_y_max(&self, y_max: f64) {
-        self.ivars().y_max.set(y_max.clamp(Y_MAX_RANGE.0, Y_MAX_RANGE.1));
+        self.ivars()
+            .y_max
+            .set(y_max.clamp(Y_MAX_RANGE.0, Y_MAX_RANGE.1));
         self.setNeedsDisplay(true);
     }
 
@@ -203,14 +213,20 @@ impl CurveEditor {
         let bounds = self.bounds();
         NSRect::new(
             NSPoint::new(bounds.origin.x + INSET, bounds.origin.y + INSET),
-            NSSize::new(bounds.size.width - (INSET * 2.0), bounds.size.height - (INSET * 2.0)),
+            NSSize::new(
+                bounds.size.width - (INSET * 2.0),
+                bounds.size.height - (INSET * 2.0),
+            ),
         )
     }
 
     fn to_view(&self, x: f64, y: f64) -> NSPoint {
         let plot = self.plot();
         let y = (y / self.y_max()).min(1.0);
-        NSPoint::new(plot.origin.x + (x * plot.size.width), plot.origin.y + (y * plot.size.height))
+        NSPoint::new(
+            plot.origin.x + (x * plot.size.width),
+            plot.origin.y + (y * plot.size.height),
+        )
     }
 
     fn local_point(&self, event: &NSEvent) -> NSPoint {
@@ -252,7 +268,10 @@ impl CurveEditor {
         let curve = self.ivars().curve.get();
         NSColor::secondaryLabelColor().setStroke();
         let line = |from: (f64, f64), to: (f64, f64)| {
-            NSBezierPath::strokeLineFromPoint_toPoint(self.to_view(from.0, from.1), self.to_view(to.0, to.1));
+            NSBezierPath::strokeLineFromPoint_toPoint(
+                self.to_view(from.0, from.1),
+                self.to_view(to.0, to.1),
+            );
         };
         line(curve.start, curve.control1);
         line(curve.end, curve.control2);
@@ -264,7 +283,11 @@ impl CurveEditor {
             path.lineToPoint(self.to_view(x, curve.strength_at(x)));
         }
         path.setLineWidth(2.5);
-        let stroke = if enabled { NSColor::labelColor() } else { NSColor::disabledControlTextColor() };
+        let stroke = if enabled {
+            NSColor::labelColor()
+        } else {
+            NSColor::disabledControlTextColor()
+        };
         stroke.setStroke();
         path.stroke();
 
@@ -298,14 +321,26 @@ mod tests {
 
     #[test]
     fn the_plot_starts_at_twice_the_curves_highest_point() {
-        let tuned = HaloCurve { start: (0.305, 0.0), control1: (0.605, 0.0), control2: (0.75, 0.04), end: (1.0, 0.04) };
+        let tuned = HaloCurve {
+            start: (0.305, 0.0),
+            control1: (0.605, 0.0),
+            control2: (0.75, 0.04),
+            end: (1.0, 0.04),
+        };
         assert_eq!(default_y_max(tuned), 0.08);
         // A control handle above the end still fits the plot.
-        let raised = HaloCurve { control1: (0.5, 0.07), ..tuned };
+        let raised = HaloCurve {
+            control1: (0.5, 0.07),
+            ..tuned
+        };
         assert_eq!(default_y_max(raised), 0.14);
         // Kept inside the slider's range.
         assert_eq!(default_y_max(HaloCurve::LINEAR), Y_MAX_RANGE.1);
-        let flat = HaloCurve { control2: (0.75, 0.0), end: (1.0, 0.0), ..tuned };
+        let flat = HaloCurve {
+            control2: (0.75, 0.0),
+            end: (1.0, 0.0),
+            ..tuned
+        };
         assert_eq!(default_y_max(flat), Y_MAX_RANGE.0);
     }
 }

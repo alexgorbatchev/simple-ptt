@@ -4,11 +4,13 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSButton, NSPopUpButton, NSTextField, NSView};
 
 use super::{pane_view, PaneContentHeight};
+use crate::config::Config;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    fixed_width, minimum_width, number_field, pop_up_button, push_button, selected_title, set_placeholder, set_text_value, set_unsigned_value, text_field, text_value, unsigned_value, FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH, NumberFieldKind, ResetButtons,
+    fixed_width, minimum_width, number_field, pop_up_button, push_button, selected_title,
+    set_placeholder, set_text_value, set_unsigned_value, text_field, text_value, unsigned_value,
+    NumberFieldKind, ResetButtons, FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH,
 };
-use crate::config::Config;
 use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{optional_text, DeepgramForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow};
@@ -61,7 +63,10 @@ impl DeepgramPane {
         let defaults = Config::default().deepgram;
         set_placeholder(&language_field, &defaults.language);
         set_placeholder(&endpointing_ms_field, &defaults.endpointing_ms.to_string());
-        set_placeholder(&utterance_end_ms_field, &defaults.utterance_end_ms.to_string());
+        set_placeholder(
+            &utterance_end_ms_field,
+            &defaults.utterance_end_ms.to_string(),
+        );
         let mut reset_buttons = ResetButtons::default();
         let language_reset = reset_buttons.add(mtm, target, DefaultedRow::DeepgramLanguage);
         let model_reset = reset_buttons.add(mtm, target, DefaultedRow::DeepgramModel);
@@ -82,7 +87,12 @@ impl DeepgramPane {
             ControlWidth::Fill,
             &[&language_reset],
         );
-        grid.add_row(&labels::DEEPGRAM_KEYTERMS.row_title(), &keyterms_field, ControlWidth::Fill, &[]);
+        grid.add_row(
+            &labels::DEEPGRAM_KEYTERMS.row_title(),
+            &keyterms_field,
+            ControlWidth::Fill,
+            &[],
+        );
         grid.add_hint_row(Some(KEYTERMS_HINT));
         grid.add_row(
             &labels::DEEPGRAM_MODEL.row_title(),

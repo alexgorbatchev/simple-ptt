@@ -36,8 +36,12 @@ pub fn reduce_motion() -> bool {
 /// UTF-16 range (location, length) of the provisional tail of `text` that
 /// starts at byte `provisional_start`, clamped to `text`. `None` when there is
 /// no provisional tail inside `text`.
-pub fn provisional_utf16_range(text: &str, provisional_start: Option<usize>) -> Option<(usize, usize)> {
-    let start = provisional_start.filter(|&start| start < text.len() && text.is_char_boundary(start))?;
+pub fn provisional_utf16_range(
+    text: &str,
+    provisional_start: Option<usize>,
+) -> Option<(usize, usize)> {
+    let start =
+        provisional_start.filter(|&start| start < text.len() && text.is_char_boundary(start))?;
     let location = text[..start].encode_utf16().count();
     let length = text[start..].encode_utf16().count();
     Some((location, length))
@@ -65,9 +69,8 @@ pub fn attributed_text(
     let ns_text = NSString::from_str(text);
     // SAFETY: `attributes` maps attribute keys to values of their documented
     // types (an `NSFont` and an `NSColor`).
-    let base = unsafe {
-        objc2_foundation::NSAttributedString::new_with_attributes(&ns_text, attributes)
-    };
+    let base =
+        unsafe { objc2_foundation::NSAttributedString::new_with_attributes(&ns_text, attributes) };
     let attributed_text = NSMutableAttributedString::from_attributed_nsstring(&base);
     if let Some((location, length)) = provisional_utf16_range(text, provisional_start) {
         mark_provisional(&attributed_text, NSRange::new(location, length));
@@ -133,7 +136,10 @@ pub fn crossfade_next_change(view: &NSView) {
         )));
     }
     transition.setDuration(TEXT_CROSSFADE_SECONDS);
-    layer.addAnimation_forKey(&transition, Some(&NSString::from_str(CROSSFADE_ANIMATION_KEY)));
+    layer.addAnimation_forKey(
+        &transition,
+        Some(&NSString::from_str(CROSSFADE_ANIMATION_KEY)),
+    );
 }
 
 /// A bright band sweeping across text while the transformation model

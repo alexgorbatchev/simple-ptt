@@ -81,7 +81,11 @@ impl TransformationProviderRequest {
     fn models_url(&self) -> String {
         match self.provider {
             TransformationProvider::Ollama => {
-                format!("{}{}", self.ollama_base_url, models_endpoint(self.provider).url)
+                format!(
+                    "{}{}",
+                    self.ollama_base_url,
+                    models_endpoint(self.provider).url
+                )
             }
             provider => models_endpoint(provider).url.to_owned(),
         }
@@ -1004,9 +1008,8 @@ mod tests {
         filter_completion_model_names, models_endpoint, normalize_model_names, plan_model_list,
         CacheReadError, InFlightFetch, ManualFetchReason, ModelListPlan, ModelListTrigger,
         TransformationModelAction, TransformationModelUpdate, TransformationModelsCache,
-        TransformationModelsCacheEntry, TransformationModelsController,
-        TransformationProvider, TransformationProviderRequest, CACHE_VERSION, MAX_MODEL_COUNT,
-        MISSING_API_KEY_MESSAGE,
+        TransformationModelsCacheEntry, TransformationModelsController, TransformationProvider,
+        TransformationProviderRequest, CACHE_VERSION, MAX_MODEL_COUNT, MISSING_API_KEY_MESSAGE,
     };
     use serde_json::json;
 
@@ -1224,7 +1227,8 @@ mod tests {
     #[test]
     fn ollama_models_come_from_the_configured_server_and_are_cached_per_server() {
         let local = request("ollama", None);
-        let remote = request("ollama", None).with_ollama_base_url(Some(" http://ollama.lan:11434/ "));
+        let remote =
+            request("ollama", None).with_ollama_base_url(Some(" http://ollama.lan:11434/ "));
 
         assert_eq!(local.models_url(), "http://localhost:11434/api/tags");
         assert_eq!(remote.models_url(), "http://ollama.lan:11434/api/tags");

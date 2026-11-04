@@ -146,7 +146,10 @@ mod tests {
 
     #[test]
     fn an_unset_model_resolves_to_the_providers_own_default() {
-        assert_eq!(TransformationProvider::Openai.resolve_model(""), Some("gpt-5.4-mini".to_owned()));
+        assert_eq!(
+            TransformationProvider::Openai.resolve_model(""),
+            Some("gpt-5.4-mini".to_owned())
+        );
         assert_eq!(
             TransformationProvider::Anthropic.resolve_model("  "),
             Some("claude-haiku-5-5".to_owned())

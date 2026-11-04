@@ -121,12 +121,23 @@ pub fn build_audio_input_device_choices(
     devices
         .iter()
         .map(|device| {
-            let name = device.name.as_deref().map(str::trim).filter(|s| !s.is_empty());
+            let name = device
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
             let (label, value) = match name {
                 Some(name) if name_identifies(&names, name) => (name.to_owned(), name.to_owned()),
-                Some(name) => (format!("{} (#{})", name, device.index + 1), device.index.to_string()),
+                Some(name) => (
+                    format!("{} (#{})", name, device.index + 1),
+                    device.index.to_string(),
+                ),
                 None => (
-                    format!("{} (#{})", UNKNOWN_AUDIO_INPUT_DEVICE_LABEL, device.index + 1),
+                    format!(
+                        "{} (#{})",
+                        UNKNOWN_AUDIO_INPUT_DEVICE_LABEL,
+                        device.index + 1
+                    ),
                     device.index.to_string(),
                 ),
             };
@@ -190,7 +201,11 @@ fn find_configured_device(devices: &[cpal::Device], configured: &str) -> Option<
 /// name only when this finds that device again.
 pub fn configured_device_position(names: &[Option<&str>], configured: &str) -> Option<usize> {
     let configured = configured.trim();
-    if let Some(index) = configured.parse::<usize>().ok().filter(|index| *index < names.len()) {
+    if let Some(index) = configured
+        .parse::<usize>()
+        .ok()
+        .filter(|index| *index < names.len())
+    {
         return Some(index);
     }
     names
@@ -231,7 +246,11 @@ pub fn normalized_configured_audio_device(raw_value: Option<&str>) -> Option<&st
     }
 }
 
-pub fn encode_pcm_mono<T>(data: &[T], channels: usize, gain_linear: f32) -> (bytes::Bytes, usize, f32, f32)
+pub fn encode_pcm_mono<T>(
+    data: &[T],
+    channels: usize,
+    gain_linear: f32,
+) -> (bytes::Bytes, usize, f32, f32)
 where
     T: cpal::Sample + cpal::SizedSample,
     f32: FromSample<T>,

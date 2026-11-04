@@ -176,7 +176,10 @@ pub fn start_session(
             .stream(ReceiverStream::new(audio_rx))
             .await
             .map_err(|error| {
-                if matches!(error, deepgram::DeepgramError::UntrustedTlsCertificate { .. }) {
+                if matches!(
+                    error,
+                    deepgram::DeepgramError::UntrustedTlsCertificate { .. }
+                ) {
                     // Read the certificate store again next time, so a CA the
                     // user installs after this error takes effect.
                     forget_deepgram_client();
@@ -402,7 +405,9 @@ fn merge_session_overlay_text(
 ) {
     match session_kind {
         SessionKind::Dictation => state.merge_live_overlay_text(before, text, provisional_start),
-        SessionKind::Correction => state.merge_live_overlay_correction_text(before, text, provisional_start),
+        SessionKind::Correction => {
+            state.merge_live_overlay_correction_text(before, text, provisional_start)
+        }
     }
 }
 
@@ -422,7 +427,9 @@ static DEEPGRAM_CLIENT: Mutex<Option<(String, Deepgram)>> = Mutex::new(None);
 /// store (`rustls-tls-native-roots`), which takes about 100 ms to read, and a
 /// client resolves them once, on its first connection.
 fn deepgram_client(api_key: &str) -> Result<Deepgram, deepgram::DeepgramError> {
-    let mut cached = DEEPGRAM_CLIENT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut cached = DEEPGRAM_CLIENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     cached_for_key(&mut cached, api_key, || Deepgram::new(api_key))
 }
 
@@ -469,21 +476,44 @@ mod tests {
             Ok::<_, ()>(format!("{label}-{builds}"))
         };
 
-        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-1".to_owned()));
-        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-1".to_owned()));
-        assert_eq!(cached_for_key(&mut cache, "key-b", || build("b")), Ok("b-2".to_owned()));
-        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-3".to_owned()));
+        assert_eq!(
+            cached_for_key(&mut cache, "key-a", || build("a")),
+            Ok("a-1".to_owned())
+        );
+        assert_eq!(
+            cached_for_key(&mut cache, "key-a", || build("a")),
+            Ok("a-1".to_owned())
+        );
+        assert_eq!(
+            cached_for_key(&mut cache, "key-b", || build("b")),
+            Ok("b-2".to_owned())
+        );
+        assert_eq!(
+            cached_for_key(&mut cache, "key-a", || build("a")),
+            Ok("a-3".to_owned())
+        );
 
         // A failed build leaves the previous client in place.
-        assert_eq!(cached_for_key(&mut cache, "key-c", || Err::<String, _>(())), Err(()));
+        assert_eq!(
+            cached_for_key(&mut cache, "key-c", || Err::<String, _>(())),
+            Err(())
+        );
         assert_eq!(cache, Some(("key-a".to_owned(), "a-3".to_owned())));
 
         // A forgotten client, as after a rejected certificate, is built again.
         cache.take();
-        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-4".to_owned()));
+        assert_eq!(
+            cached_for_key(&mut cache, "key-a", || build("a")),
+            Ok("a-4".to_owned())
+        );
     }
 
-    fn transcript_response(text: &str, is_final: bool, start: f64, duration: f64) -> StreamResponse {
+    fn transcript_response(
+        text: &str,
+        is_final: bool,
+        start: f64,
+        duration: f64,
+    ) -> StreamResponse {
         serde_json::from_value(serde_json::json!({
             "type": "Results", "start": start, "duration": duration,
             "is_final": is_final, "speech_final": is_final, "from_finalize": false,
@@ -504,7 +534,10 @@ mod tests {
             transcript_response("still coming in and working", false, 1.0, 3.0),
             transcript_response("still coming in and working", true, 1.0, 3.0),
             StreamResponse::TerminalResponse {
-                request_id: "test-request".to_owned(), created: String::new(), duration: 4.0, channels: 1,
+                request_id: "test-request".to_owned(),
+                created: String::new(),
+                duration: 4.0,
+                channels: 1,
             },
         ];
         let mut index = 0;
@@ -518,7 +551,15 @@ mod tests {
         });
         let progress = SessionProgress::new(16000, SessionLimits::default());
         progress.finish();
-        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        let text = run_transcription_stream(
+            &mut stream,
+            state.clone(),
+            SessionKind::Dictation,
+            String::new(),
+            progress,
+        )
+        .await
+        .unwrap();
         assert_eq!(text, "Hi still coming in and working ");
         assert_eq!(&*state.overlay_text(), text);
     }
@@ -533,7 +574,10 @@ mod tests {
             transcript_response("meet Thursday afternoon", false, 0.0, 2.0),
             transcript_response("Meet Thursday afternoon.", true, 0.0, 2.0),
             StreamResponse::TerminalResponse {
-                request_id: "test-request".to_owned(), created: String::new(), duration: 2.0, channels: 1,
+                request_id: "test-request".to_owned(),
+                created: String::new(),
+                duration: 2.0,
+                channels: 1,
             },
         ];
         let mut index = 0;
@@ -547,7 +591,15 @@ mod tests {
         });
         let progress = SessionProgress::new(16000, SessionLimits::default());
         progress.finish();
-        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        let text = run_transcription_stream(
+            &mut stream,
+            state.clone(),
+            SessionKind::Dictation,
+            String::new(),
+            progress,
+        )
+        .await
+        .unwrap();
         assert_eq!(text, "Meet Friday afternoon. ");
         assert_eq!(&*state.overlay_text(), text);
     }
@@ -563,7 +615,10 @@ mod tests {
             transcript_response("three four", false, 2.0, 2.0),
             transcript_response("three four", true, 2.0, 2.0),
             StreamResponse::TerminalResponse {
-                request_id: "test-request".to_owned(), created: String::new(), duration: 4.0, channels: 1,
+                request_id: "test-request".to_owned(),
+                created: String::new(),
+                duration: 4.0,
+                channels: 1,
             },
         ];
         let mut index = 0;
@@ -576,7 +631,15 @@ mod tests {
         });
         let progress = SessionProgress::new(16000, SessionLimits::default());
         progress.finish();
-        let text = run_transcription_stream(&mut stream, state.clone(), SessionKind::Dictation, String::new(), progress).await.unwrap();
+        let text = run_transcription_stream(
+            &mut stream,
+            state.clone(),
+            SessionKind::Dictation,
+            String::new(),
+            progress,
+        )
+        .await
+        .unwrap();
         assert_eq!(text, "one two THREE four ");
         assert_eq!(&*state.overlay_text(), text);
     }

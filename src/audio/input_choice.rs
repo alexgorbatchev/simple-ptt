@@ -71,14 +71,21 @@ impl BuiltInPreference {
     /// the stream's device is no longer connected, `follows_system_default`
     /// when `mic.audio_device` names no device, `system_default` the UID of
     /// the default input now.
-    pub fn next(&self, device_in_use_lost: bool, follows_system_default: bool, system_default: Option<&str>) -> Self {
+    pub fn next(
+        &self,
+        device_in_use_lost: bool,
+        follows_system_default: bool,
+        system_default: Option<&str>,
+    ) -> Self {
         let system_default = system_default.map(str::to_owned);
         let default_when_lost = if !follows_system_default {
             None
         } else if device_in_use_lost {
             Some(system_default)
         } else {
-            self.default_when_lost.clone().filter(|lost_default| *lost_default == system_default)
+            self.default_when_lost
+                .clone()
+                .filter(|lost_default| *lost_default == system_default)
         };
         Self { default_when_lost }
     }
@@ -118,35 +125,70 @@ pub fn built_in_microphone_uids() -> Vec<String> {
 mod tests {
     use super::*;
 
-    fn available(configured: Option<bool>, built_in: bool, system_default: bool) -> InputAvailability {
-        InputAvailability { configured, built_in, system_default }
+    fn available(
+        configured: Option<bool>,
+        built_in: bool,
+        system_default: bool,
+    ) -> InputAvailability {
+        InputAvailability {
+            configured,
+            built_in,
+            system_default,
+        }
     }
 
     #[test]
     fn a_connected_named_device_is_used() {
-        assert_eq!(choose_input(available(Some(true), true, true), false), Some(InputChoice::Configured));
-        assert_eq!(choose_input(available(Some(true), true, true), true), Some(InputChoice::Configured));
+        assert_eq!(
+            choose_input(available(Some(true), true, true), false),
+            Some(InputChoice::Configured)
+        );
+        assert_eq!(
+            choose_input(available(Some(true), true, true), true),
+            Some(InputChoice::Configured)
+        );
     }
 
     #[test]
     fn a_missing_named_device_falls_back_to_the_built_in_mic_then_the_default() {
-        assert_eq!(choose_input(available(Some(false), true, true), false), Some(InputChoice::BuiltIn));
-        assert_eq!(choose_input(available(Some(false), false, true), false), Some(InputChoice::SystemDefault));
-        assert_eq!(choose_input(available(Some(false), false, false), false), None);
+        assert_eq!(
+            choose_input(available(Some(false), true, true), false),
+            Some(InputChoice::BuiltIn)
+        );
+        assert_eq!(
+            choose_input(available(Some(false), false, true), false),
+            Some(InputChoice::SystemDefault)
+        );
+        assert_eq!(
+            choose_input(available(Some(false), false, false), false),
+            None
+        );
     }
 
     #[test]
     fn the_system_default_is_followed_unless_the_built_in_mic_is_preferred() {
-        assert_eq!(choose_input(available(None, true, true), false), Some(InputChoice::SystemDefault));
-        assert_eq!(choose_input(available(None, true, true), true), Some(InputChoice::BuiltIn));
+        assert_eq!(
+            choose_input(available(None, true, true), false),
+            Some(InputChoice::SystemDefault)
+        );
+        assert_eq!(
+            choose_input(available(None, true, true), true),
+            Some(InputChoice::BuiltIn)
+        );
         // Preferred but absent: the default.
-        assert_eq!(choose_input(available(None, false, true), true), Some(InputChoice::SystemDefault));
+        assert_eq!(
+            choose_input(available(None, false, true), true),
+            Some(InputChoice::SystemDefault)
+        );
         assert_eq!(choose_input(available(None, false, false), true), None);
     }
 
     #[test]
     fn with_no_default_any_built_in_mic_is_used() {
-        assert_eq!(choose_input(available(None, true, false), false), Some(InputChoice::BuiltIn));
+        assert_eq!(
+            choose_input(available(None, true, false), false),
+            Some(InputChoice::BuiltIn)
+        );
     }
 
     #[test]

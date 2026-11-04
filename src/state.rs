@@ -24,8 +24,8 @@ pub struct OverlayText {
 
 impl OverlayText {
     fn new(text: String, provisional_start: Option<usize>) -> Self {
-        let provisional_start = provisional_start
-            .filter(|&start| start < text.len() && text.is_char_boundary(start));
+        let provisional_start =
+            provisional_start.filter(|&start| start < text.len() && text.is_char_boundary(start));
         Self {
             text: Arc::from(text),
             provisional_start,
@@ -195,7 +195,8 @@ impl AppState {
     }
 
     pub fn set_microphone_available(&self, available: bool) {
-        self.microphone_available.store(available, Ordering::Relaxed);
+        self.microphone_available
+            .store(available, Ordering::Relaxed);
     }
 
     pub fn is_microphone_available(&self) -> bool {
@@ -233,7 +234,10 @@ impl AppState {
         // stops the microphone, so its meter and activity carry on; any other
         // state (the resume failed) stops them as usual.
         if self.is_dictation_resuming()
-            && matches!(state, STATE_RECORDING | STATE_PROCESSING | STATE_TRANSFORMING)
+            && matches!(
+                state,
+                STATE_RECORDING | STATE_PROCESSING | STATE_TRANSFORMING
+            )
         {
             return;
         }
@@ -248,7 +252,8 @@ impl AppState {
 
     pub fn begin_finishing_dictation(&self) {
         let has_narration = !self.overlay_text().trim().is_empty();
-        self.overlay_finishing.store(has_narration, Ordering::Relaxed);
+        self.overlay_finishing
+            .store(has_narration, Ordering::Relaxed);
         if !has_narration {
             // Nothing is displayed to hold while final audio is transcribed.
             // Dismiss now; the worker still finishes the session and pastes
@@ -384,7 +389,11 @@ impl AppState {
         provisional_start: Option<usize>,
     ) {
         if let Ok(mut current) = self.overlay_text.lock() {
-            merge_overlay_text(&mut current, before, OverlayText::new(text, provisional_start));
+            merge_overlay_text(
+                &mut current,
+                before,
+                OverlayText::new(text, provisional_start),
+            );
         }
     }
 
@@ -443,7 +452,11 @@ impl AppState {
         provisional_start: Option<usize>,
     ) {
         if let Ok(mut current) = self.overlay_correction_text.lock() {
-            merge_overlay_text(&mut current, before, OverlayText::new(text, provisional_start));
+            merge_overlay_text(
+                &mut current,
+                before,
+                OverlayText::new(text, provisional_start),
+            );
         }
     }
 
@@ -532,8 +545,8 @@ pub(crate) fn normalized_meter_value(value: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppState, normalized_meter_value, STATE_BUFFER_READY, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
-        STATE_TRANSFORMING,
+        normalized_meter_value, AppState, STATE_BUFFER_READY, STATE_IDLE, STATE_PROCESSING,
+        STATE_RECORDING, STATE_TRANSFORMING,
     };
 
     #[test]
@@ -569,11 +582,18 @@ mod tests {
         use super::{SpectrumFrame, SPECTRUM_BANDS};
 
         let state = AppState::new();
-        let frame = |at: f64| SpectrumFrame { at, levels_db: [-60.0; SPECTRUM_BANDS], centres_hz: [1_000.0; SPECTRUM_BANDS] };
+        let frame = |at: f64| SpectrumFrame {
+            at,
+            levels_db: [-60.0; SPECTRUM_BANDS],
+            centres_hz: [1_000.0; SPECTRUM_BANDS],
+        };
         let sender = state.spectrum_sender();
         sender.try_send(frame(10.0)).unwrap();
         sender.try_send(frame(10.03)).unwrap();
-        assert_eq!(state.take_spectrum_frames(), vec![frame(10.0), frame(10.03)]);
+        assert_eq!(
+            state.take_spectrum_frames(),
+            vec![frame(10.0), frame(10.03)]
+        );
         assert_eq!(state.take_spectrum_frames(), Vec::new());
     }
 
@@ -737,7 +757,10 @@ mod tests {
         let snapshot = state.overlay_text_snapshot();
         assert_eq!(&*snapshot.text, "final words still talking ");
         assert_eq!(snapshot.provisional_start, Some(12));
-        assert!(std::sync::Arc::ptr_eq(&snapshot.text, &state.overlay_text()));
+        assert!(std::sync::Arc::ptr_eq(
+            &snapshot.text,
+            &state.overlay_text()
+        ));
     }
 
     #[test]
@@ -820,6 +843,9 @@ mod tests {
         ));
 
         state.clear_overlay_correction_text();
-        assert_eq!(state.overlay_correction_text_snapshot().provisional_start, None);
+        assert_eq!(
+            state.overlay_correction_text_snapshot().provisional_start,
+            None
+        );
     }
 }

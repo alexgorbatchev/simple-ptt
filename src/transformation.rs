@@ -48,14 +48,8 @@ pub async fn transform_text(
     macro_rules! stream_with_client {
         ($client:expr) => {{
             let model = $client.completion_model(config.model.as_str());
-            stream_completion_response(
-                model,
-                config,
-                input_text,
-                Arc::clone(&state),
-                preview_mode,
-            )
-            .await
+            stream_completion_response(model, config, input_text, Arc::clone(&state), preview_mode)
+                .await
         }};
     }
 
@@ -187,7 +181,10 @@ async fn drain_stream(
     }
 
     if !received_final {
-        return Err("transformation stream ended before completion; the incomplete result was not applied".to_owned());
+        return Err(
+            "transformation stream ended before completion; the incomplete result was not applied"
+                .to_owned(),
+        );
     }
     accumulator.into_final_text()
 }
@@ -255,7 +252,10 @@ impl StreamAccumulator {
                 self.thinking_update()
             }
             StreamedAssistantContent::Final(response) => {
-                if let Some(reason) = response.finish_reason.filter(FinishReason::truncated_output) {
+                if let Some(reason) = response
+                    .finish_reason
+                    .filter(FinishReason::truncated_output)
+                {
                     self.incomplete_reason = Some(reason);
                 }
                 None
@@ -659,12 +659,16 @@ mod tests {
             Ok(RawStreamingChoice::Reasoning {
                 id: rig_core::streaming::StreamPartId::wire("reasoning"),
                 provider_id: None,
-                content: ReasoningContent::Text { text: "Working on it".to_owned(), signature: None },
+                content: ReasoningContent::Text {
+                    text: "Working on it".to_owned(),
+                    signature: None,
+                },
             }),
             Ok(RawStreamingChoice::Message("Transformed ".to_owned())),
             Ok(RawStreamingChoice::Message("result".to_owned())),
             Ok(RawStreamingChoice::FinalResponse(StreamFinal::new(
-                "test-provider", Usage::new(),
+                "test-provider",
+                Usage::new(),
             ))),
         ]);
 
@@ -713,7 +717,11 @@ mod tests {
 
     #[tokio::test]
     async fn incomplete_streams_never_return_a_pasteable_result() {
-        for reason in [None, Some(FinishReason::Length), Some(FinishReason::ContentFilter)] {
+        for reason in [
+            None,
+            Some(FinishReason::Length),
+            Some(FinishReason::ContentFilter),
+        ] {
             let state = AppState::new();
             state.set_overlay_text("Original dictation");
             let mut items = vec![Ok(RawStreamingChoice::Message("partial answer".to_owned()))];
@@ -723,9 +731,14 @@ mod tests {
                 )));
             }
             let result = drain_stream(
-                raw_stream(items), &state, TransformationPreviewMode::PreserveOverlay,
-            ).await;
-            assert!(result.unwrap_err().contains("incomplete result was not applied"));
+                raw_stream(items),
+                &state,
+                TransformationPreviewMode::PreserveOverlay,
+            )
+            .await;
+            assert!(result
+                .unwrap_err()
+                .contains("incomplete result was not applied"));
             assert_eq!(&*state.overlay_text(), "Original dictation");
         }
     }

@@ -2,8 +2,8 @@ pub mod dev;
 pub mod glass;
 mod legibility;
 mod motion;
-mod selection;
 pub mod private_effects;
+mod selection;
 mod text_effects;
 
 use std::cell::{Cell, RefCell};
@@ -16,13 +16,12 @@ use objc2::runtime::{AnyObject, NSObject};
 use objc2::MainThreadOnly;
 use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
-    NSActionCell, NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode,
-    NSScreen, NSScrollView, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
-    NSTextViewDelegate, NSView,
+    NSActionCell, NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSBox, NSBoxType,
+    NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode, NSScreen, NSScrollView, NSTextAlignment,
+    NSTextField, NSTextFieldCell, NSTextView, NSTextViewDelegate, NSView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize,
-    NSString,
+    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 
 use crate::config::UiMeterStyle;
@@ -110,7 +109,12 @@ pub struct OverlayWindow {
 
 impl OverlayWindow {
     pub fn new(mtm: MainThreadMarker, style: &OverlayStyle, state: Arc<AppState>) -> Self {
-        let glass = OverlayGlass::new(mtm, OVERLAY_WIDTH, MAIN_OVERLAY_MIN_HEIGHT, GlassTuning::default());
+        let glass = OverlayGlass::new(
+            mtm,
+            OVERLAY_WIDTH,
+            MAIN_OVERLAY_MIN_HEIGHT,
+            GlassTuning::default(),
+        );
         let root_view = glass.main_content_view.clone();
         let correction_root_view = glass.correction_content_view.clone();
 
@@ -237,7 +241,11 @@ impl OverlayWindow {
         let should_show = !overlay_dismissed
             && matches!(
                 state,
-                STATE_RECORDING | STATE_PROCESSING | STATE_BUFFER_READY | STATE_TRANSFORMING | STATE_ERROR
+                STATE_RECORDING
+                    | STATE_PROCESSING
+                    | STATE_BUFFER_READY
+                    | STATE_TRANSFORMING
+                    | STATE_ERROR
             );
         if !should_show {
             self.hide();
@@ -251,7 +259,8 @@ impl OverlayWindow {
             let footer = footer_text(hint.as_deref(), state, self.state.is_deepgram_waiting());
             let footer_value = footer.unwrap_or("");
             if self.footer_hint_text_field.stringValue().to_string() != footer_value {
-                self.footer_hint_text_field.setStringValue(&NSString::from_str(footer_value));
+                self.footer_hint_text_field
+                    .setStringValue(&NSString::from_str(footer_value));
             }
             footer.is_some()
         };
@@ -341,7 +350,8 @@ impl OverlayWindow {
 
         if meter_is_visible {
             let frames = self.state.take_spectrum_frames();
-            self.ui_meter_view.update(mic_meter, self.meter_span(), &frames);
+            self.ui_meter_view
+                .update(mic_meter, self.meter_span(), &frames);
         } else {
             self.ui_meter_view.clear(self.meter_span());
         }
@@ -511,8 +521,8 @@ impl OverlayWindow {
             .then(|| measured_text_height(&self.correction_text_view))
             .unwrap_or(CORRECTION_OVERLAY_MIN_HEIGHT);
         let pinned_top = self.pinned_top.get();
-        let current_main_origin_y = (self.is_visible.get() && pinned_top.is_none())
-            .then(|| self.glass.main_origin_y());
+        let current_main_origin_y =
+            (self.is_visible.get() && pinned_top.is_none()).then(|| self.glass.main_origin_y());
         let correction_height = correction_is_visible
             .then(|| correction_panel_height(correction_content_height, visible_frame.size.height));
         if let Some(height) = correction_height {
@@ -579,11 +589,10 @@ impl OverlayWindow {
             pinned_origin_y.or(current_main_origin_y),
         );
 
-        self.glass
-            .set_frames(
-                glass::window_frame(main_frame, correction_frame, self.glass.tuning().margin()),
-                main_height,
-            );
+        self.glass.set_frames(
+            glass::window_frame(main_frame, correction_frame, self.glass.tuning().margin()),
+            main_height,
+        );
         self.separator_view.setHidden(!footer_is_visible);
         self.footer_hint_text_field.setHidden(!footer_is_visible);
         self.working_scroll_view.setFrame(main_text_view_frame(
@@ -605,7 +614,10 @@ impl OverlayWindow {
             main_is_clamped,
         );
         self.separator_view.setFrame(separator_frame(main_height));
-        self.ui_meter_view.set_frame(meter_container_frame(footer_is_visible, self.ui_meter_view.style()));
+        self.ui_meter_view.set_frame(meter_container_frame(
+            footer_is_visible,
+            self.ui_meter_view.style(),
+        ));
         let meter_alpha = self.meter_alpha.get();
         self.ui_meter_view.set_hidden(meter_alpha == 0.0);
         self.ui_meter_view.view().setAlphaValue(meter_alpha);
@@ -636,7 +648,10 @@ impl OverlayWindow {
         }
         if let Some(height) = correction_height {
             let frame = if expands {
-                NSRect::new(NSPoint::new(0.0, glass::STACK_GAP), NSSize::new(OVERLAY_WIDTH, height))
+                NSRect::new(
+                    NSPoint::new(0.0, glass::STACK_GAP),
+                    NSSize::new(OVERLAY_WIDTH, height),
+                )
             } else {
                 correction_text_view_frame(height)
             };
@@ -1078,7 +1093,9 @@ fn meter_reserved_height(meter_style: UiMeterStyle) -> f64 {
                 + METER_SECTION_BOTTOM_PADDING
                 + METER_TEXT_GAP
         }
-        UiMeterStyle::AnimatedHeight | UiMeterStyle::Pills | UiMeterStyle::None => METER_SECTION_HEIGHT,
+        UiMeterStyle::AnimatedHeight | UiMeterStyle::Pills | UiMeterStyle::None => {
+            METER_SECTION_HEIGHT
+        }
     }
 }
 
@@ -1131,7 +1148,10 @@ fn meter_container_frame(footer_is_visible: bool, meter_style: UiMeterStyle) -> 
 /// both ways, with its text centred on it.
 fn footer_hint_frame() -> NSRect {
     NSRect::new(
-        NSPoint::new(TEXT_HORIZONTAL_PADDING, (FOOTER_HEIGHT - FOOTER_LINE_HEIGHT) / 2.0),
+        NSPoint::new(
+            TEXT_HORIZONTAL_PADDING,
+            (FOOTER_HEIGHT - FOOTER_LINE_HEIGHT) / 2.0,
+        ),
         NSSize::new(usable_text_width(), FOOTER_LINE_HEIGHT),
     )
 }
@@ -1217,15 +1237,24 @@ fn working_text_update_is_semantically_unchanged(current_text: &str, next_text: 
 #[cfg(test)]
 mod tests {
     use super::{
-        footer_hint_frame, working_text_update_is_semantically_unchanged, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
-        FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
+        footer_hint_frame, working_text_update_is_semantically_unchanged, FOOTER_HEIGHT,
+        FOOTER_LINE_HEIGHT, FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
     };
 
     #[test]
     fn treats_trailing_whitespace_only_updates_as_unchanged() {
-        assert!(working_text_update_is_semantically_unchanged("hello world", "hello world "));
-        assert!(working_text_update_is_semantically_unchanged("hello world  ", "hello world"));
-        assert!(!working_text_update_is_semantically_unchanged("hello world", "hello there"));
+        assert!(working_text_update_is_semantically_unchanged(
+            "hello world",
+            "hello world "
+        ));
+        assert!(working_text_update_is_semantically_unchanged(
+            "hello world  ",
+            "hello world"
+        ));
+        assert!(!working_text_update_is_semantically_unchanged(
+            "hello world",
+            "hello there"
+        ));
     }
 
     #[test]
@@ -1256,14 +1285,23 @@ mod tests {
 
     #[test]
     fn footer_holds_one_line_with_even_padding() {
-        assert_eq!(FOOTER_HEIGHT, FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING));
+        assert_eq!(
+            FOOTER_HEIGHT,
+            FOOTER_LINE_HEIGHT + (2.0 * FOOTER_VERTICAL_PADDING)
+        );
         assert_eq!(FOOTER_HEIGHT, 28.0);
     }
 
     #[test]
     fn keyboard_hint_is_centred_in_the_footer() {
         let frame = footer_hint_frame();
-        assert_eq!(frame.origin.x + (frame.size.width / 2.0), OVERLAY_WIDTH / 2.0);
-        assert_eq!(frame.origin.y + (frame.size.height / 2.0), FOOTER_HEIGHT / 2.0);
+        assert_eq!(
+            frame.origin.x + (frame.size.width / 2.0),
+            OVERLAY_WIDTH / 2.0
+        );
+        assert_eq!(
+            frame.origin.y + (frame.size.height / 2.0),
+            FOOTER_HEIGHT / 2.0
+        );
     }
 }

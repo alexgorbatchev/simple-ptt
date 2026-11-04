@@ -9,11 +9,13 @@ use objc2_foundation::NSString;
 
 use super::prompt_editors::PromptEditors;
 use super::{activate, pane_view, PaneContentHeight};
+use crate::config::Config;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    checkbox, combo_box, for_auto_layout, hotkey_display_field, is_checked, minimum_width, pop_up_button_with_action, push_button, selected_title, set_checked, set_placeholder, set_text_value, text_field, text_value, FIELD_MIN_WIDTH, ResetButtons,
+    checkbox, combo_box, for_auto_layout, hotkey_display_field, is_checked, minimum_width,
+    pop_up_button_with_action, push_button, selected_title, set_checked, set_placeholder,
+    set_text_value, text_field, text_value, ResetButtons, FIELD_MIN_WIDTH,
 };
-use crate::config::Config;
 use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{
     optional_popup_value, optional_text, transformation_model_placeholder, TransformationForm,
@@ -64,7 +66,10 @@ impl TransformationPane {
             pop_up_button_with_action(mtm, target, SettingsAction::TransformationProviderChanged);
         let api_key_field = text_field(mtm);
         let ollama_base_url_field = text_field(mtm);
-        set_placeholder(&ollama_base_url_field, crate::config::DEFAULT_OLLAMA_BASE_URL);
+        set_placeholder(
+            &ollama_base_url_field,
+            crate::config::DEFAULT_OLLAMA_BASE_URL,
+        );
         let model_combo_box = combo_box(mtm);
         let model_refresh_button = push_button(
             mtm,
@@ -93,7 +98,11 @@ impl TransformationPane {
             ControlWidth::Fill,
             &[&hotkey_capture_button, &hotkey_reset],
         );
-        grid.add_detail_row_with_accessories(&auto_checkbox, ControlWidth::Intrinsic, &[&auto_reset]);
+        grid.add_detail_row_with_accessories(
+            &auto_checkbox,
+            ControlWidth::Intrinsic,
+            &[&auto_reset],
+        );
         grid.add_hint_row(Some(AUTO_TRANSFORM_HINT));
         grid.add_row(
             &labels::TRANSFORMATION_PROVIDER.row_title(),
@@ -101,7 +110,12 @@ impl TransformationPane {
             ControlWidth::Intrinsic,
             &[],
         );
-        grid.add_row(&labels::TRANSFORMATION_API_KEY.row_title(), &api_key_field, ControlWidth::Fill, &[]);
+        grid.add_row(
+            &labels::TRANSFORMATION_API_KEY.row_title(),
+            &api_key_field,
+            ControlWidth::Fill,
+            &[],
+        );
         let api_key_env_hint = grid.add_hint_row(None);
         grid.add_row(
             &labels::OLLAMA_SERVER.row_title(),

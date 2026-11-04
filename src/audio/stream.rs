@@ -12,12 +12,12 @@ use crate::settings::LiveConfigStore;
 use crate::state::{AppState, SpectrumFrame};
 use crate::transcription::TranscriptionController;
 
-use super::spectrum::SpectrumAnalyzer;
-use super::stream_activity::StreamActivity;
 use super::devices::{
     device_name, encode_pcm_mono, normalize_meter_amplitude, resolve_input_device,
     smooth_meter_value,
 };
+use super::spectrum::SpectrumAnalyzer;
+use super::stream_activity::StreamActivity;
 
 pub struct InputStreamHandle {
     pub stream: Stream,
@@ -239,11 +239,7 @@ where
                 smoothed_level = smooth_meter_value(smoothed_level, target_level);
                 smoothed_peak = smooth_meter_value(smoothed_peak, target_peak);
 
-                meter_state.set_mic_meter(
-                    smoothed_level,
-                    smoothed_peak,
-                    clipped_count > 0,
-                );
+                meter_state.set_mic_meter(smoothed_level, smoothed_peak, clipped_count > 0);
                 meter_state.set_mic_active(true);
 
                 if route == AudioRoute::MeterAndDictation {
@@ -252,7 +248,11 @@ where
                     // without waiting.
                     spectrum.push_pcm16(&pcm_chunk);
                     if let Some(levels_db) = spectrum.analyze() {
-                        let _ = spectrum_frames.try_send(SpectrumFrame { at: CACurrentMediaTime(), levels_db, centres_hz });
+                        let _ = spectrum_frames.try_send(SpectrumFrame {
+                            at: CACurrentMediaTime(),
+                            levels_db,
+                            centres_hz,
+                        });
                     }
                     pcm_buffer.extend_from_slice(&pcm_chunk);
                     while pcm_buffer.len() >= 640 {

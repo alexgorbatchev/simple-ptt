@@ -327,7 +327,10 @@ mod tests {
         for audio_end in [0.02, 0.04] {
             progress.transcript_received(audio_end);
             poll_waiting(&progress, &state).await;
-            assert!(state.is_deepgram_waiting(), "finishing reply at {audio_end}");
+            assert!(
+                state.is_deepgram_waiting(),
+                "finishing reply at {audio_end}"
+            );
         }
 
         drop(indicator);

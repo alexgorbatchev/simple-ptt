@@ -99,7 +99,9 @@ impl UiMeterView {
         }
 
         let pill_cluster = PillCluster::new(
-            &container_view.layer().expect("the meter's view is layer-backed (setWantsLayer)"),
+            &container_view
+                .layer()
+                .expect("the meter's view is layer-backed (setWantsLayer)"),
         );
 
         Self {
@@ -150,7 +152,12 @@ impl UiMeterView {
 
     /// Takes in the microphone's level and, for the pills, the spectrum
     /// frames captured since the last update.
-    pub fn update(&self, mic_meter: MicMeterSnapshot, cluster_width: f64, frames: &[SpectrumFrame]) {
+    pub fn update(
+        &self,
+        mic_meter: MicMeterSnapshot,
+        cluster_width: f64,
+        frames: &[SpectrumFrame],
+    ) {
         self.container_view.setHidden(false);
 
         let level = mic_meter.level as f32 / u8::MAX as f32;
@@ -160,7 +167,10 @@ impl UiMeterView {
             UiMeterStyle::None => {}
             UiMeterStyle::AnimatedHeight => self.update_meter_animated_height(level, peak),
             UiMeterStyle::AnimatedColor => self.update_meter_animated_color(level, peak),
-            UiMeterStyle::Pills => self.pill_levels.borrow_mut().update(frames, CACurrentMediaTime()),
+            UiMeterStyle::Pills => self
+                .pill_levels
+                .borrow_mut()
+                .update(frames, CACurrentMediaTime()),
         }
 
         self.render_meter_bars(cluster_width);
@@ -325,12 +335,19 @@ impl UiMeterView {
     fn render_pills(&self, cluster_width: f64) {
         let now = CACurrentMediaTime();
         let seconds = match self.pills_moved_at.replace(Some(now)) {
-            Some(moved_at) if !crate::overlay::reduce_motion() && now - moved_at < PILL_MOTION_MAX_SECONDS => {
+            Some(moved_at)
+                if !crate::overlay::reduce_motion() && now - moved_at < PILL_MOTION_MAX_SECONDS =>
+            {
                 (now - moved_at).max(0.0)
             }
             _ => 0.0,
         };
-        self.pill_cluster.render(&self.container_view, cluster_width, self.pill_levels.borrow().heights(), seconds);
+        self.pill_cluster.render(
+            &self.container_view,
+            cluster_width,
+            self.pill_levels.borrow().heights(),
+            seconds,
+        );
     }
 
     fn render_meter_bars_animated_color(&self, cluster_width: f64) {
@@ -364,7 +381,10 @@ fn centred_bar_frame(x: f64, bar_width: f64, level: f32) -> NSRect {
     let rest = bar_width.min(METER_VIEW_HEIGHT);
     let height = rest + ((METER_VIEW_HEIGHT - rest) * (level.clamp(0.0, 1.0) as f64).powf(0.9));
     NSRect::new(
-        NSPoint::new(x, METER_BORDER_PADDING + ((METER_VIEW_HEIGHT - height) / 2.0)),
+        NSPoint::new(
+            x,
+            METER_BORDER_PADDING + ((METER_VIEW_HEIGHT - height) / 2.0),
+        ),
         NSSize::new(bar_width, height),
     )
 }
@@ -376,7 +396,8 @@ fn cg_color_in(view: &NSView, color: &dyn Fn() -> Retained<NSColor>) -> Retained
     let resolve = StackBlock::new(|| {
         resolved.replace(Some(color().CGColor()));
     });
-    view.effectiveAppearance().performAsCurrentDrawingAppearance(&resolve);
+    view.effectiveAppearance()
+        .performAsCurrentDrawingAppearance(&resolve);
     resolved
         .into_inner()
         .expect("performAsCurrentDrawingAppearance runs its block before returning")
@@ -529,7 +550,10 @@ mod tests {
         // Silent: a dot as tall as the pill is wide, on the centre line.
         let rest = centred_bar_frame(10.0, 6.0, 0.0);
         assert_eq!(rest.size, NSSize::new(6.0, 6.0));
-        assert_eq!(rest.origin.y + (rest.size.height / 2.0), METER_BORDER_PADDING + (METER_VIEW_HEIGHT / 2.0));
+        assert_eq!(
+            rest.origin.y + (rest.size.height / 2.0),
+            METER_BORDER_PADDING + (METER_VIEW_HEIGHT / 2.0)
+        );
         // Full: the whole track.
         let full = centred_bar_frame(10.0, 6.0, 1.0);
         assert_eq!(full.size.height, METER_VIEW_HEIGHT);

@@ -20,14 +20,32 @@ pub struct ConfigProblem {
 /// the same way as the problem's own key.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ProblemKind {
-    InvalidShortcut { value: String, error: String },
-    InvalidCorrectionKey { value: String, error: String },
-    SharesKeyWith { value: String, other_key: &'static str, other_value: String },
-    SameAs { value: String, other_key: &'static str },
+    InvalidShortcut {
+        value: String,
+        error: String,
+    },
+    InvalidCorrectionKey {
+        value: String,
+        error: String,
+    },
+    SharesKeyWith {
+        value: String,
+        other_key: &'static str,
+        other_value: String,
+    },
+    SameAs {
+        value: String,
+        other_key: &'static str,
+    },
     NotPositive(f64),
     GainOutOfRange(f32),
-    UnsupportedProvider { value: String },
-    InvalidUrl { value: String, error: String },
+    UnsupportedProvider {
+        value: String,
+    },
+    InvalidUrl {
+        value: String,
+        error: String,
+    },
     MissingModel(TransformationProvider),
 }
 
@@ -46,7 +64,11 @@ impl ConfigProblem {
             ProblemKind::InvalidCorrectionKey { value, error } => {
                 format!("\"{value}\" is not valid: {error}")
             }
-            ProblemKind::SharesKeyWith { value, other_key, other_value } => format!(
+            ProblemKind::SharesKeyWith {
+                value,
+                other_key,
+                other_value,
+            } => format!(
                 "\"{value}\" shares a key with {} \"{other_value}\"; they must be different",
                 name(other_key)
             ),
@@ -60,14 +82,16 @@ impl ConfigProblem {
             ),
             ProblemKind::UnsupportedProvider { value } => format!(
                 "\"{value}\" is not supported; supported providers: {}",
-                TransformationProvider::ALL.map(TransformationProvider::as_str).join(", ")
+                TransformationProvider::ALL
+                    .map(TransformationProvider::as_str)
+                    .join(", ")
             ),
             ProblemKind::InvalidUrl { value, error } => {
                 format!("\"{value}\" is not an http or https URL: {error}")
             }
-            ProblemKind::MissingModel(provider) => format!(
-                "required for provider \"{provider}\", which has no built-in default model"
-            ),
+            ProblemKind::MissingModel(provider) => {
+                format!("required for provider \"{provider}\", which has no built-in default model")
+            }
         };
         format!("{}: {detail}", name(self.key))
     }
@@ -90,7 +114,10 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         Err(error) => {
             problems.push(ConfigProblem::new(
                 "ui.hotkey",
-                ProblemKind::InvalidShortcut { value: config.ui.hotkey.clone(), error },
+                ProblemKind::InvalidShortcut {
+                    value: config.ui.hotkey.clone(),
+                    error,
+                },
             ));
             None
         }
@@ -147,7 +174,10 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
     if let Some(configured_provider) = configured_provider {
         match configured_provider.parse::<TransformationProvider>() {
             Ok(provider) => {
-                if provider.resolve_model(&config.transformation.model).is_none() {
+                if provider
+                    .resolve_model(&config.transformation.model)
+                    .is_none()
+                {
                     problems.push(missing_model_problem(provider));
                 }
             }
@@ -200,7 +230,10 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         if let Err(error) = http_url(url) {
             problems.push(ConfigProblem::new(
                 "transformation.ollama_base_url",
-                ProblemKind::InvalidUrl { value: url.to_owned(), error },
+                ProblemKind::InvalidUrl {
+                    value: url.to_owned(),
+                    error,
+                },
             ));
         }
     }
@@ -235,7 +268,9 @@ pub fn missing_model_problem(provider: TransformationProvider) -> ConfigProblem 
 pub fn unsupported_provider_problem(provider: &str) -> ConfigProblem {
     ConfigProblem::new(
         "transformation.provider",
-        ProblemKind::UnsupportedProvider { value: provider.trim().to_owned() },
+        ProblemKind::UnsupportedProvider {
+            value: provider.trim().to_owned(),
+        },
     )
 }
 
@@ -249,7 +284,10 @@ mod tests {
     use crate::config::Config;
 
     fn keys(config: &Config) -> Vec<&'static str> {
-        problems(config).into_iter().map(|problem| problem.key).collect()
+        problems(config)
+            .into_iter()
+            .map(|problem| problem.key)
+            .collect()
     }
 
     fn messages(config: &Config) -> Vec<String> {
@@ -266,7 +304,10 @@ mod tests {
         let mut config = Config::default();
         config.mic.gain = 40.0;
 
-        assert_eq!(messages(&config), ["mic.gain: \"40 dB\" is outside the 0 to 10 dB range"]);
+        assert_eq!(
+            messages(&config),
+            ["mic.gain: \"40 dB\" is outside the 0 to 10 dB range"]
+        );
     }
 
     #[test]
@@ -379,7 +420,11 @@ mod tests {
         let mut config = Config::default();
         config.transformation.provider = Some("ollama".to_owned());
         config.transformation.model = "llama3.2".to_owned();
-        for url in ["http://ollama.lan:11434", "https://ollama.example.com/", "  "] {
+        for url in [
+            "http://ollama.lan:11434",
+            "https://ollama.example.com/",
+            "  ",
+        ] {
             config.transformation.ollama_base_url = Some(url.to_owned());
             assert_eq!(keys(&config), Vec::<&str>::new(), "{url}");
         }
@@ -406,7 +451,10 @@ mod tests {
         config.transformation.provider = Some("openai".to_owned());
         assert_eq!(
             problems(&config)[0].kind,
-            ProblemKind::SameAs { value: "F5".to_owned(), other_key: "ui.hotkey" }
+            ProblemKind::SameAs {
+                value: "F5".to_owned(),
+                other_key: "ui.hotkey"
+            }
         );
 
         config.transformation.hotkey = "Nope".to_owned();
@@ -423,7 +471,12 @@ mod tests {
 
         assert_eq!(
             keys(&config),
-            ["ui.hotkey", "ui.font_size", "mic.gain", "transformation.provider"]
+            [
+                "ui.hotkey",
+                "ui.font_size",
+                "mic.gain",
+                "transformation.provider"
+            ]
         );
     }
 }

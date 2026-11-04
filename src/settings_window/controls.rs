@@ -370,7 +370,12 @@ pub fn status_display(
     text_view.setAccessibilityLabel(Some(ns_string!("Settings status")));
     scroll_view
         .heightAnchor()
-        .constraintEqualToConstant(text_scroll_height(mtm, &scroll_view, &text_view, visible_lines))
+        .constraintEqualToConstant(text_scroll_height(
+            mtm,
+            &scroll_view,
+            &text_view,
+            visible_lines,
+        ))
         .setActive(true);
     (scroll_view, text_view)
 }
@@ -397,9 +402,10 @@ fn text_scroll_height(
     text_view: &NSTextView,
     visible_lines: usize,
 ) -> f64 {
-    let font = text_view.font().expect("plain text views have a system font");
-    let text_height = NSLayoutManager::new().defaultLineHeightForFont(&font)
-        * visible_lines as f64
+    let font = text_view
+        .font()
+        .expect("plain text views have a system font");
+    let text_height = NSLayoutManager::new().defaultLineHeightForFont(&font) * visible_lines as f64
         + 2.0 * text_view.textContainerInset().height;
     let vertical_scroller = scroll_view
         .verticalScroller()

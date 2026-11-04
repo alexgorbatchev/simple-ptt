@@ -10,6 +10,7 @@ use objc2_foundation::NSString;
 
 use super::{activate, pane_view, PaneContentHeight};
 use crate::audio::available_audio_input_devices;
+use crate::config::Config;
 use crate::config::{UiMeterStyle, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
@@ -17,7 +18,6 @@ use crate::settings_window::controls::{
     pop_up_button_with_action, set_checked, set_placeholder, set_text_value, set_unsigned_value,
     slider, unsigned_value, NumberFieldKind, ResetButtons, NUMBER_FIELD_WIDTH,
 };
-use crate::config::Config;
 use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{mic_gain_label, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
@@ -78,7 +78,10 @@ impl MicrophonePane {
                 .constraintEqualToConstant(meter_container_height(UiMeterStyle::AnimatedColor)),
         ]);
 
-        set_placeholder(&sample_rate_field, &Config::default().mic.sample_rate.to_string());
+        set_placeholder(
+            &sample_rate_field,
+            &Config::default().mic.sample_rate.to_string(),
+        );
         let mut reset_buttons = ResetButtons::default();
         let sample_rate_reset = reset_buttons.add(mtm, target, DefaultedRow::SampleRate);
         let gain_reset = reset_buttons.add(mtm, target, DefaultedRow::MicGain);
@@ -143,7 +146,9 @@ impl MicrophonePane {
     /// Shows `row`'s value from `form` after a reset.
     pub fn apply_row(&self, row: DefaultedRow, form: &MicrophoneForm) {
         match row {
-            DefaultedRow::SampleRate => set_unsigned_value(&self.sample_rate_field, form.sample_rate),
+            DefaultedRow::SampleRate => {
+                set_unsigned_value(&self.sample_rate_field, form.sample_rate)
+            }
             DefaultedRow::MicGain => {
                 self.gain_slider.setDoubleValue(f64::from(form.gain));
                 self.update_gain_label(self.gain_slider_value());

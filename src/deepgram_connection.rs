@@ -124,8 +124,17 @@ mod tests {
 
     #[test]
     fn connection_message_counts_the_projects_the_key_can_see() {
-        assert_eq!(deepgram_connection_message(0), "Connected to Deepgram. Found no projects.");
-        assert_eq!(deepgram_connection_message(1), "Connected to Deepgram. Found 1 project.");
-        assert_eq!(deepgram_connection_message(3), "Connected to Deepgram. Found 3 projects.");
+        assert_eq!(
+            deepgram_connection_message(0),
+            "Connected to Deepgram. Found no projects."
+        );
+        assert_eq!(
+            deepgram_connection_message(1),
+            "Connected to Deepgram. Found 1 project."
+        );
+        assert_eq!(
+            deepgram_connection_message(3),
+            "Connected to Deepgram. Found 3 projects."
+        );
     }
 }

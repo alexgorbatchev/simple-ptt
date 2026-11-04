@@ -48,7 +48,8 @@ pub struct SpectrumAnalyzer {
 
 impl SpectrumAnalyzer {
     pub fn new(sample_rate: u32) -> Self {
-        let length = (((f64::from(sample_rate) * WINDOW_SECONDS) / 2.0).round() as usize * 2).max(64);
+        let length =
+            (((f64::from(sample_rate) * WINDOW_SECONDS) / 2.0).round() as usize * 2).max(64);
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(length);
         // Hann window.
         let window: Vec<f32> = (0..length)
@@ -103,7 +104,9 @@ impl SpectrumAnalyzer {
         for (offset, (input, weight)) in self.input.iter_mut().zip(&self.window).enumerate() {
             *input = self.history[(self.write + offset) % length] * weight;
         }
-        self.fft.process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch).ok()?;
+        self.fft
+            .process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch)
+            .ok()?;
         Some(std::array::from_fn(|index| {
             let (low, high) = self.bands[index].bins;
             let power: f32 = self.output[low..high].iter().map(Complex::norm_sqr).sum();
@@ -131,15 +134,21 @@ fn hz(mel: f64) -> f64 {
 fn mel_bands(sample_rate: f64, length: usize) -> [Band; SPECTRUM_BANDS] {
     let top = HIGHEST_HZ.min(sample_rate / 2.0);
     let (low_mel, high_mel) = (mel(LOWEST_HZ), mel(top));
-    let edge = |index: usize| hz(low_mel + ((high_mel - low_mel) * index as f64 / SPECTRUM_BANDS as f64));
+    let edge =
+        |index: usize| hz(low_mel + ((high_mel - low_mel) * index as f64 / SPECTRUM_BANDS as f64));
     let last_bin = length / 2;
-    let bin = |frequency: f64| ((frequency * length as f64 / sample_rate).round() as usize).clamp(1, last_bin);
+    let bin = |frequency: f64| {
+        ((frequency * length as f64 / sample_rate).round() as usize).clamp(1, last_bin)
+    };
     let mut next_low = bin(edge(0));
     std::array::from_fn(|index| {
         let low = next_low.min(last_bin);
         let high = bin(edge(index + 1)).max(low + 1).min(last_bin + 1);
         next_low = high;
-        Band { bins: (low, high), centre_hz: (edge(index) * edge(index + 1)).sqrt() as f32 }
+        Band {
+            bins: (low, high),
+            centre_hz: (edge(index) * edge(index + 1)).sqrt() as f32,
+        }
     })
 }
 
@@ -152,7 +161,9 @@ mod tests {
     fn sine(sample_rate: u32, frequency: f64, amplitude: f64, seconds: f64) -> Vec<u8> {
         (0..(f64::from(sample_rate) * seconds) as usize)
             .flat_map(|index| {
-                let value = amplitude * (std::f64::consts::TAU * frequency * index as f64 / f64::from(sample_rate)).sin();
+                let value = amplitude
+                    * (std::f64::consts::TAU * frequency * index as f64 / f64::from(sample_rate))
+                        .sin();
                 ((value * 32767.0) as i16).to_le_bytes()
             })
             .collect()
@@ -161,7 +172,12 @@ mod tests {
     fn band_of(analyzer: &SpectrumAnalyzer, frequency: f32) -> usize {
         let centres = analyzer.centres_hz();
         (0..SPECTRUM_BANDS)
-            .min_by(|a, b| (centres[*a] / frequency).ln().abs().total_cmp(&(centres[*b] / frequency).ln().abs()))
+            .min_by(|a, b| {
+                (centres[*a] / frequency)
+                    .ln()
+                    .abs()
+                    .total_cmp(&(centres[*b] / frequency).ln().abs())
+            })
             .unwrap()
     }
 
@@ -172,15 +188,25 @@ mod tests {
             let bands = analyzer.bands;
             for pair in bands.windows(2) {
                 assert!(pair[0].bins.1 <= pair[1].bins.0, "{sample_rate}: {pair:?}");
-                assert!(pair[0].centre_hz < pair[1].centre_hz, "{sample_rate}: {pair:?}");
+                assert!(
+                    pair[0].centre_hz < pair[1].centre_hz,
+                    "{sample_rate}: {pair:?}"
+                );
             }
             for band in &bands {
                 assert!(band.bins.0 < band.bins.1, "{sample_rate}: {band:?}");
             }
             let bin_hz = sample_rate as f32 / analyzer.history.len() as f32;
-            assert!((bands[0].bins.0 as f32 * bin_hz - 100.0).abs() <= bin_hz, "{sample_rate}: {:?}", bands[0]);
+            assert!(
+                (bands[0].bins.0 as f32 * bin_hz - 100.0).abs() <= bin_hz,
+                "{sample_rate}: {:?}",
+                bands[0]
+            );
             let top = bands[SPECTRUM_BANDS - 1].bins.1 as f32 * bin_hz;
-            assert!((top - 8_000.0).abs() <= 2.0 * bin_hz, "{sample_rate}: top {top}");
+            assert!(
+                (top - 8_000.0).abs() <= 2.0 * bin_hz,
+                "{sample_rate}: top {top}"
+            );
         }
     }
 
@@ -190,12 +216,21 @@ mod tests {
         analyzer.push_pcm16(&sine(16_000, 1_000.0, 0.5, 0.1));
         let levels = analyzer.analyze().unwrap();
         let tone_band = band_of(&analyzer, 1_000.0);
-        let loudest = (0..SPECTRUM_BANDS).max_by(|a, b| levels[*a].total_cmp(&levels[*b])).unwrap();
+        let loudest = (0..SPECTRUM_BANDS)
+            .max_by(|a, b| levels[*a].total_cmp(&levels[*b]))
+            .unwrap();
         assert_eq!(loudest, tone_band, "{levels:?}");
         // A half-scale sine is about -6 dBFS in its band, far above a band
         // two octaves up.
-        assert!((levels[tone_band] + 6.0).abs() < 4.0, "{}", levels[tone_band]);
-        assert!(levels[tone_band] - levels[band_of(&analyzer, 4_000.0)] > 40.0, "{levels:?}");
+        assert!(
+            (levels[tone_band] + 6.0).abs() < 4.0,
+            "{}",
+            levels[tone_band]
+        );
+        assert!(
+            levels[tone_band] - levels[band_of(&analyzer, 4_000.0)] > 40.0,
+            "{levels:?}"
+        );
     }
 
     #[test]
@@ -203,7 +238,10 @@ mod tests {
         let mut analyzer = SpectrumAnalyzer::new(16_000);
         analyzer.push_pcm16(&vec![0; 16_000 * 2 / 10]);
         let levels = analyzer.analyze().unwrap();
-        assert!(levels.iter().all(|level| *level <= SILENCE_DB + 1.0), "{levels:?}");
+        assert!(
+            levels.iter().all(|level| *level <= SILENCE_DB + 1.0),
+            "{levels:?}"
+        );
     }
 
     #[test]
@@ -215,7 +253,9 @@ mod tests {
         assert_eq!(analyzer.analyze(), None);
         analyzer.push_pcm16(rest);
         let levels = analyzer.analyze().unwrap();
-        let loudest = (0..SPECTRUM_BANDS).max_by(|a, b| levels[*a].total_cmp(&levels[*b])).unwrap();
+        let loudest = (0..SPECTRUM_BANDS)
+            .max_by(|a, b| levels[*a].total_cmp(&levels[*b]))
+            .unwrap();
         assert_eq!(loudest, band_of(&analyzer, 500.0));
     }
 
@@ -242,7 +282,9 @@ mod tests {
         analyzer.push_pcm16(&sine(16_000, 2_000.0, 0.5, 0.2));
         analyzer.push_pcm16(&sine(16_000, 300.0, 0.5, 0.07));
         let levels = analyzer.analyze().unwrap();
-        let loudest = (0..SPECTRUM_BANDS).max_by(|a, b| levels[*a].total_cmp(&levels[*b])).unwrap();
+        let loudest = (0..SPECTRUM_BANDS)
+            .max_by(|a, b| levels[*a].total_cmp(&levels[*b]))
+            .unwrap();
         assert_eq!(loudest, band_of(&analyzer, 300.0), "{levels:?}");
     }
 }

@@ -4,6 +4,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSButton, NSPopUpButton, NSTextField, NSView};
 
 use super::{pane_view, PaneContentHeight};
+use crate::config::Config;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
     checkbox, decimal_value, fixed_width, hotkey_display_field, is_checked, minimum_width,
@@ -11,7 +12,6 @@ use crate::settings_window::controls::{
     set_placeholder, set_text_value, set_unsigned_value, text_value, unsigned_value,
     NumberFieldKind, ResetButtons, FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH,
 };
-use crate::config::Config;
 use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::GeneralForm;
 use crate::settings_window::grid::{ControlWidth, FormGrid};
@@ -108,7 +108,12 @@ impl GeneralPane {
             &[&correction_key_capture_button, &correction_key_reset],
         );
         grid.add_section_header("Overlay");
-        grid.add_row(&labels::FONT.row_title(), &font_name_popup, ControlWidth::Intrinsic, &[]);
+        grid.add_row(
+            &labels::FONT.row_title(),
+            &font_name_popup,
+            ControlWidth::Intrinsic,
+            &[],
+        );
         grid.add_row(
             &labels::FONT_SIZE.row_title(),
             &font_size_field,
@@ -182,13 +187,16 @@ impl GeneralPane {
                 set_text_value(&self.correction_key_field, &form.correction_key)
             }
             DefaultedRow::FontSize => set_decimal_value(&self.font_size_field, form.font_size),
-            DefaultedRow::MeterStyle => {
-                populate_meter_style_popup(&self.meter_style_popup, form.meter_style_title.as_deref())
-            }
+            DefaultedRow::MeterStyle => populate_meter_style_popup(
+                &self.meter_style_popup,
+                form.meter_style_title.as_deref(),
+            ),
             DefaultedRow::AutoCheckUpdates => {
                 set_checked(&self.auto_check_updates_checkbox, form.auto_check_updates)
             }
-            DefaultedRow::StartOnLogin => set_checked(&self.start_on_login_checkbox, form.start_on_login),
+            DefaultedRow::StartOnLogin => {
+                set_checked(&self.start_on_login_checkbox, form.start_on_login)
+            }
             _ => {}
         }
     }
