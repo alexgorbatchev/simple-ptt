@@ -1,5 +1,4 @@
 pub mod dev;
-pub mod diff;
 pub mod glass;
 mod legibility;
 mod motion;
@@ -7,7 +6,6 @@ mod selection;
 pub mod private_effects;
 mod text_effects;
 
-pub use diff::{build_inline_correction_preview, utf16_offset, working_text_update_is_semantically_unchanged};
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,11 +19,10 @@ use objc2::{define_class, msg_send, rc::Retained, ClassType};
 use objc2_app_kit::{
     NSActionCell, NSAnimatablePropertyContainer, NSAutoresizingMaskOptions, NSBox, NSBoxType, NSCell, NSColor, NSEvent, NSFont, NSLineBreakMode,
     NSScreen, NSScrollView, NSTextAlignment, NSTextField, NSTextFieldCell, NSTextView,
-    NSTextViewDelegate, NSUnderlineColorAttributeName, NSUnderlineStyle,
-    NSUnderlineStyleAttributeName, NSView,
+    NSTextViewDelegate, NSView,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSMutableAttributedString, NSNumber, NSPoint, NSRange, NSRect, NSSize,
+    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize,
     NSString,
 };
 
@@ -291,22 +288,13 @@ impl OverlayWindow {
         let correction_is_visible = overlay_correction_active;
         let meter_is_visible = meter_runs(capturing_audio, is_error, self.ui_meter_view.style());
 
-        let inline_correction_preview = (state == STATE_TRANSFORMING
-            && !overlay_correction_active
-            && !overlay_correction_text_value.trim().is_empty())
-        .then_some(overlay_correction_text_value);
-
         if is_error != self.is_error_color.get() {
             self.is_error_color.set(is_error);
             self.working_text_view
                 .setTextColor(Some(&self.working_text_color()));
         }
 
-        self.set_working_text(
-            display_text,
-            display_provisional_start,
-            inline_correction_preview,
-        );
+        self.set_working_text(display_text, display_provisional_start);
 
         let is_error_correction = correction_is_visible
             && overlay_correction_text_value.starts_with("Transformation failed:");
@@ -701,17 +689,7 @@ impl OverlayWindow {
         }
     }
 
-    fn set_working_text(
-        &self,
-        text: &str,
-        provisional_start: Option<usize>,
-        inline_correction_preview: Option<&str>,
-    ) {
-        if let Some(preview_text) = inline_correction_preview {
-            self.set_working_text_with_preview(text, preview_text);
-            return;
-        }
-
+    fn set_working_text(&self, text: &str, provisional_start: Option<usize>) {
         let current_text = self.working_text_view.string().to_string();
         if working_text_update_is_semantically_unchanged(&current_text, text) {
             *self.rendered_working_text.borrow_mut() = current_text;
@@ -733,51 +711,6 @@ impl OverlayWindow {
         self.replace_working_text(&attributed_text(text, provisional_start, &attributes));
         self.working_provisional_start.set(provisional_start);
         *self.rendered_working_text.borrow_mut() = text.to_owned();
-
-        // SAFETY: `attributes` maps attribute keys to values of their
-        // documented types (an `NSFont` and an `NSColor`).
-        unsafe { self.working_text_view.setTypingAttributes(&attributes) };
-    }
-
-    fn set_working_text_with_preview(&self, original_text: &str, preview_text: &str) {
-        let Some(rendered_preview) = build_inline_correction_preview(original_text, preview_text)
-        else {
-            self.set_working_text(original_text, None, None);
-            return;
-        };
-
-        let attributes = text_attributes(&self.text_font.borrow(), &self.working_text_color());
-        let attributed_text = attributed_text(&rendered_preview.text, None, &attributes);
-        let underline_style = NSNumber::new_isize(NSUnderlineStyle::Single.bits() as isize);
-        let underline_color = NSColor::secondaryLabelColor();
-
-        for range in &rendered_preview.underlined_byte_ranges {
-            let location = utf16_offset(&rendered_preview.text, range.start);
-            let length = rendered_preview.text[range.start..range.end]
-                .encode_utf16()
-                .count();
-            if length == 0 {
-                continue;
-            }
-
-            unsafe {
-                attributed_text.addAttribute_value_range(
-                    NSUnderlineStyleAttributeName,
-                    underline_style.as_ref(),
-                    NSRange::new(location, length),
-                );
-                attributed_text.addAttribute_value_range(
-                    NSUnderlineColorAttributeName,
-                    underline_color.as_ref(),
-                    NSRange::new(location, length),
-                );
-            }
-        }
-
-        crossfade_next_change(&self.working_scroll_view);
-        self.replace_working_text(&attributed_text);
-        self.working_provisional_start.set(None);
-        *self.rendered_working_text.borrow_mut() = rendered_preview.text.clone();
 
         // SAFETY: `attributes` maps attribute keys to values of their
         // documented types (an `NSFont` and an `NSColor`).
@@ -1275,8 +1208,24 @@ fn rect_contains_point(rect: NSRect, point: NSPoint) -> bool {
     point.x >= rect.origin.x && point.x <= max_x && point.y >= rect.origin.y && point.y <= max_y
 }
 
+/// Whether replacing `current_text` with `next_text` changes what the
+/// overlay shows: an update that only adds or drops trailing whitespace
+/// leaves the rendered text in place.
+fn working_text_update_is_semantically_unchanged(current_text: &str, next_text: &str) -> bool {
+    current_text == next_text || current_text.trim_end() == next_text.trim_end()
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn treats_trailing_whitespace_only_updates_as_unchanged() {
+        use super::working_text_update_is_semantically_unchanged;
+
+        assert!(working_text_update_is_semantically_unchanged("hello world", "hello world "));
+        assert!(working_text_update_is_semantically_unchanged("hello world  ", "hello world"));
+        assert!(!working_text_update_is_semantically_unchanged("hello world", "hello there"));
+    }
+
     use super::{
         footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
         FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,

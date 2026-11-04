@@ -18,19 +18,10 @@ use crate::state::AppState;
 const ANTHROPIC_MAX_OUTPUT_TOKENS: u64 = 4096;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum TransformationPreviewMode<'a> {
+pub enum TransformationPreviewMode {
     ReplaceOverlay,
     /// Collect the result for pasting while the narrated text stays visible.
     PreserveOverlay,
-    #[expect(
-        dead_code,
-        reason = "inline correction preview (5fd64e9) lost its only constructor when 2719264 \
-                  rewrote the correction-apply path to use ReplaceOverlay; restoring it is \
-                  pending an owner decision"
-    )]
-    InlineCorrection {
-        original_text: &'a str,
-    },
 }
 
 #[derive(Clone, Debug)]
@@ -46,7 +37,7 @@ pub async fn transform_text(
     state: Arc<AppState>,
     config: &TransformationRuntimeConfig,
     input_text: &str,
-    preview_mode: TransformationPreviewMode<'_>,
+    preview_mode: TransformationPreviewMode,
 ) -> Result<String, String> {
     if state.is_abort_requested() {
         return Err("transformation aborted".to_owned());
@@ -144,7 +135,7 @@ async fn stream_completion_response<M>(
     config: &TransformationRuntimeConfig,
     input_text: &str,
     state: Arc<AppState>,
-    preview_mode: TransformationPreviewMode<'_>,
+    preview_mode: TransformationPreviewMode,
 ) -> Result<String, String>
 where
     M: CompletionModel + Clone,
@@ -166,7 +157,7 @@ where
 async fn drain_stream(
     mut stream: StreamingCompletionResponse,
     state: &AppState,
-    preview_mode: TransformationPreviewMode<'_>,
+    preview_mode: TransformationPreviewMode,
 ) -> Result<String, String> {
     let mut accumulator = StreamAccumulator::default();
     let mut received_final = false;
@@ -338,7 +329,7 @@ fn displayable_reasoning_text(reasoning: &Reasoning) -> String {
 
 fn apply_overlay_update(
     state: &AppState,
-    preview_mode: TransformationPreviewMode<'_>,
+    preview_mode: TransformationPreviewMode,
     update: OverlayUpdate,
 ) {
     match preview_mode {
@@ -349,14 +340,6 @@ fn apply_overlay_update(
                 state.set_overlay_text_opacity(opacity);
             }
             state.set_overlay_text(update.text);
-        }
-        TransformationPreviewMode::InlineCorrection { original_text } => {
-            if let Some(opacity) = update.reset_with_opacity {
-                state.set_overlay_text(original_text.to_owned());
-                state.clear_overlay_correction_text();
-                state.set_overlay_text_opacity(opacity);
-            }
-            state.set_overlay_correction_text(update.text);
         }
     }
 }
