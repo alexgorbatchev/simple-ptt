@@ -185,12 +185,7 @@ fn handle_key_press(
                         }
                     }
                 } else {
-                    abort_recording(
-                        state,
-                        controller,
-                        hotkey_config.auto_transform_enabled,
-                        "overlay cancellation",
-                    );
+                    abort_recording(state, controller, "overlay cancellation");
                 }
             }
             STATE_BUFFER_READY => match controller.discard_buffer() {
@@ -644,17 +639,13 @@ fn stop_recording_and_transform_and_resume(
     }
 }
 
-fn abort_recording(
-    state: &AppState,
-    controller: &TranscriptionController,
-    _auto_transform_enabled: bool,
-    reason: &str,
-) {
+/// Ends the dictation recording and throws its transcript away.
+fn abort_recording(state: &AppState, controller: &TranscriptionController, reason: &str) {
     if !state.is_recording() {
         return;
     }
 
-    match controller.stop_session_and_paste() {
+    match controller.abort_session() {
         Ok(()) => {
             state.set_state(STATE_IDLE);
             log::info!("recording aborted ({})", reason);

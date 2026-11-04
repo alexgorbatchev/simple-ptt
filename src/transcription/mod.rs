@@ -38,7 +38,11 @@ enum Command {
     StopSessionAndTransformAndPaste,
     StopSessionAndTransformAndResume,
     TransformBuffer,
-    PasteBuffer,
+    /// Throws the ready buffer away; its handler never pastes.
+    DiscardBuffer,
+    /// Ends the dictation session and throws its transcript away; its
+    /// handler never pastes.
+    AbortSession,
     QueueClipboardInsertion,
 }
 
@@ -118,12 +122,6 @@ impl TranscriptionController {
             .map_err(|_| "transcription worker thread is not running".to_owned())
     }
 
-    pub fn paste_buffer(&self) -> Result<(), String> {
-        self.command_tx
-            .send(Command::PasteBuffer)
-            .map_err(|_| "transcription worker thread is not running".to_owned())
-    }
-
     pub fn insert_clipboard_text(&self) -> Result<(), String> {
         self.command_tx
             .send(Command::QueueClipboardInsertion)
@@ -131,7 +129,15 @@ impl TranscriptionController {
     }
 
     pub fn discard_buffer(&self) -> Result<(), String> {
-        self.paste_buffer()
+        self.command_tx
+            .send(Command::DiscardBuffer)
+            .map_err(|_| "transcription worker thread is not running".to_owned())
+    }
+
+    pub fn abort_session(&self) -> Result<(), String> {
+        self.command_tx
+            .send(Command::AbortSession)
+            .map_err(|_| "transcription worker thread is not running".to_owned())
     }
 }
 
@@ -831,20 +837,20 @@ pub fn spawn_transcription_thread(
                         }
                     }
                 }
-                Command::PasteBuffer => {
-                    if buffered_text.trim().is_empty() {
-                        buffered_text = state.overlay_text().to_string();
-                    }
-
-                    if buffered_text.trim().is_empty() && !state.is_abort_requested() {
-                        log::info!("ignoring paste_buffer command because buffer is empty");
-                        state.clear_overlay_text();
-                        state.set_overlay_text_opacity(1.0);
-                        state.set_state(STATE_IDLE);
-                        continue;
-                    }
-
-                    flush_buffered_text_or_paste(&state, &mut buffered_text, true);
+                Command::DiscardBuffer => {
+                    recording_prefix.clear();
+                    resume_after_correction = false;
+                    complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                    log::info!("discarded the ready buffer");
+                }
+                Command::AbortSession => {
+                    // Dropping the session aborts its task and releases its
+                    // socket; its transcript is never read.
+                    drop(active_session.take());
+                    recording_prefix.clear();
+                    resume_after_correction = false;
+                    complete_session_cancellation(&state, &mut buffered_text, SessionKind::Dictation);
+                    log::info!("discarded the aborted dictation session");
                 }
             }
         }
@@ -1407,6 +1413,41 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert_eq!(state.get_state(), expected);
+    }
+
+    #[test]
+    fn discarding_the_buffer_needs_no_abort_and_leaves_nothing_to_paste() {
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE};
+
+        let state = AppState::new();
+        state.set_state(STATE_BUFFER_READY);
+        state.set_overlay_text("Throw this away");
+
+        worker(&state).discard_buffer().unwrap();
+
+        wait_for_state(&state, STATE_IDLE);
+        assert!(state.overlay_text().is_empty());
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn aborting_a_session_needs_no_abort_flag_and_consumes_a_raced_one() {
+        use crate::state::{AppState, STATE_IDLE, STATE_RECORDING};
+
+        for abort_requested in [false, true] {
+            let state = AppState::new();
+            state.set_state(STATE_RECORDING);
+            state.set_overlay_text("Dictated words to drop");
+            if abort_requested {
+                state.request_abort();
+            }
+
+            worker(&state).abort_session().unwrap();
+
+            wait_for_state(&state, STATE_IDLE);
+            assert!(state.overlay_text().is_empty(), "{abort_requested}");
+            assert!(!state.is_abort_requested(), "{abort_requested}");
+        }
     }
 
     #[test]
