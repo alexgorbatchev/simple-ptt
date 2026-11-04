@@ -476,17 +476,20 @@ fn stream_opened_for_another_config(
 enum StreamCommand {
     Play,
     Pause,
-    /// An unhealthy stream is left alone: CoreAudio pauses a stream it
-    /// invalidated, and resuming it would feed audio from a unit cpal gave
-    /// up on until the rebuild replaces it.
+    /// An unhealthy stream that audio is wanted from is not resumed:
+    /// CoreAudio pauses a stream it invalidated, and resuming it would feed
+    /// audio from a unit cpal gave up on until the rebuild replaces it.
     LeaveForRebuild,
 }
 
+/// Only resuming depends on health. A stream no audio is wanted from is
+/// paused even when unhealthy, so its unit stops while rebuilds keep
+/// failing; pausing a stream cpal already paused does nothing.
 fn stream_command(should_play: bool, healthy: bool) -> StreamCommand {
-    match (healthy, should_play) {
-        (false, _) => StreamCommand::LeaveForRebuild,
+    match (should_play, healthy) {
         (true, true) => StreamCommand::Play,
-        (true, false) => StreamCommand::Pause,
+        (true, false) => StreamCommand::LeaveForRebuild,
+        (false, _) => StreamCommand::Pause,
     }
 }
 
@@ -511,13 +514,13 @@ mod tests {
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
 
     #[test]
-    fn an_unhealthy_stream_is_neither_resumed_nor_paused() {
+    fn an_unhealthy_stream_is_not_resumed_but_is_still_paused() {
         use super::{stream_command, StreamCommand};
 
         assert_eq!(stream_command(true, true), StreamCommand::Play);
-        assert_eq!(stream_command(false, true), StreamCommand::Pause);
         assert_eq!(stream_command(true, false), StreamCommand::LeaveForRebuild);
-        assert_eq!(stream_command(false, false), StreamCommand::LeaveForRebuild);
+        assert_eq!(stream_command(false, true), StreamCommand::Pause);
+        assert_eq!(stream_command(false, false), StreamCommand::Pause);
     }
 
     #[test]

@@ -14,7 +14,7 @@ Each input stream owns a `StreamActivity`. Its callback timestamps and watchdog 
 
 A successful play starts a 1.5-second callback deadline, including when no first callback arrives. Repeated play requests do not extend that deadline. Pausing disables the deadline; resuming starts a fresh one. The callback records activity using an atomic store without taking a lock.
 
-`AudioController::sync_stream_state` checks health during recording as well as while idle. It plays or pauses only a healthy stream. An unhealthy one is left as it is, because CoreAudio pauses a stream it invalidated and resuming it would feed audio from a unit cpal gave up on. A missing, failed, or stalled stream interrupts recording with an overlay error, leaving the displayed transcript intact. Idle recovery can then rebuild the input and update the transcription sample rate. The record shortcut starts the next recording.
+`AudioController::sync_stream_state` checks health during recording as well as while idle. It resumes only a healthy stream: CoreAudio pauses a stream it invalidated, and resuming it would feed audio from a unit cpal gave up on. A stream no audio is wanted from is paused even when unhealthy, so the microphone stops while rebuilds keep failing. A missing, failed, or stalled stream interrupts recording with an overlay error, leaving the displayed transcript intact. Idle recovery can then rebuild the input and update the transcription sample rate. The record shortcut starts the next recording.
 
 ## Device notifications
 
