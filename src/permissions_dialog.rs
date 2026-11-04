@@ -290,8 +290,8 @@ fn permissions_dialog_summary_text(flow: &GlobalHotkeyPermissionFlow) -> String 
     }
 
     format!(
-        "simple-ptt needs Accessibility to drive the synthetic paste shortcut and Microphone access to capture audio. \
-         Input Monitoring is required for global shortcuts and requested automatically. \
+        "simple-ptt needs Accessibility and Input Monitoring for its global shortcuts, and Accessibility also drives the synthetic paste shortcut. \
+         Input Monitoring is requested automatically. Microphone access is needed to capture audio. \
          If macOS stops prompting or a grant looks stale, use {RESET_BUTTON_TITLE} to reset permissions and restart simple-ptt. \
          If you leave this window, reopen it from the menu bar with Application Permissions…."
     )
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn permissions_dialog_summary_explains_automatic_input_monitoring_request() {
+    fn permissions_dialog_summary_names_both_grants_the_global_shortcuts_need() {
         let text = permissions_dialog_summary_text(&GlobalHotkeyPermissionFlow {
             permissions: GlobalHotkeyPermissions {
                 accessibility_granted: false,
@@ -410,9 +410,9 @@ mod tests {
             microphone_state: GlobalHotkeyPermissionState::Missing,
         });
 
-        assert!(text.contains(
-            "Input Monitoring is required for global shortcuts and requested automatically"
-        ));
+        assert!(text.contains("needs Accessibility and Input Monitoring for its global shortcuts"));
+        assert!(text.contains("Accessibility also drives the synthetic paste shortcut"));
+        assert!(text.contains("Input Monitoring is requested automatically"));
         assert!(!text.contains("anymore"));
         assert!(text.contains("Reset and Relaunch"));
         assert!(!text.contains("Reset Permissions"));
