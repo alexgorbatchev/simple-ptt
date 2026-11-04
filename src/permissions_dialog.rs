@@ -12,7 +12,7 @@ use crate::app::actions::ApplicationAction;
 use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
 use crate::settings_window::style_button_bezel_and_text;
 
-const WINDOW_HEIGHT: f64 = 250.0;
+const WINDOW_HEIGHT: f64 = 280.0;
 const WINDOW_WIDTH: f64 = 570.0;
 const HORIZONTAL_PADDING: f64 = 20.0;
 const BUTTON_HEIGHT: f64 = 30.0;
@@ -25,6 +25,9 @@ const THREE_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - (BUTTON_GAP * 2.0)) / 3.0;
 const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
 const BODY_FONT_SIZE: f64 = 12.0;
+/// Fits the longest summary, the one shown while grants are requested,
+/// which wraps to seven lines of `BODY_FONT_SIZE` at `LABEL_WIDTH`.
+const SUMMARY_HEIGHT: f64 = 108.0;
 const BUTTON_FONT_SIZE: f64 = 12.0;
 const BUTTON_FONT_WEIGHT: f64 = 0.0;
 const RESET_BUTTON_TITLE: &str = "Reset and Relaunch";
@@ -85,7 +88,7 @@ impl PermissionsDialog {
         set_view_frame(
             &title_text_field,
             HORIZONTAL_PADDING,
-            192.0,
+            222.0,
             LABEL_WIDTH,
             22.0,
         );
@@ -98,7 +101,7 @@ impl PermissionsDialog {
             HORIZONTAL_PADDING,
             104.0,
             LABEL_WIDTH,
-            78.0,
+            SUMMARY_HEIGHT,
         );
         root_view.addSubview(&summary_text_field);
 
