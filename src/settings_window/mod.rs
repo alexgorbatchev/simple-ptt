@@ -321,8 +321,10 @@ impl SettingsWindow {
     }
 
     /// Puts `row` back to its built-in default, hides its Reset button, and
-    /// records the reset for the next Save.
+    /// records the reset for the next Save. A shortcut capture in progress
+    /// ends first, so its restored value cannot overwrite the reset.
     pub fn reset_row_to_default(&self, row: DefaultedRow) {
+        self.cancel_hotkey_capture();
         let mut form = self.read_form();
         form.reset_row(row);
         self.general.apply_row(row, &form.general);

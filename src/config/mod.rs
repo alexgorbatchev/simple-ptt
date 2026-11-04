@@ -1560,6 +1560,48 @@ mod tests {
         assert_eq!(contents, "[ui]\n[mic]\nhold_ms = 450 # mine\n");
     }
 
+    /// Every key in `DEFAULTED_KEYS` is one `save_config` writes and, once
+    /// reset, removes again.
+    #[test]
+    fn every_defaulted_key_is_written_when_changed_and_removed_when_reset() {
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-every-defaulted-key-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        let mut changed = Config::default();
+        changed.ui.start_on_login = true;
+        changed.ui.auto_check_updates = false;
+        changed.ui.hotkey = "F9".to_owned();
+        changed.ui.correction_key = "F7".to_owned();
+        changed.ui.font_size = 15.0;
+        changed.ui.meter_style = UiMeterStyle::None;
+        changed.mic.sample_rate = 48000;
+        changed.mic.gain = 6.0;
+        changed.mic.hold_ms = 450;
+        changed.mic.always_on = false;
+        changed.deepgram.language = "de-DE".to_owned();
+        changed.deepgram.model = "nova-2".to_owned();
+        changed.deepgram.endpointing_ms = 450;
+        changed.deepgram.utterance_end_ms = 1500;
+        changed.transformation.hotkey = "F8".to_owned();
+        changed.transformation.auto = false;
+        changed.transformation.model = "custom-model".to_owned();
+        changed.transformation.system_prompt = "Mine.".to_owned();
+        changed.transformation.correction_system_prompt = "Mine too.".to_owned();
+
+        save_config(&path, &changed, &DefaultResets::default()).unwrap();
+        let written = super::defaulted_keys_in_file(&path).unwrap();
+        let every_key = super::DEFAULTED_KEYS.iter().map(|(key, _)| *key).collect::<Vec<_>>();
+        assert_eq!(written.into_iter().collect::<Vec<_>>().len(), every_key.len());
+
+        let all_reset = DefaultResets::from_iter(every_key.iter().copied());
+        save_config(&path, &Config::default(), &all_reset).unwrap();
+        let remaining = super::defaulted_keys_in_file(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        assert!(remaining.is_empty(), "{remaining:?}");
+    }
+
     #[test]
     fn a_missing_file_has_no_defaulted_keys() {
         let path = std::env::temp_dir()

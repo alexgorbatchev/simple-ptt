@@ -521,6 +521,7 @@ define_class!(
             else {
                 return;
             };
+            self.ivars().hotkey_capture_controller.cancel();
             settings_window.reset_row_to_default(row);
         }
 
