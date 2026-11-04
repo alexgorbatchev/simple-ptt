@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
-use objc2_foundation::NSString;
+use dispatch2::DispatchQueue;
+use objc2_foundation::{MainThreadMarker, NSString};
 
 use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE};
 
@@ -223,72 +224,35 @@ fn create_keyboard_event(virtual_key: u16, key_down: bool) -> Result<CFRetained<
     Ok(unsafe { CFRetained::from_raw(event) })
 }
 
-struct ClipboardReadRequest {
-    text: Option<String>,
-}
-
-struct ClipboardWriteRequest {
-    text: String,
-    success: bool,
-}
-
-extern "C" {
-    static _dispatch_main_q: c_void;
-    fn dispatch_sync_f(
-        queue: *const c_void,
-        context: *mut c_void,
-        work: extern "C" fn(*mut c_void),
+/// Runs `work` on the main thread, where AppKit's pasteboard must be used,
+/// and waits for it. The worker threads that read and write the clipboard
+/// call this; on the main thread it would deadlock, waiting on its own queue.
+fn on_main_thread<T: Send>(work: impl Send + FnOnce() -> T) -> T {
+    debug_assert!(
+        MainThreadMarker::new().is_none(),
+        "the clipboard is reached through the main queue from worker threads only"
     );
-}
-
-extern "C" fn perform_clipboard_read(context: *mut c_void) {
-    let request = unsafe { &mut *(context as *mut ClipboardReadRequest) };
-    let pasteboard = NSPasteboard::generalPasteboard();
-    request.text = pasteboard
-        .stringForType(unsafe { NSPasteboardTypeString })
-        .map(|text| text.to_string());
+    let mut result = None;
+    DispatchQueue::main().exec_sync(|| result = Some(work()));
+    result.expect("the main queue ran the clipboard work")
 }
 
 pub fn read_clipboard_text() -> Result<String, String> {
-    let mut request = Box::new(ClipboardReadRequest { text: None });
-
-    unsafe {
-        dispatch_sync_f(
-            &_dispatch_main_q,
-            (&mut *request) as *mut ClipboardReadRequest as *mut c_void,
-            perform_clipboard_read,
-        );
-    }
-
-    request
-        .text
-        .ok_or_else(|| "clipboard does not currently contain plain text".to_owned())
-}
-
-extern "C" fn perform_clipboard_write(context: *mut c_void) {
-    let request = unsafe { &mut *(context as *mut ClipboardWriteRequest) };
-    let pasteboard = NSPasteboard::generalPasteboard();
-    pasteboard.clearContents();
-
-    let ns_text = NSString::from_str(&request.text);
-    request.success = pasteboard.setString_forType(&ns_text, unsafe { NSPasteboardTypeString });
+    on_main_thread(|| {
+        NSPasteboard::generalPasteboard()
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .map(|text| text.to_string())
+    })
+    .ok_or_else(|| "clipboard does not currently contain plain text".to_owned())
 }
 
 pub fn write_clipboard_text(text: &str) -> Result<(), String> {
-    let mut request = Box::new(ClipboardWriteRequest {
-        text: text.to_owned(),
-        success: false,
+    let written = on_main_thread(|| {
+        let pasteboard = NSPasteboard::generalPasteboard();
+        pasteboard.clearContents();
+        pasteboard.setString_forType(&NSString::from_str(text), unsafe { NSPasteboardTypeString })
     });
-
-    unsafe {
-        dispatch_sync_f(
-            &_dispatch_main_q,
-            (&mut *request) as *mut ClipboardWriteRequest as *mut c_void,
-            perform_clipboard_write,
-        );
-    }
-
-    if request.success {
+    if written {
         Ok(())
     } else {
         Err("failed to update the macOS general pasteboard".to_owned())

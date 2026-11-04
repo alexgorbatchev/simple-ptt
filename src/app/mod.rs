@@ -953,8 +953,11 @@ impl AppDelegate {
                 // activate() leaves the key nonactivating overlay active only
                 // inside AppKit, and NSRunningApplication rejects activation.
                 // Order a regular window first, then request foreground focus.
-                // Keep this public API until its replacement handles that case.
-                #[allow(deprecated)]
+                #[expect(
+                    deprecated,
+                    reason = "activate() and NSRunningApplication cannot activate the app here \
+                              on macOS 26.6.2; keep this public API until a replacement can"
+                )]
                 NSApplication::sharedApplication(MainThreadMarker::from(self))
                     .activateIgnoringOtherApps(true);
             }

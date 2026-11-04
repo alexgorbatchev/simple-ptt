@@ -1,8 +1,9 @@
 use std::path::Path;
 
+use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::AnyThread;
+use objc2::runtime::{AnyObject, Bool};
+use objc2::Message;
 use objc2_app_kit::{
     NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSBitmapImageRepPropertyKey, NSColor,
     NSImage, NSLineCapStyle, NSLineJoinStyle,
@@ -63,44 +64,46 @@ pub fn write_application_iconset(output_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[allow(deprecated)]
 pub fn make_status_bar_active_icon(_mtm: MainThreadMarker) -> Retained<NSImage> {
-    let image = NSImage::initWithSize(
-        NSImage::alloc(),
+    let image = drawn_image(
         NSSize::new(STATUS_BAR_ICON_SIZE, STATUS_BAR_ICON_SIZE),
+        |size| {
+            NSColor::whiteColor().set();
+            draw_microphone_symbol(size);
+
+            let dot =
+                NSBezierPath::bezierPathWithOvalInRect(scaled_svg_rect(size, 14.5, 0.5, 9.0, 9.0));
+            NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.12, 0.08, 1.0).set();
+            dot.fill();
+        },
     );
-    image.lockFocus();
-
-    let size = image.size();
-
-    NSColor::whiteColor().set();
-    draw_microphone_symbol(size);
-
-    let dot = NSBezierPath::bezierPathWithOvalInRect(scaled_svg_rect(size, 14.5, 0.5, 9.0, 9.0));
-    NSColor::colorWithSRGBRed_green_blue_alpha(1.0, 0.12, 0.08, 1.0).set();
-    dot.fill();
-
-    image.unlockFocus();
     image.setTemplate(false);
     image
 }
 
-#[allow(deprecated)]
 fn make_microphone_icon(
     _mtm: MainThreadMarker,
     size: NSSize,
     color: &NSColor,
     template: bool,
 ) -> Retained<NSImage> {
-    let image = NSImage::initWithSize(NSImage::alloc(), size);
-    image.lockFocus();
-
-    color.set();
-    draw_microphone_symbol(size);
-
-    image.unlockFocus();
+    let color = color.retain();
+    let image = drawn_image(size, move |size| {
+        color.set();
+        draw_microphone_symbol(size);
+    });
     image.setTemplate(template);
     image
+}
+
+/// An image of `size` whose content `draw` paints, at whatever resolution
+/// AppKit renders it, into a context sized like the image.
+fn drawn_image(size: NSSize, draw: impl Fn(NSSize) + 'static) -> Retained<NSImage> {
+    let handler = RcBlock::new(move |rect: NSRect| {
+        draw(rect.size);
+        Bool::YES
+    });
+    NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler)
 }
 
 fn write_png_icon(mtm: MainThreadMarker, icon_size: f64, output_path: &Path) -> Result<(), String> {
