@@ -138,6 +138,7 @@ mod tests {
         let base_config = TransformationRuntimeConfig {
             provider: crate::config::TransformationProvider::Openai,
             api_key: Some("key".to_owned()),
+            ollama_base_url: crate::config::DEFAULT_OLLAMA_BASE_URL.to_owned(),
             model: "gpt-4o-mini".to_owned(),
             system_prompt: "dictation prompt".to_owned(),
             correction_system_prompt: "correction prompt".to_owned(),

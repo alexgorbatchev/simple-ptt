@@ -99,6 +99,10 @@ auto = true
 # for example OPENAI_API_KEY for "openai" or GEMINI_API_KEY for "gemini".
 # api_key = "YOUR_LLM_API_KEY"
 
+# Optional. The Ollama server for provider = "ollama". Omit to use the local
+# server; api_key, when set, is sent to it as a bearer token.
+# ollama_base_url = "http://localhost:11434"
+
 # Model name for the selected provider. Omit to use the provider's built-in
 # default: gpt-5.4-mini for "openai", claude-haiku-5-5 for "anthropic", and
 # gemini-3.5-flash-lite for "gemini". Every other provider requires it.

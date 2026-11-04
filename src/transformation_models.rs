@@ -44,6 +44,9 @@ pub struct TransformationProviderRequest {
     pub provider: TransformationProvider,
     pub resolved_api_key: Option<String>,
     pub selected_model: String,
+    /// The server an `ollama` request lists models from, without a trailing
+    /// slash.
+    pub ollama_base_url: String,
 }
 
 impl TransformationProviderRequest {
@@ -63,7 +66,23 @@ impl TransformationProviderRequest {
                 .map(|value| value.trim().to_owned())
                 .filter(|value| !value.is_empty()),
             selected_model: provider.resolve_model(&selected_model).unwrap_or_default(),
+            ollama_base_url: crate::config::resolve_ollama_base_url(None),
         })
+    }
+
+    /// Lists an `ollama` request's models from `configured`, or from the
+    /// default server when it is unset.
+    pub fn with_ollama_base_url(mut self, configured: Option<&str>) -> Self {
+        self.ollama_base_url = crate::config::resolve_ollama_base_url(configured);
+        self
+    }
+
+    /// Where the request's models are listed.
+    fn models_url(&self) -> String {
+        match self.provider {
+            TransformationProvider::Ollama => format!("{}/api/tags", self.ollama_base_url),
+            provider => models_endpoint(provider).url.to_owned(),
+        }
     }
 
     pub fn same_source_as(&self, other: &Self) -> bool {
@@ -83,7 +102,7 @@ impl TransformationProviderRequest {
 
     /// Whether fetching this request's models sends its API key.
     fn sends_api_key(&self) -> bool {
-        self.resolved_api_key.is_some() && models_endpoint(self.provider).auth.sends_api_key()
+        self.resolved_api_key.is_some()
     }
 
     pub fn account_fingerprint(&self) -> String {
@@ -94,6 +113,11 @@ impl TransformationProviderRequest {
             hasher.update(api_key.as_bytes());
         } else {
             hasher.update(b"no-api-key");
+        }
+        // Different Ollama servers list different models.
+        if self.provider == TransformationProvider::Ollama {
+            hasher.update([0]);
+            hasher.update(self.ollama_base_url.as_bytes());
         }
         let digest = hasher.finalize();
         digest[..8]
@@ -590,26 +614,21 @@ fn cached_models_in(
 enum ModelsAuth {
     /// `Authorization: Bearer <key>`; the key is required.
     Bearer,
-    /// `Authorization: Bearer <key>` when a key is set; the endpoint is public.
+    /// `Authorization: Bearer <key>` when a key is set; the endpoint may be
+    /// public, as a local Ollama server is.
     OptionalBearer,
     /// Anthropic's `x-api-key` and `anthropic-version` headers.
     Anthropic,
     /// Google's `key` query parameter.
     GoogleApiKeyQuery,
-    /// No authentication (the local Ollama server).
-    None,
 }
 
 impl ModelsAuth {
     fn requires_api_key(self) -> bool {
         match self {
             Self::Bearer | Self::Anthropic | Self::GoogleApiKeyQuery => true,
-            Self::OptionalBearer | Self::None => false,
+            Self::OptionalBearer => false,
         }
-    }
-
-    fn sends_api_key(self) -> bool {
-        self != Self::None
     }
 }
 
@@ -637,7 +656,9 @@ fn models_endpoint(provider: TransformationProvider) -> ModelsEndpoint {
         TransformationProvider::Mira => ("https://api.mira.network/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Mistral => ("https://api.mistral.ai/models", ModelsAuth::Bearer),
         TransformationProvider::Moonshot => ("https://api.moonshot.cn/v1/models", ModelsAuth::Bearer),
-        TransformationProvider::Ollama => ("http://localhost:11434/api/tags", ModelsAuth::None),
+        // `TransformationProviderRequest::models_url` puts in the configured
+        // server.
+        TransformationProvider::Ollama => ("http://localhost:11434/api/tags", ModelsAuth::OptionalBearer),
         TransformationProvider::Openai => ("https://api.openai.com/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Openrouter => ("https://openrouter.ai/api/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Perplexity => ("https://api.perplexity.ai/models", ModelsAuth::Bearer),
@@ -654,14 +675,13 @@ fn fetch_provider_models(request: &TransformationProviderRequest) -> Result<Vec<
         .build()
         .map_err(|error| format!("failed to build HTTP client: {}", error))?;
 
-    let request_builder = http_client.get(endpoint.url);
+    let request_builder = http_client.get(request.models_url());
     let api_key = request.resolved_api_key.as_deref();
     let request_builder = match endpoint.auth {
         ModelsAuth::Bearer => with_bearer_auth(request_builder, api_key)?,
         ModelsAuth::OptionalBearer => with_optional_bearer_auth(request_builder, api_key)?,
         ModelsAuth::Anthropic => with_anthropic_headers(request_builder, api_key)?,
         ModelsAuth::GoogleApiKeyQuery => with_google_api_key_query(request_builder, api_key)?,
-        ModelsAuth::None => request_builder,
     };
     let models = fetch_json_models(request_builder, request.provider)?;
 
@@ -1200,6 +1220,17 @@ mod tests {
     }
 
     #[test]
+    fn ollama_models_come_from_the_configured_server_and_are_cached_per_server() {
+        let local = request("ollama", None);
+        let remote = request("ollama", None).with_ollama_base_url(Some(" http://ollama.lan:11434/ "));
+
+        assert_eq!(local.models_url(), "http://localhost:11434/api/tags");
+        assert_eq!(remote.models_url(), "http://ollama.lan:11434/api/tags");
+        assert!(!local.same_source_as(&remote));
+        assert!(local.same_source_as(&request("ollama", None).with_ollama_base_url(Some(""))));
+    }
+
+    #[test]
     fn every_supported_provider_has_a_models_endpoint() {
         for provider in TransformationProvider::ALL {
             assert!(!models_endpoint(provider).url.is_empty());
@@ -1430,12 +1461,18 @@ mod tests {
             None,
             None,
         ));
-        // Ollama's models endpoint takes no key, so none is sent.
-        assert!(api_key_belongs_to_provider(
+        // A key saved for another provider is not sent to an Ollama server.
+        assert!(!api_key_belongs_to_provider(
             &request("ollama", Some("sk-openai")),
             Some("sk-openai"),
             Some("openai"),
             Some("sk-openai"),
+        ));
+        assert!(api_key_belongs_to_provider(
+            &request("ollama", Some("ollama-key")),
+            Some("ollama-key"),
+            Some("ollama"),
+            Some("ollama-key"),
         ));
     }
 

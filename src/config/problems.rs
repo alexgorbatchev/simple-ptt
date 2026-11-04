@@ -27,6 +27,7 @@ pub enum ProblemKind {
     NotPositive(f64),
     GainOutOfRange(f32),
     UnsupportedProvider { value: String },
+    InvalidUrl { value: String, error: String },
     MissingModel(TransformationProvider),
 }
 
@@ -61,6 +62,9 @@ impl ConfigProblem {
                 "\"{value}\" is not supported; supported providers: {}",
                 TransformationProvider::ALL.map(TransformationProvider::as_str).join(", ")
             ),
+            ProblemKind::InvalidUrl { value, error } => {
+                format!("\"{value}\" is not an http or https URL: {error}")
+            }
             ProblemKind::MissingModel(provider) => format!(
                 "required for provider \"{provider}\", which has no built-in default model"
             ),
@@ -181,7 +185,31 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         }
     }
 
+    if let Some(url) = config
+        .transformation
+        .ollama_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    {
+        if let Err(error) = http_url(url) {
+            problems.push(ConfigProblem::new(
+                "transformation.ollama_base_url",
+                ProblemKind::InvalidUrl { value: url.to_owned(), error },
+            ));
+        }
+    }
+
     problems
+}
+
+/// Checks that `url` is an absolute http or https URL.
+fn http_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|error| error.to_string())?;
+    match parsed.scheme() {
+        "http" | "https" => Ok(()),
+        scheme => Err(format!("the scheme is \"{scheme}\"")),
+    }
 }
 
 /// The problem with a `mic.gain` outside the range the Settings slider
@@ -339,6 +367,23 @@ mod tests {
 
         config.transformation.model = "llama3.2".to_owned();
         assert_eq!(keys(&config), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn an_ollama_server_must_be_an_http_url() {
+        let mut config = Config::default();
+        for url in ["http://ollama.lan:11434", "https://ollama.example.com/", "  "] {
+            config.transformation.ollama_base_url = Some(url.to_owned());
+            assert_eq!(keys(&config), Vec::<&str>::new(), "{url}");
+        }
+
+        config.transformation.ollama_base_url = Some("ollama.lan:11434".to_owned());
+        assert_eq!(
+            messages(&config),
+            ["transformation.ollama_base_url: \"ollama.lan:11434\" is not an http or https URL: the scheme is \"ollama.lan\""]
+        );
+        config.transformation.ollama_base_url = Some("not a url".to_owned());
+        assert_eq!(keys(&config), ["transformation.ollama_base_url"]);
     }
 
     #[test]

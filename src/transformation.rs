@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use rig_core::client::{CompletionClient, ProviderClient, ProviderClientError};
+use rig_core::client::CompletionClient;
 use rig_core::completion::{CompletionModel, FinishReason};
 use rig_core::message::{Reasoning, ReasoningContent, Text};
 use rig_core::providers::{
@@ -28,6 +28,8 @@ pub enum TransformationPreviewMode {
 pub struct TransformationRuntimeConfig {
     pub provider: TransformationProvider,
     pub api_key: Option<String>,
+    /// The server the `ollama` provider talks to, without a trailing slash.
+    pub ollama_base_url: String,
     pub model: String,
     pub system_prompt: String,
     pub correction_system_prompt: String,
@@ -103,7 +105,11 @@ pub async fn transform_text(
                 .map_err(format_http_client_error)?)
         }
         TransformationProvider::Ollama => {
-            stream_with_client!(ollama::Client::from_env().map_err(format_provider_client_error)?)
+            stream_with_client!(ollama::Client::builder()
+                .api_key(config.api_key.clone().unwrap_or_default())
+                .base_url(&config.ollama_base_url)
+                .build()
+                .map_err(format_http_client_error)?)
         }
         TransformationProvider::Openai => {
             stream_with_client!(
@@ -362,10 +368,6 @@ fn format_http_client_error(error: rig_core::http_client::Error) -> String {
     format!("{}", error)
 }
 
-fn format_provider_client_error(error: ProviderClientError) -> String {
-    format!("{}", error)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +413,7 @@ mod tests {
             let config = TransformationRuntimeConfig {
                 provider: TransformationProvider::Anthropic,
                 api_key: Some("offline-test-key".to_owned()),
+                ollama_base_url: crate::config::DEFAULT_OLLAMA_BASE_URL.to_owned(),
                 model: model_name.to_owned(),
                 system_prompt: "Clean up this dictation.".to_owned(),
                 correction_system_prompt: String::new(),
@@ -755,16 +758,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_ollama_provider_talks_to_the_configured_server() {
+        // A port nothing listens on: the request fails at connect, offline.
+        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let config = TransformationRuntimeConfig {
+            provider: TransformationProvider::Ollama,
+            api_key: Some("ollama-key".to_owned()),
+            ollama_base_url: format!("http://127.0.0.1:{closed_port}"),
+            model: "llama3.2".to_owned(),
+            system_prompt: String::new(),
+            correction_system_prompt: String::new(),
+        };
+
+        let error = transform_text(
+            AppState::new(),
+            &config,
+            "input",
+            TransformationPreviewMode::ReplaceOverlay,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            error.contains(&format!("http://127.0.0.1:{closed_port}/api/chat")),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn every_supported_provider_is_dispatched() {
         let state = AppState::new();
-        // `ollama` takes no API key: its client reads the environment and
-        // would open a real connection to the local server.
+        // `ollama` needs no API key; its dispatch is covered by
+        // `the_ollama_provider_talks_to_the_configured_server`.
         for provider in crate::config::supported_transformation_providers()
             .filter(|provider| *provider != "ollama")
         {
             let config = TransformationRuntimeConfig {
                 provider: provider.parse().unwrap(),
                 api_key: None,
+                ollama_base_url: crate::config::DEFAULT_OLLAMA_BASE_URL.to_owned(),
                 model: "test-model".to_owned(),
                 system_prompt: String::new(),
                 correction_system_prompt: String::new(),
@@ -796,6 +832,7 @@ mod tests {
         let config = TransformationRuntimeConfig {
             provider: TransformationProvider::Gemini,
             api_key: Some(api_key),
+            ollama_base_url: crate::config::DEFAULT_OLLAMA_BASE_URL.to_owned(),
             model: "gemini-3.5-flash-lite".to_owned(),
             system_prompt: "Reply briefly.".to_owned(),
             correction_system_prompt: String::new(),
@@ -831,6 +868,7 @@ mod tests {
         let config = TransformationRuntimeConfig {
             provider: TransformationProvider::Gemini,
             api_key: Some(api_key),
+            ollama_base_url: crate::config::DEFAULT_OLLAMA_BASE_URL.to_owned(),
             model: "gemini-2.5-flash".to_owned(),
             system_prompt: "You are a helpful assistant.".to_owned(),
             correction_system_prompt: String::new(),

@@ -41,6 +41,7 @@ pub struct TransformationPane {
     auto_checkbox: Retained<NSButton>,
     provider_popup: Retained<NSPopUpButton>,
     api_key_field: Retained<NSTextField>,
+    ollama_base_url_field: Retained<NSTextField>,
     api_key_env_hint: HintRow,
     model_combo_box: Retained<NSComboBox>,
     model_refresh_button: Retained<NSButton>,
@@ -62,6 +63,8 @@ impl TransformationPane {
         let provider_popup =
             pop_up_button_with_action(mtm, target, SettingsAction::TransformationProviderChanged);
         let api_key_field = text_field(mtm);
+        let ollama_base_url_field = text_field(mtm);
+        set_placeholder(&ollama_base_url_field, crate::config::DEFAULT_OLLAMA_BASE_URL);
         let model_combo_box = combo_box(mtm);
         let model_refresh_button = push_button(
             mtm,
@@ -100,6 +103,12 @@ impl TransformationPane {
         );
         grid.add_row(&labels::TRANSFORMATION_API_KEY.row_title(), &api_key_field, ControlWidth::Fill, &[]);
         let api_key_env_hint = grid.add_hint_row(None);
+        grid.add_row(
+            &labels::OLLAMA_SERVER.row_title(),
+            &ollama_base_url_field,
+            ControlWidth::Fill,
+            &[],
+        );
         // NSComboBox reports a first baseline 4pt above the text it draws (as
         // measured on macOS 26), so a first-baseline row sets it 4pt below its
         // label and buttons. Centering puts every view of the row on one line,
@@ -129,6 +138,7 @@ impl TransformationPane {
             auto_checkbox,
             provider_popup,
             api_key_field,
+            ollama_base_url_field,
             api_key_env_hint,
             model_combo_box,
             model_refresh_button,
@@ -148,6 +158,7 @@ impl TransformationPane {
             form.provider_title.as_deref(),
         );
         set_text_value(&self.api_key_field, &form.api_key);
+        set_text_value(&self.ollama_base_url_field, &form.ollama_base_url);
         self.api_key_env_hint.set_text(api_key_env_hint.as_deref());
         populate_combo_box_with_values(&self.model_combo_box, &[], &form.model);
         self.set_model_controls_enabled(self.provider_value().is_some());
@@ -169,6 +180,7 @@ impl TransformationPane {
             auto: is_checked(&self.auto_checkbox),
             provider_title: selected_title(&self.provider_popup),
             api_key: text_value(&self.api_key_field),
+            ollama_base_url: text_value(&self.ollama_base_url_field),
             model: self.model_value(),
         }
     }
@@ -182,6 +194,15 @@ impl TransformationPane {
 
     pub fn api_key_value(&self) -> Option<String> {
         optional_text(&text_value(&self.api_key_field))
+    }
+
+    pub fn ollama_base_url_value(&self) -> Option<String> {
+        optional_text(&text_value(&self.ollama_base_url_field))
+    }
+
+    /// The Ollama server field applies only while `ollama` is the provider.
+    pub fn set_ollama_server_enabled(&self, enabled: bool) {
+        self.ollama_base_url_field.setEnabled(enabled);
     }
 
     pub fn model_value(&self) -> String {

@@ -92,6 +92,8 @@ pub struct TransformationForm {
     /// Selected title of the provider popup.
     pub provider_title: Option<String>,
     pub api_key: String,
+    /// Blank for `DEFAULT_OLLAMA_BASE_URL`.
+    pub ollama_base_url: String,
     pub model: String,
 }
 
@@ -180,6 +182,7 @@ impl SettingsForm {
                         .unwrap_or_else(|| TRANSFORMATION_PROVIDER_DISABLED_LABEL.to_owned()),
                 ),
                 api_key: config.transformation.api_key.clone().unwrap_or_default(),
+                ollama_base_url: config.transformation.ollama_base_url.clone().unwrap_or_default(),
                 model: config.transformation.model.clone(),
             },
             prompts: PromptsForm {
@@ -337,6 +340,7 @@ impl SettingsForm {
                 })
                 .transpose()?,
                 api_key: optional_text(&transformation.api_key),
+                ollama_base_url: optional_text(&transformation.ollama_base_url),
                 model: transformation.model.trim().to_owned(),
                 system_prompt: self.prompts.system_prompt.clone(),
                 correction_system_prompt: self.prompts.correction_system_prompt.clone(),
@@ -503,6 +507,7 @@ mod tests {
                 auto: false,
                 provider: Some("openai".to_owned()),
                 api_key: Some("llm-key".to_owned()),
+                ollama_base_url: Some("http://ollama.lan:11434".to_owned()),
                 model: "gpt-test".to_owned(),
                 system_prompt: "Dictation prompt\nwith two lines".to_owned(),
                 correction_system_prompt: "  Correction prompt keeps whitespace  ".to_owned(),
@@ -569,6 +574,7 @@ mod tests {
                 auto: false,
                 provider_title: Some("openai".to_owned()),
                 api_key: "llm-key".to_owned(),
+                ollama_base_url: "http://ollama.lan:11434".to_owned(),
                 model: "gpt-test".to_owned(),
             }
         );

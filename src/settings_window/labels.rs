@@ -64,6 +64,8 @@ pub const TRANSFORMATION_API_KEY: SettingsField =
     SettingsField::new(TRANSFORMATION_PANE_TITLE, "API key");
 pub const TRANSFORMATION_MODEL: SettingsField =
     SettingsField::new(TRANSFORMATION_PANE_TITLE, "Model");
+pub const OLLAMA_SERVER: SettingsField =
+    SettingsField::new(TRANSFORMATION_PANE_TITLE, "Ollama server");
 
 /// The row that edits a config key `config::problems` can report.
 pub fn field_for_config_key(key: &str) -> Option<SettingsField> {
@@ -76,6 +78,7 @@ pub fn field_for_config_key(key: &str) -> Option<SettingsField> {
         "transformation.hotkey" => TRANSFORM_SHORTCUT,
         "transformation.provider" => TRANSFORMATION_PROVIDER,
         "transformation.model" => TRANSFORMATION_MODEL,
+        "transformation.ollama_base_url" => OLLAMA_SERVER,
         _ => return None,
     })
 }
@@ -107,6 +110,7 @@ mod tests {
         config.mic.gain = 40.0;
         config.transformation.provider = Some("ollama".to_owned());
         config.transformation.hotkey = "Nope".to_owned();
+        config.transformation.ollama_base_url = Some("nope".to_owned());
         let mut keys: Vec<_> = problems(&config).iter().map(|problem| problem.key).collect();
         config.transformation.provider = Some("galadriel".to_owned());
         keys.extend(problems(&config).iter().map(|problem| problem.key));

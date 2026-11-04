@@ -160,6 +160,10 @@ pub struct TransformationConfig {
 
     pub api_key: Option<String>,
 
+    /// The Ollama server the `ollama` provider talks to;
+    /// `DEFAULT_OLLAMA_BASE_URL` when unset.
+    pub ollama_base_url: Option<String>,
+
     /// Blank when unset: the provider's `default_model` is used then.
     #[serde(default)]
     pub model: String,
@@ -181,11 +185,27 @@ impl Default for TransformationConfig {
             auto: default_transformation_auto(),
             provider: None,
             api_key: None,
+            ollama_base_url: None,
             model: String::new(),
             system_prompt: default_transformation_system_prompt(),
             correction_system_prompt: default_transformation_correction_system_prompt(),
         }
     }
+}
+
+/// The local Ollama server, used when `transformation.ollama_base_url` is
+/// unset.
+pub const DEFAULT_OLLAMA_BASE_URL: &str = "http://localhost:11434";
+
+/// The Ollama server URL in effect for `configured`, without a trailing
+/// slash.
+pub fn resolve_ollama_base_url(configured: Option<&str>) -> String {
+    configured
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .unwrap_or(DEFAULT_OLLAMA_BASE_URL)
+        .trim_end_matches('/')
+        .to_owned()
 }
 
 /// Keys with a built-in default, as `section.key`, with the aliases a file
@@ -491,6 +511,7 @@ impl Config {
         Ok(TransformationRuntimeConfig {
             provider,
             api_key,
+            ollama_base_url: resolve_ollama_base_url(self.transformation.ollama_base_url.as_deref()),
             model,
             system_prompt: if system_prompt.is_empty() {
                 default_transformation_system_prompt()
@@ -962,6 +983,12 @@ fn write_transformation_table(
     set_defaulted_key(table, "auto", &[], transformation.auto, default_transformation_auto(), resets.contains("transformation.auto"));
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
+    set_optional_string_key(
+        table,
+        "ollama_base_url",
+        &[],
+        transformation.ollama_base_url.as_deref(),
+    );
     let default_model = transformation
         .provider
         .as_deref()

@@ -400,6 +400,14 @@ impl SettingsWindow {
         self.transformation.api_key_value()
     }
 
+    pub fn transformation_ollama_base_url_value(&self) -> Option<String> {
+        self.transformation.ollama_base_url_value()
+    }
+
+    pub fn set_transformation_ollama_server_enabled(&self, enabled: bool) {
+        self.transformation.set_ollama_server_enabled(enabled);
+    }
+
     pub fn transformation_model_value(&self) -> String {
         self.transformation.model_value()
     }

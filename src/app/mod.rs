@@ -1006,6 +1006,11 @@ impl AppDelegate {
             resolved_api_key,
             settings_window.transformation_model_value(),
         )
+        .map(|request| {
+            request.with_ollama_base_url(
+                settings_window.transformation_ollama_base_url_value().as_deref(),
+            )
+        })
     }
 
     fn current_deepgram_check_request(&self) -> Result<DeepgramCheckRequest, String> {
@@ -1037,8 +1042,13 @@ impl AppDelegate {
         let settings_window = self.ivars().settings_window.get()?;
 
         settings_window.sync_transformation_api_key_env_hint();
-        let provider_selected = settings_window.transformation_provider_value().is_some();
+        let provider = settings_window.transformation_provider_value();
+        let provider_selected = provider.is_some();
         settings_window.set_transformation_model_controls_enabled(provider_selected);
+        settings_window.set_transformation_ollama_server_enabled(
+            provider.as_deref().and_then(|provider| provider.parse().ok())
+                == Some(config::TransformationProvider::Ollama),
+        );
         settings_window.sync_transformation_model_placeholder();
         if !provider_selected {
             settings_window.populate_transformation_model_values(&[]);
