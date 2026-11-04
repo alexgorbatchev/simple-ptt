@@ -3,7 +3,7 @@ use deepgram::common::options::{Encoding, Endpointing, Options};
 use deepgram::common::stream_response::{Channel, StreamResponse};
 use deepgram::listen::websocket::WebsocketBuilder;
 use deepgram::Deepgram;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::{self as tokio_mpsc, Sender as TokioSender};
 use tokio_stream::wrappers::ReceiverStream;
@@ -164,7 +164,7 @@ pub fn start_session(
 
     let transcription_stream =
         runtime.block_on(progress::connect(state.clone(), limits, async move {
-            let client = Deepgram::new(deepgram_config.api_key.as_deref().unwrap_or(""))
+            let client = deepgram_client(deepgram_config.api_key.as_deref().unwrap_or(""))
                 .map_err(format_deepgram_error)?;
             let transcription = client.transcription();
 
@@ -407,6 +407,32 @@ pub fn extract_transcript(channel: &Channel) -> String {
         .unwrap_or_default()
 }
 
+/// The Deepgram client for `api_key`, shared by every session while the key
+/// stays the same. Its WebSocket trust roots include the macOS certificate
+/// store (`rustls-tls-native-roots`), which takes about 100 ms to read, and a
+/// client resolves them once, on its first connection.
+fn deepgram_client(api_key: &str) -> Result<Deepgram, deepgram::DeepgramError> {
+    static CLIENT: Mutex<Option<(String, Deepgram)>> = Mutex::new(None);
+    let mut cached = CLIENT.lock().unwrap_or_else(PoisonError::into_inner);
+    cached_for_key(&mut cached, api_key, || Deepgram::new(api_key))
+}
+
+/// The value cached for `key`, or a new one from `build` that replaces it.
+fn cached_for_key<T: Clone, E>(
+    cache: &mut Option<(String, T)>,
+    key: &str,
+    build: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    if let Some((cached_key, value)) = cache.as_ref() {
+        if cached_key == key {
+            return Ok(value.clone());
+        }
+    }
+    let value = build()?;
+    *cache = Some((key.to_owned(), value.clone()));
+    Ok(value)
+}
+
 pub fn format_deepgram_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -414,6 +440,26 @@ pub fn format_deepgram_error(error: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_is_reused_while_the_api_key_stays_the_same() {
+        let mut cache = None;
+        let mut builds = 0;
+        let mut build = |label: &str| {
+            builds += 1;
+            Ok::<_, ()>(format!("{label}-{builds}"))
+        };
+
+        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-1".to_owned()));
+        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-1".to_owned()));
+        assert_eq!(cached_for_key(&mut cache, "key-b", || build("b")), Ok("b-2".to_owned()));
+        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-3".to_owned()));
+        assert_eq!(builds, 3);
+
+        // A failed build leaves the previous client in place.
+        assert_eq!(cached_for_key(&mut cache, "key-c", || Err::<String, _>(())), Err(()));
+        assert_eq!(cache, Some(("key-a".to_owned(), "a-3".to_owned())));
+    }
 
     fn transcript_response(text: &str, is_final: bool, start: f64, duration: f64) -> StreamResponse {
         serde_json::from_value(serde_json::json!({
