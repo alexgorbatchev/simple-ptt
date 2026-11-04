@@ -18,7 +18,7 @@ A successful play starts a 1.5-second callback deadline, including when no first
 
 ## Device notifications
 
-Core Audio device-list and default-input notifications increment a shared generation counter. Each controller acknowledges the generation captured before it begins choosing and building a replacement stream, after installing that stream. A notification that arrives during the rebuild remains pending for the next check. Failed builds do not acknowledge notifications.
+Core Audio device-list and default-input notifications (`kAudioHardwarePropertyDevices` and `kAudioHardwarePropertyDefaultInputDevice` from `objc2-core-audio`) increment a shared generation counter. The status poll refreshes on the next tick while a notification is unacknowledged, so a change is acted on within one tick while idle; no device query stands in for the listener. Each controller acknowledges the generation captured before it begins choosing and building a replacement stream, after installing that stream. A notification that arrives during the rebuild remains pending for the next check. Failed builds do not acknowledge notifications.
 
 Device selection remains governed by `BuiltInPreference`: a lost input prefers the built-in microphone, a configured named input is used again when connected, and an unspecified input follows the system default subject to that preference.
 

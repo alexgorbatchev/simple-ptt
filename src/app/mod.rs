@@ -1414,7 +1414,8 @@ impl AppDelegate {
             || ivars
                 .transformation_models_controller
                 .has_pending_ui_update()
-            || ivars.deepgram_connection_controller.has_pending_ui_update();
+            || ivars.deepgram_connection_controller.has_pending_ui_update()
+            || ivars.audio_controller.has_pending_device_change();
         // The poll state borrow ends with this statement, before `update_ui` runs.
         let outcome = ivars
             .status_poll
@@ -1817,8 +1818,12 @@ fn update_overlay_window(
 }
 
 const STATUS_POLL_INTERVAL_SECONDS: f64 = 0.075;
+/// Lets macOS coalesce the poll with other timers (`NSTimer.tolerance`); a
+/// tenth of the interval, as Apple suggests.
+const STATUS_POLL_TOLERANCE_SECONDS: f64 = STATUS_POLL_INTERVAL_SECONDS / 10.0;
 // Refresh at least every ~1.5 seconds (20 ticks of 75 ms) so `update_ui` can
-// recheck the current audio input device default if it changed.
+// notice a stalled stream and retry a failed rebuild. Device changes refresh
+// on the next tick instead (`AudioController::has_pending_device_change`).
 const STATUS_POLL_BACKGROUND_REFRESH_TICKS: u64 = 20;
 
 /// The `AppState` values the status poll compares between ticks.
@@ -2407,6 +2412,7 @@ pub fn setup_status_polling(delegate: &AppDelegate) {
             true,
         )
     };
+    timer.setTolerance(STATUS_POLL_TOLERANCE_SECONDS);
     // SAFETY: `NSRunLoop` is not thread-safe; this runs on the main thread (a
     // `&AppDelegate` only exists there), which owns the main run loop.
     // `NSRunLoopCommonModes` is an immutable Foundation constant, and the timer

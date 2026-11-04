@@ -72,6 +72,7 @@ objc2-quartz-core = { version = "0.3", features = ["objc2-core-foundation", "obj
 objc2-core-foundation = { version = "0.3", features = ["CFDictionary", "CFMachPort", "CFNumber", "CFRunLoop", "CFString"] }
 objc2-core-graphics = { version = "0.3", features = ["CGEvent", "CGEventTypes"] }
 objc2-av-foundation = { version = "0.3", features = ["AVCaptureDevice", "AVMediaFormat", "block2"] }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware"] }
 
 # Audio capture (CoreAudio on macOS)
 cpal = "0.18"

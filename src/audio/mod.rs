@@ -55,9 +55,8 @@ pub struct AudioController {
 
 struct ActiveAudioStream {
     configured_audio_device: Option<String>,
-    actual_device: cpal::Device,
-    /// The Core Audio UID of `actual_device`, to tell whether it is still
-    /// connected.
+    /// The Core Audio UID of the device the stream opened, to tell whether it
+    /// is still connected.
     actual_device_uid: Option<String>,
     requested_sample_rate: u32,
     _stream: Stream,
@@ -70,7 +69,6 @@ impl ActiveAudioStream {
         Self {
             configured_audio_device: mic_config.audio_device.clone(),
             actual_device_uid: device_uid(&handle.device),
-            actual_device: handle.device,
             requested_sample_rate: mic_config.sample_rate,
             _stream: handle.stream,
             healthy: handle.healthy,
@@ -202,6 +200,15 @@ impl AudioController {
         mic_config
     }
 
+    /// Whether Core Audio reported a device change the active stream has not
+    /// been rebuilt for. The status poll refreshes on the next tick while one
+    /// is pending, so the change is acted on without waiting for its
+    /// periodic refresh.
+    #[cfg(target_os = "macos")]
+    pub fn has_pending_device_change(&self) -> bool {
+        DEVICE_CHANGES.has_changed_since(self.hardware_generation.load(Ordering::SeqCst))
+    }
+
     pub fn should_rebuild_stream(&self) -> bool {
         self.should_rebuild_stream_for(&self.effective_mic_config())
     }
@@ -241,29 +248,11 @@ impl AudioController {
 
         // A device appearing or disappearing, or the default input changing,
         // is the moment to choose again: a named device that reconnects, or
-        // a new default, is taken then (Core Audio's listener advances the generation).
+        // a new default, is taken then. Core Audio's listener advances the
+        // generation, so no device query stands in for it here.
         if hardware_changed {
             return true;
         }
-        if normalized_configured_audio_device(mic_config.audio_device.as_deref()).is_none() {
-            let host = cpal::default_host();
-            let system_default = host.default_input_device();
-            if system_default.as_ref() != Some(&active.actual_device) {
-                // Standing in for a lost device, the built-in microphone
-                // differs from the default macOS picked then; that is no
-                // reason to rebuild.
-                let default_uid = system_default.as_ref().and_then(device_uid);
-                let standing_in = self
-                    .built_in_preference
-                    .lock()
-                    .map(|preference| preference.next(false, true, default_uid.as_deref()).is_active())
-                    .unwrap_or(false);
-                if !standing_in {
-                    return true;
-                }
-            }
-        }
-
         false
     }
 
@@ -512,6 +501,32 @@ mod tests {
         InputDeviceDescriptor, StreamErrorResponse,
     };
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfigRange};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_core_audio_notification_is_pending_until_a_rebuild_takes_it() {
+        let state = crate::state::AppState::new();
+        let config = crate::config::Config::default();
+        let config_store = crate::settings::LiveConfigStore::new(
+            config.clone(),
+            config,
+            std::path::PathBuf::from("/tmp/config.toml"),
+        );
+        let controller = AudioController::inactive(
+            state,
+            crate::transcription::TranscriptionController::without_worker(),
+            config_store,
+        );
+        assert!(!controller.has_pending_device_change());
+
+        super::DEVICE_CHANGES.notify();
+        assert!(controller.has_pending_device_change());
+
+        controller
+            .hardware_generation
+            .store(super::DEVICE_CHANGES.generation(), std::sync::atomic::Ordering::SeqCst);
+        assert!(!controller.has_pending_device_change());
+    }
 
     #[test]
     fn an_unhealthy_stream_is_not_resumed_but_is_still_paused() {
@@ -890,73 +905,58 @@ mod tests {
 }
 
 #[cfg(target_os = "macos")]
-#[allow(non_snake_case)]
 mod core_audio_listener {
+    use std::ffi::c_void;
+    use std::ptr::NonNull;
+
+    use objc2_core_audio::{
+        kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices,
+        kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectSystemObject,
+        AudioObjectAddPropertyListener, AudioObjectID, AudioObjectPropertyAddress,
+    };
+
+    /// Counts every change to the list of audio devices or to the default
+    /// input in `DEVICE_CHANGES`, which the status poll checks on each tick.
     pub fn register_hardware_listeners() {
-        extern "C" {
-            fn AudioObjectAddPropertyListener(
-                inObjectID: u32,
-                inAddress: *const AudioObjectPropertyAddress,
-                inListener: AudioObjectPropertyListenerProc,
-                inClientData: *mut std::ffi::c_void,
-            ) -> i32;
+        for (selector, name) in [
+            (kAudioHardwarePropertyDevices, "kAudioHardwarePropertyDevices"),
+            (
+                kAudioHardwarePropertyDefaultInputDevice,
+                "kAudioHardwarePropertyDefaultInputDevice",
+            ),
+        ] {
+            let mut address = AudioObjectPropertyAddress {
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain,
+            };
+            // SAFETY: `address` is a valid property address for the call; the
+            // listener is a plain function that ignores its arguments and
+            // client data, so null client data is valid and the registration
+            // can outlive `address`, which Core Audio copies.
+            let status = unsafe {
+                AudioObjectAddPropertyListener(
+                    kAudioObjectSystemObject as AudioObjectID,
+                    NonNull::from(&mut address),
+                    Some(hardware_property_listener),
+                    std::ptr::null_mut(),
+                )
+            };
+            if status != 0 {
+                log::error!(
+                    "failed to listen for {name} changes (OSStatus {status}); device changes are noticed only when a stream fails"
+                );
+            }
         }
+    }
 
-        #[repr(C)]
-        struct AudioObjectPropertyAddress {
-            mSelector: u32,
-            mScope: u32,
-            mElement: u32,
-        }
-
-        type AudioObjectPropertyListenerProc = extern "C" fn(
-            inObjectID: u32,
-            inNumberAddresses: u32,
-            inAddresses: *const AudioObjectPropertyAddress,
-            inClientData: *mut std::ffi::c_void,
-        ) -> i32;
-
-        extern "C" fn hardware_property_listener(
-            _in_object_id: u32,
-            _in_number_addresses: u32,
-            _in_addresses: *const AudioObjectPropertyAddress,
-            _in_client_data: *mut std::ffi::c_void,
-        ) -> i32 {
-            super::DEVICE_CHANGES.notify();
-            0
-        }
-
-        const K_AUDIO_OBJECT_SYSTEM_OBJECT: u32 = 1;
-        const K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL: u32 = 0x676c6f62; // 'glob'
-        const K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN: u32 = 0;
-        const K_AUDIO_HARDWARE_PROPERTY_DEVICES: u32 = 0x64657673; // 'devs'
-        const K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE: u32 = 0x64696e69; // 'dini'
-
-        let devices_address = AudioObjectPropertyAddress {
-            mSelector: K_AUDIO_HARDWARE_PROPERTY_DEVICES,
-            mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
-            mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
-        };
-
-        let default_input_address = AudioObjectPropertyAddress {
-            mSelector: K_AUDIO_HARDWARE_PROPERTY_DEFAULT_INPUT_DEVICE,
-            mScope: K_AUDIO_OBJECT_PROPERTY_SCOPE_GLOBAL,
-            mElement: K_AUDIO_OBJECT_PROPERTY_ELEMENT_MAIN,
-        };
-
-        unsafe {
-            let _ = AudioObjectAddPropertyListener(
-                K_AUDIO_OBJECT_SYSTEM_OBJECT,
-                &devices_address,
-                hardware_property_listener,
-                std::ptr::null_mut(),
-            );
-            let _ = AudioObjectAddPropertyListener(
-                K_AUDIO_OBJECT_SYSTEM_OBJECT,
-                &default_input_address,
-                hardware_property_listener,
-                std::ptr::null_mut(),
-            );
-        }
+    unsafe extern "C-unwind" fn hardware_property_listener(
+        _object_id: AudioObjectID,
+        _address_count: u32,
+        _addresses: NonNull<AudioObjectPropertyAddress>,
+        _client_data: *mut c_void,
+    ) -> i32 {
+        super::DEVICE_CHANGES.notify();
+        0
     }
 }
