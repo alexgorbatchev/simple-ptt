@@ -9,15 +9,17 @@
 //! rejects anything that is not a number at entry, so only emptiness and the
 //! config type's range remain to be checked on save.
 
+use std::collections::BTreeSet;
+
+use super::defaulted::DefaultedRow;
 use super::labels::{
-    settings_name, SettingsField, CORRECTION_KEY, DEEPGRAM_LANGUAGE, DEEPGRAM_MODEL,
-    DICTATION_SHORTCUT, ENDPOINTING, FONT_SIZE, HOLD_THRESHOLD, METER_STYLE, SAMPLE_RATE,
-    TRANSFORM_SHORTCUT, UTTERANCE_END,
+    settings_name, SettingsField, DEEPGRAM_MODEL, ENDPOINTING, HOLD_THRESHOLD, METER_STYLE,
+    SAMPLE_RATE, UTTERANCE_END,
 };
 use crate::config::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
     unsupported_provider_problem,
-    Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig,
+    Config, DeepgramConfig, DefaultResets, MicConfig, TransformationConfig,
     TransformationProvider, UiConfig, UiMeterStyle,
 };
 
@@ -36,6 +38,9 @@ pub const METER_STYLE_TITLES: &[(UiMeterStyle, &str)] = &[
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SettingsForm {
+    /// Defaulted rows reset with their Reset button since the form was
+    /// loaded; saved with the config so `save_config` drops their keys.
+    pub resets: DefaultResets,
     pub general: GeneralForm,
     pub microphone: MicrophoneForm,
     pub deepgram: DeepgramForm,
@@ -95,8 +100,8 @@ pub struct PromptsForm {
     pub system_prompt: String,
     pub correction_system_prompt: String,
     /// Prompts reset to their default since the form was loaded; saved with
-    /// the config so `save_config` drops their keys (see `PromptResets`).
-    pub resets: PromptResets,
+    /// the config so `save_config` drops their keys (see `DefaultResets`).
+    pub resets: DefaultResets,
 }
 
 /// One of the prompt editors of the Transformation pane.
@@ -119,11 +124,11 @@ impl PromptsForm {
         match prompt {
             Prompt::Dictation => {
                 self.system_prompt = default_transformation_system_prompt();
-                self.resets.system_prompt = true;
+                self.resets.insert("transformation.system_prompt");
             }
             Prompt::Correction => {
                 self.correction_system_prompt = default_transformation_correction_system_prompt();
-                self.resets.correction_system_prompt = true;
+                self.resets.insert("transformation.correction_system_prompt");
             }
         }
     }
@@ -132,6 +137,7 @@ impl PromptsForm {
 impl SettingsForm {
     pub fn from_config(config: &Config) -> Self {
         Self {
+            resets: DefaultResets::default(),
             general: GeneralForm {
                 hotkey: config.ui.hotkey.clone(),
                 hold_ms: Some(config.mic.hold_ms),
@@ -179,12 +185,96 @@ impl SettingsForm {
             prompts: PromptsForm {
                 system_prompt: config.transformation.system_prompt.clone(),
                 correction_system_prompt: config.transformation.correction_system_prompt.clone(),
-                resets: PromptResets::default(),
+                resets: DefaultResets::default(),
             },
         }
     }
 
+    /// Blanks each text, number, and shortcut field whose key `config.toml`
+    /// does not have (`written`), so the field shows the default it follows
+    /// as its placeholder.
+    pub fn follow_defaults_not_in(mut self, written: &BTreeSet<&str>) -> Self {
+        for row in DefaultedRow::ALL {
+            if !written.contains(row.config_key()) && row_is_blank_while_default(row) {
+                self.blank_row(row);
+            }
+        }
+        self
+    }
+
+    /// Puts the row back to its built-in default and records the reset for
+    /// the next Save: a text, number, or shortcut field is blanked, any other
+    /// control takes the default value.
+    pub fn reset_row(&mut self, row: DefaultedRow) {
+        let defaults = Config::default();
+        match row {
+            DefaultedRow::MeterStyle => {
+                self.general.meter_style_title =
+                    Some(meter_style_title(defaults.ui.meter_style).to_owned())
+            }
+            DefaultedRow::AutoCheckUpdates => {
+                self.general.auto_check_updates = defaults.ui.auto_check_updates
+            }
+            DefaultedRow::StartOnLogin => self.general.start_on_login = defaults.ui.start_on_login,
+            DefaultedRow::MicGain => self.microphone.gain = defaults.mic.gain,
+            DefaultedRow::AlwaysOn => self.microphone.always_on = defaults.mic.always_on,
+            DefaultedRow::DeepgramModel => {
+                self.deepgram.model_title = Some(defaults.deepgram.model.clone())
+            }
+            DefaultedRow::AutoTransform => self.transformation.auto = defaults.transformation.auto,
+            _ => self.blank_row(row),
+        }
+        self.resets.insert(row.config_key());
+    }
+
+    fn blank_row(&mut self, row: DefaultedRow) {
+        match row {
+            DefaultedRow::DictationShortcut => self.general.hotkey.clear(),
+            DefaultedRow::HoldThreshold => self.general.hold_ms = None,
+            DefaultedRow::CorrectionKey => self.general.correction_key.clear(),
+            DefaultedRow::FontSize => self.general.font_size = None,
+            DefaultedRow::SampleRate => self.microphone.sample_rate = None,
+            DefaultedRow::DeepgramLanguage => self.deepgram.language.clear(),
+            DefaultedRow::Endpointing => self.deepgram.endpointing_ms = None,
+            DefaultedRow::UtteranceEnd => self.deepgram.utterance_end_ms = None,
+            DefaultedRow::TransformShortcut => self.transformation.hotkey.clear(),
+            _ => unreachable!("{row:?} has no blank form"),
+        }
+    }
+
+    /// The keys `save_config` drops while they equal their default: rows
+    /// reset since loading, reset prompts, and blank fields that follow the
+    /// default.
+    pub fn resets(&self) -> DefaultResets {
+        let mut resets = self.resets.clone();
+        resets.extend(&self.prompts.resets);
+        for row in DefaultedRow::ALL {
+            if row_is_blank_while_default(row) && self.row_is_blank(row) {
+                resets.insert(row.config_key());
+            }
+        }
+        resets
+    }
+
+    fn row_is_blank(&self, row: DefaultedRow) -> bool {
+        match row {
+            DefaultedRow::DictationShortcut => self.general.hotkey.trim().is_empty(),
+            DefaultedRow::HoldThreshold => self.general.hold_ms.is_none(),
+            DefaultedRow::CorrectionKey => self.general.correction_key.trim().is_empty(),
+            DefaultedRow::FontSize => self.general.font_size.is_none(),
+            DefaultedRow::SampleRate => self.microphone.sample_rate.is_none(),
+            DefaultedRow::DeepgramLanguage => self.deepgram.language.trim().is_empty(),
+            DefaultedRow::Endpointing => self.deepgram.endpointing_ms.is_none(),
+            DefaultedRow::UtteranceEnd => self.deepgram.utterance_end_ms.is_none(),
+            DefaultedRow::TransformShortcut => self.transformation.hotkey.trim().is_empty(),
+            _ => false,
+        }
+    }
+
+    /// The config the form edits. A blank text, number, or shortcut field
+    /// takes its built-in default; `resets` says which keys follow it.
     pub fn to_config(&self) -> Result<Config, String> {
+        let defaults = Config::default();
         let general = &self.general;
         let microphone = &self.microphone;
         let deepgram = &self.deepgram;
@@ -194,13 +284,13 @@ impl SettingsForm {
             ui: UiConfig {
                 start_on_login: general.start_on_login,
                 auto_check_updates: general.auto_check_updates,
-                hotkey: required_text(&general.hotkey, DICTATION_SHORTCUT)?,
-                correction_key: required_text(&general.correction_key, CORRECTION_KEY)?,
+                hotkey: text_or_default(&general.hotkey, &defaults.ui.hotkey),
+                correction_key: text_or_default(&general.correction_key, &defaults.ui.correction_key),
                 font_name: optional_popup_value(
                     general.font_name_title.as_deref(),
                     SYSTEM_MONOSPACED_FONT_LABEL,
                 ),
-                font_size: required_number(general.font_size, FONT_SIZE)?,
+                font_size: general.font_size.unwrap_or(defaults.ui.font_size),
                 footer_font_size: general.footer_font_size,
                 meter_style: parse_meter_style(&required_popup_title(
                     general.meter_style_title.as_deref(),
@@ -209,21 +299,29 @@ impl SettingsForm {
             },
             mic: MicConfig {
                 audio_device: microphone.audio_device.clone(),
-                sample_rate: required_integer(microphone.sample_rate, SAMPLE_RATE)?,
+                sample_rate: integer_or_default(microphone.sample_rate, defaults.mic.sample_rate, SAMPLE_RATE)?,
                 gain: microphone.gain,
-                hold_ms: required_integer(general.hold_ms, HOLD_THRESHOLD)?,
+                hold_ms: integer_or_default(general.hold_ms, defaults.mic.hold_ms, HOLD_THRESHOLD)?,
                 always_on: microphone.always_on,
             },
             deepgram: DeepgramConfig {
                 api_key: optional_text(&deepgram.api_key),
-                language: required_text(&deepgram.language, DEEPGRAM_LANGUAGE)?,
+                language: text_or_default(&deepgram.language, &defaults.deepgram.language),
                 keyterms: parse_keyterms(&deepgram.keyterms),
                 model: required_popup_title(deepgram.model_title.as_deref(), DEEPGRAM_MODEL)?,
-                endpointing_ms: required_integer(deepgram.endpointing_ms, ENDPOINTING)?,
-                utterance_end_ms: required_integer(deepgram.utterance_end_ms, UTTERANCE_END)?,
+                endpointing_ms: integer_or_default(
+                    deepgram.endpointing_ms,
+                    defaults.deepgram.endpointing_ms,
+                    ENDPOINTING,
+                )?,
+                utterance_end_ms: integer_or_default(
+                    deepgram.utterance_end_ms,
+                    defaults.deepgram.utterance_end_ms,
+                    UTTERANCE_END,
+                )?,
             },
             transformation: TransformationConfig {
-                hotkey: required_text(&transformation.hotkey, TRANSFORM_SHORTCUT)?,
+                hotkey: text_or_default(&transformation.hotkey, &defaults.transformation.hotkey),
                 auto: transformation.auto,
                 provider: optional_popup_value(
                     transformation.provider_title.as_deref(),
@@ -297,17 +395,36 @@ fn required_popup_title(selected_title: Option<&str>, field: SettingsField) -> R
     required_text(selected_title.unwrap_or_default(), field)
 }
 
-fn required_number(value: Option<f64>, field: SettingsField) -> Result<f64, String> {
-    value.ok_or_else(|| format!("{}: required", field))
+/// Whether the row's field is blank while it follows its default, rather
+/// than showing the default value.
+fn row_is_blank_while_default(row: DefaultedRow) -> bool {
+    !matches!(
+        row,
+        DefaultedRow::MeterStyle
+            | DefaultedRow::AutoCheckUpdates
+            | DefaultedRow::StartOnLogin
+            | DefaultedRow::MicGain
+            | DefaultedRow::AlwaysOn
+            | DefaultedRow::DeepgramModel
+            | DefaultedRow::AutoTransform
+    )
 }
 
-fn required_integer<T>(value: Option<u64>, field: SettingsField) -> Result<T, String>
+/// Trimmed text, or `default` for a blank field.
+fn text_or_default(value: &str, default: &str) -> String {
+    optional_text(value).unwrap_or_else(|| default.to_owned())
+}
+
+fn integer_or_default<T>(value: Option<u64>, default: T, field: SettingsField) -> Result<T, String>
 where
     T: TryFrom<u64>,
     T::Error: std::fmt::Display,
 {
-    let value = value.ok_or_else(|| format!("{}: required", field))?;
-    T::try_from(value).map_err(|error| format!("{}: must be an unsigned integer: {}", field, error))
+    match value {
+        Some(value) => T::try_from(value)
+            .map_err(|error| format!("{}: must be an unsigned integer: {}", field, error)),
+        None => Ok(default),
+    }
 }
 
 fn parse_keyterms(value: &str) -> Vec<String> {
@@ -341,15 +458,18 @@ fn parse_meter_style(raw_value: &str) -> Result<UiMeterStyle, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::{
         mic_gain_label, DeepgramForm, GeneralForm, MicrophoneForm, Prompt, METER_STYLE_TITLES,
         PromptsForm, SettingsForm, TransformationForm,
     };
     use crate::config::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
-        Config, DeepgramConfig, MicConfig, PromptResets, TransformationConfig, UiConfig,
+        Config, DeepgramConfig, DefaultResets, MicConfig, TransformationConfig, UiConfig,
         UiMeterStyle,
     };
+    use crate::settings_window::defaulted::DefaultedRow;
 
     fn customized_config() -> Config {
         Config {
@@ -457,7 +577,7 @@ mod tests {
             PromptsForm {
                 system_prompt: "Dictation prompt\nwith two lines".to_owned(),
                 correction_system_prompt: "  Correction prompt keeps whitespace  ".to_owned(),
-                resets: PromptResets::default(),
+                resets: DefaultResets::default(),
             }
         );
     }
@@ -549,10 +669,7 @@ mod tests {
             PromptsForm {
                 system_prompt: default_transformation_system_prompt(),
                 correction_system_prompt: "  Correction prompt keeps whitespace  ".to_owned(),
-                resets: PromptResets {
-                    system_prompt: true,
-                    correction_system_prompt: false,
-                },
+                resets: DefaultResets::from_iter(["transformation.system_prompt"]),
             }
         );
         assert_eq!(
@@ -573,10 +690,7 @@ mod tests {
             PromptsForm {
                 system_prompt: "Dictation prompt\nwith two lines".to_owned(),
                 correction_system_prompt: default_transformation_correction_system_prompt(),
-                resets: PromptResets {
-                    system_prompt: false,
-                    correction_system_prompt: true,
-                },
+                resets: DefaultResets::from_iter(["transformation.correction_system_prompt"]),
             }
         );
         assert_eq!(
@@ -591,7 +705,7 @@ mod tests {
         form.prompts.reset_to_default(Prompt::Dictation);
         form.prompts.system_prompt = "Edited after reset".to_owned();
 
-        assert!(form.prompts.resets.system_prompt);
+        assert!(form.prompts.resets.contains("transformation.system_prompt"));
         assert_eq!(
             form.to_config().unwrap().transformation.system_prompt,
             "Edited after reset"
@@ -603,7 +717,7 @@ mod tests {
         for config in [Config::default(), customized_config()] {
             assert_eq!(
                 SettingsForm::from_config(&config).prompts.resets,
-                PromptResets::default()
+                DefaultResets::default()
             );
         }
     }
@@ -622,25 +736,13 @@ mod tests {
     }
 
     #[test]
-    fn blank_required_text_values_are_rejected_with_field_names() {
-        let cases: [(&str, fn(&mut SettingsForm)); 6] = [
-            ("General > Dictation shortcut: required", |form| {
-                form.general.hotkey = " ".to_owned()
-            }),
-            ("General > Correction key: required", |form| {
-                form.general.correction_key = "".to_owned()
-            }),
+    fn an_unselected_popup_is_rejected_with_its_field_name() {
+        let cases: [(&str, fn(&mut SettingsForm)); 2] = [
             ("General > Meter style: required", |form| {
                 form.general.meter_style_title = None
             }),
-            ("Deepgram > Language: required", |form| {
-                form.deepgram.language = "\t".to_owned()
-            }),
             ("Deepgram > Model: required", |form| {
                 form.deepgram.model_title = Some(" ".to_owned())
-            }),
-            ("Transformation > Transform shortcut: required", |form| {
-                form.transformation.hotkey = "".to_owned()
             }),
         ];
 
@@ -653,28 +755,93 @@ mod tests {
     }
 
     #[test]
-    fn empty_required_numbers_are_rejected_with_field_names() {
-        let cases: [(&str, fn(&mut SettingsForm)); 5] = [
-            ("General > Font size: required", |form| {
-                form.general.font_size = None
-            }),
-            ("Microphone > Sample rate: required", |form| {
-                form.microphone.sample_rate = None
-            }),
-            ("General > Hold threshold (ms): required", |form| form.general.hold_ms = None),
-            ("Deepgram > Endpointing (ms): required", |form| {
-                form.deepgram.endpointing_ms = None
-            }),
-            ("Deepgram > Utterance end (ms): required", |form| {
-                form.deepgram.utterance_end_ms = None
-            }),
-        ];
+    fn a_blank_field_takes_its_default_and_follows_it() {
+        let mut form = SettingsForm::from_config(&customized_config());
+        form.general.hotkey = " ".to_owned();
+        form.general.hold_ms = None;
+        form.general.font_size = None;
+        form.microphone.sample_rate = None;
+        form.deepgram.language.clear();
+        form.deepgram.endpointing_ms = None;
+        form.transformation.hotkey.clear();
 
-        for (expected_error, edit) in cases {
-            let mut form = SettingsForm::from_config(&customized_config());
-            edit(&mut form);
+        let config = form.to_config().unwrap();
+        let defaults = Config::default();
+        assert_eq!(config.ui.hotkey, defaults.ui.hotkey);
+        assert_eq!(config.mic.hold_ms, defaults.mic.hold_ms);
+        assert_eq!(config.ui.font_size, defaults.ui.font_size);
+        assert_eq!(config.mic.sample_rate, defaults.mic.sample_rate);
+        assert_eq!(config.deepgram.language, defaults.deepgram.language);
+        assert_eq!(config.deepgram.endpointing_ms, defaults.deepgram.endpointing_ms);
+        assert_eq!(config.transformation.hotkey, defaults.transformation.hotkey);
+        assert_eq!(config.ui.correction_key, "Alt+Cmd");
 
-            assert_eq!(form.to_config(), Err(expected_error.to_owned()));
+        let resets = form.resets();
+        for key in [
+            "ui.hotkey",
+            "mic.hold_ms",
+            "ui.font_size",
+            "mic.sample_rate",
+            "deepgram.language",
+            "deepgram.endpointing_ms",
+            "transformation.hotkey",
+        ] {
+            assert!(resets.contains(key), "{key}");
+        }
+        assert!(!resets.contains("ui.correction_key"));
+        assert!(!resets.contains("deepgram.utterance_end_ms"));
+    }
+
+    #[test]
+    fn fields_whose_key_the_file_lacks_are_blank_and_the_rest_keep_their_values() {
+        let written = BTreeSet::from(["ui.hotkey", "deepgram.endpointing_ms"]);
+
+        let form = SettingsForm::from_config(&customized_config()).follow_defaults_not_in(&written);
+
+        assert_eq!(form.general.hotkey, "Cmd+F9");
+        assert_eq!(form.deepgram.endpointing_ms, Some(450));
+        assert_eq!(form.general.correction_key, "");
+        assert_eq!(form.general.hold_ms, None);
+        assert_eq!(form.general.font_size, None);
+        assert_eq!(form.microphone.sample_rate, None);
+        assert_eq!(form.deepgram.language, "");
+        assert_eq!(form.deepgram.utterance_end_ms, None);
+        assert_eq!(form.transformation.hotkey, "");
+        // Controls that cannot be blank keep showing the value.
+        assert_eq!(form.general.meter_style_title.as_deref(), Some("animated-height"));
+        assert!(form.general.start_on_login);
+        assert_eq!(form.microphone.gain, 2.25);
+        assert_eq!(form.deepgram.model_title.as_deref(), Some("nova-2-meeting"));
+    }
+
+    #[test]
+    fn resetting_a_row_restores_its_default_and_records_the_reset() {
+        let defaults = Config::default();
+        let mut form = SettingsForm::from_config(&customized_config());
+
+        for row in DefaultedRow::ALL {
+            form.reset_row(row);
+        }
+
+        assert_eq!(form.general.hotkey, "");
+        assert_eq!(form.general.hold_ms, None);
+        assert_eq!(form.deepgram.utterance_end_ms, None);
+        assert_eq!(
+            form.general.meter_style_title.as_deref(),
+            Some(super::meter_style_title(defaults.ui.meter_style))
+        );
+        assert_eq!(form.general.start_on_login, defaults.ui.start_on_login);
+        assert_eq!(form.general.auto_check_updates, defaults.ui.auto_check_updates);
+        assert_eq!(form.microphone.gain, defaults.mic.gain);
+        assert_eq!(form.microphone.always_on, defaults.mic.always_on);
+        assert_eq!(form.deepgram.model_title.as_deref(), Some(defaults.deepgram.model.as_str()));
+        assert_eq!(form.transformation.auto, defaults.transformation.auto);
+
+        let config = form.to_config().unwrap();
+        assert_eq!(config.ui, UiConfig { font_name: Some("Menlo".to_owned()), footer_font_size: Some(10.25), ..defaults.ui.clone() });
+        let resets = form.resets();
+        for row in DefaultedRow::ALL {
+            assert!(resets.contains(row.config_key()), "{row:?}");
         }
     }
 

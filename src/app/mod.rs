@@ -8,7 +8,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationOptions,
+    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationOptions, NSButton,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu, NSMenuItem,
     NSStatusBar, NSStatusItem, NSTextDelegate, NSTextViewDelegate, NSWindowDelegate, NSWorkspace,
     NSWorkspaceOpenConfiguration,
@@ -41,6 +41,7 @@ use crate::overlay::{OverlayStyle, OverlayWindow};
 use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
+use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::Prompt;
 use crate::settings_window::helpers::{
     manual_model_fetch_message, settings_load_status, unreadable_model_cache_message,
@@ -509,6 +510,20 @@ define_class!(
             self.start_deepgram_connection_check();
         }
 
+        #[unsafe(method(resetSettingToDefault:))]
+        fn reset_setting_to_default(&self, sender: Option<&AnyObject>) {
+            let Some(settings_window) = self.ivars().settings_window.get() else {
+                return;
+            };
+            let Some(row) = sender
+                .and_then(|sender| sender.downcast_ref::<NSButton>())
+                .and_then(|button| DefaultedRow::from_tag(button.tag()))
+            else {
+                return;
+            };
+            settings_window.reset_row_to_default(row);
+        }
+
         #[unsafe(method(resetDictationPrompt:))]
         fn reset_dictation_prompt(&self, _sender: Option<&AnyObject>) {
             self.reset_prompt_to_default(Prompt::Dictation);
@@ -823,7 +838,13 @@ impl AppDelegate {
             settings_window.cancel_hotkey_capture();
 
             let current_file_config = self.ivars().config_store.current_file();
-            let load_problems = settings_window.load_from_config(&current_file_config);
+            let (written, written_problem) =
+                match config::defaulted_keys_in_file(self.ivars().config_store.path()) {
+                    Ok(written) => (written, None),
+                    Err(error) => (Default::default(), Some(error)),
+                };
+            let mut load_problems = settings_window.load_from_config(&current_file_config, &written);
+            load_problems.extend(written_problem);
             let transformation_status =
                 self.sync_transformation_provider_controls(ModelListTrigger::Resync);
             settings_window.set_status(&settings_load_status(
@@ -1208,7 +1229,7 @@ impl AppDelegate {
         self.ivars().hotkey_capture_controller.cancel();
         settings_window.cancel_hotkey_capture();
 
-        let (proposed_config, prompt_resets) = match settings_window.read_config() {
+        let (proposed_config, default_resets) = match settings_window.read_config() {
             Ok(read) => read,
             Err(error) => {
                 settings_window.set_status(&error);
@@ -1237,7 +1258,7 @@ impl AppDelegate {
         if let Err(error) = config::save_config(
             self.ivars().config_store.path(),
             &proposed_config,
-            prompt_resets,
+            &default_resets,
         ) {
             settings_window.set_status(&error);
             show_modal_alert("Couldn't save settings", &error);
@@ -1358,7 +1379,9 @@ impl AppDelegate {
                 ]
                 .into_iter()
                 .filter(|candidate| *candidate != target)
-                .find(|candidate| settings_window.hotkey_value(*candidate) == captured_name);
+                .find(|candidate| {
+                    settings_window.effective_hotkey_value(*candidate) == captured_name
+                });
                 if conflicting_target.is_some() {
                     settings_window.cancel_hotkey_capture();
                     settings_window.set_status(&format!(

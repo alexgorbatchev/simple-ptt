@@ -11,10 +11,10 @@ use super::prompt_editors::PromptEditors;
 use super::{activate, pane_view, PaneContentHeight};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    checkbox, combo_box, for_auto_layout, hotkey_display_field, is_checked, minimum_width,
-    pop_up_button_with_action, push_button, selected_title, set_checked, set_text_value,
-    text_field, text_value, FIELD_MIN_WIDTH,
+    checkbox, combo_box, for_auto_layout, hotkey_display_field, is_checked, minimum_width, pop_up_button_with_action, push_button, selected_title, set_checked, set_placeholder, set_text_value, text_field, text_value, FIELD_MIN_WIDTH, ResetButtons,
 };
+use crate::config::Config;
+use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{
     optional_popup_value, optional_text, transformation_model_placeholder, TransformationForm,
     TRANSFORMATION_PROVIDER_DISABLED_LABEL,
@@ -46,6 +46,7 @@ pub struct TransformationPane {
     model_refresh_button: Retained<NSButton>,
     pub model_check_button: Retained<NSButton>,
     pub prompts: PromptEditors,
+    pub reset_buttons: ResetButtons,
 }
 
 impl TransformationPane {
@@ -77,14 +78,19 @@ impl TransformationPane {
 
         minimum_width(&hotkey_field, FIELD_MIN_WIDTH);
 
+        set_placeholder(&hotkey_field, &Config::default().transformation.hotkey);
+        let mut reset_buttons = ResetButtons::default();
+        let hotkey_reset = reset_buttons.add(mtm, target, DefaultedRow::TransformShortcut);
+        let auto_reset = reset_buttons.add(mtm, target, DefaultedRow::AutoTransform);
+
         let grid = FormGrid::new(mtm, 2);
         grid.add_row(
             &labels::TRANSFORM_SHORTCUT.row_title(),
             &hotkey_field,
             ControlWidth::Fill,
-            &[&hotkey_capture_button],
+            &[&hotkey_capture_button, &hotkey_reset],
         );
-        grid.add_detail_row(&auto_checkbox, ControlWidth::Intrinsic);
+        grid.add_detail_row_with_accessories(&auto_checkbox, ControlWidth::Intrinsic, &[&auto_reset]);
         grid.add_hint_row(Some(AUTO_TRANSFORM_HINT));
         grid.add_row(
             &labels::TRANSFORMATION_PROVIDER.row_title(),
@@ -128,6 +134,7 @@ impl TransformationPane {
             model_refresh_button,
             model_check_button,
             prompts,
+            reset_buttons,
         };
         let view = pane_view(mtm, &stack, PaneContentHeight::Fill);
         (pane, view)
@@ -145,6 +152,15 @@ impl TransformationPane {
         populate_combo_box_with_values(&self.model_combo_box, &[], &form.model);
         self.set_model_controls_enabled(self.provider_value().is_some());
         self.sync_model_placeholder();
+    }
+
+    /// Shows `row`'s value from `form` after a reset.
+    pub fn apply_row(&self, row: DefaultedRow, form: &TransformationForm) {
+        match row {
+            DefaultedRow::TransformShortcut => set_text_value(&self.hotkey_field, &form.hotkey),
+            DefaultedRow::AutoTransform => set_checked(&self.auto_checkbox, form.auto),
+            _ => {}
+        }
     }
 
     pub fn read(&self) -> TransformationForm {

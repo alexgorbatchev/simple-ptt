@@ -10,6 +10,7 @@
 
 pub mod actions;
 mod controls;
+pub mod defaulted;
 pub mod form;
 mod grid;
 pub mod helpers;
@@ -34,7 +35,10 @@ use objc2_app_kit::{
 };
 use objc2_foundation::{ns_string, MainThreadMarker, NSRange, NSRect, NSSize, NSString};
 
-use crate::config::{Config, PromptResets};
+use std::collections::BTreeSet;
+
+use crate::config::{Config, DefaultResets};
+use defaulted::DefaultedRow;
 use crate::hotkey_capture::HotkeyCaptureTarget;
 use crate::state::MicMeterSnapshot;
 use actions::SettingsAction;
@@ -72,6 +76,8 @@ pub struct SettingsWindow {
     cancel_button: Retained<NSButton>,
     save_button: Retained<NSButton>,
     hotkey_capture_restore_value: RefCell<Option<(HotkeyCaptureTarget, String)>>,
+    /// Rows reset with their Reset button since the window loaded.
+    row_resets: RefCell<DefaultResets>,
 }
 
 impl SettingsWindow {
@@ -213,6 +219,7 @@ impl SettingsWindow {
             cancel_button,
             save_button,
             hotkey_capture_restore_value: RefCell::new(None),
+            row_resets: RefCell::new(DefaultResets::default()),
         };
 
         window_obj.set_hotkey_capture_state(None);
@@ -256,16 +263,23 @@ impl SettingsWindow {
     }
 
     /// Loads `config` into every pane, discarding any edit in progress, and
-    /// returns the problems the panes found followed by `config::problems`,
+    /// returns the problems the panes found followed by `config::problems`.
+    /// `written` holds the defaulted keys `config.toml` has: their rows show
+    /// a Reset button, and the other text, number, and shortcut fields stay
+    /// blank with the default as placeholder. The problems are
     /// which the caller shows in the status area through
     /// `helpers::settings_load_status`. A problem in one pane never keeps the
     /// others from loading (#10).
     #[must_use = "load problems must be shown in the status area"]
-    pub fn load_from_config(&self, config: &Config) -> Vec<String> {
+    pub fn load_from_config(&self, config: &Config, written: &BTreeSet<&str>) -> Vec<String> {
         // SAFETY: `nil` asks the window to end editing of any field.
         unsafe { self.window.endEditingFor(None) };
 
-        let form = SettingsForm::from_config(config);
+        let form = SettingsForm::from_config(config).follow_defaults_not_in(written);
+        self.row_resets.replace(DefaultResets::default());
+        for reset_buttons in self.reset_buttons() {
+            reset_buttons.show_written(written);
+        }
         self.general
             .load(MainThreadMarker::from(&*self.window), &form.general);
         let mut load_problems = self.microphone.load(&form.microphone);
@@ -293,16 +307,41 @@ impl SettingsWindow {
     }
 
     /// Commits the edit in progress and reads every pane into a `Config`,
-    /// together with the prompts reset to their default since the window
-    /// loaded, which `config::save_config` needs to drop their keys.
-    pub fn read_config(&self) -> Result<(Config, PromptResets), String> {
+    /// together with the defaulted keys that follow their default (reset
+    /// since the window loaded, or left blank), which `config::save_config`
+    /// needs to drop them.
+    pub fn read_config(&self) -> Result<(Config, DefaultResets), String> {
         // Ending editing runs the field's formatter; a field whose text the
         // formatter rejects keeps first responder status and fails here.
         if !self.window.makeFirstResponder(Some(&self.window)) {
             return Err("Correct the value in the field being edited before saving.".to_owned());
         }
         let form = self.read_form();
-        Ok((form.to_config()?, form.prompts.resets))
+        Ok((form.to_config()?, form.resets()))
+    }
+
+    /// Puts `row` back to its built-in default, hides its Reset button, and
+    /// records the reset for the next Save.
+    pub fn reset_row_to_default(&self, row: DefaultedRow) {
+        let mut form = self.read_form();
+        form.reset_row(row);
+        self.general.apply_row(row, &form.general);
+        self.microphone.apply_row(row, &form.microphone);
+        self.deepgram.apply_row(row, &form.deepgram);
+        self.transformation.apply_row(row, &form.transformation);
+        self.row_resets.replace(form.resets);
+        for reset_buttons in self.reset_buttons() {
+            reset_buttons.hide(row);
+        }
+    }
+
+    fn reset_buttons(&self) -> [&controls::ResetButtons; 4] {
+        [
+            &self.general.reset_buttons,
+            &self.microphone.reset_buttons,
+            &self.deepgram.reset_buttons,
+            &self.transformation.reset_buttons,
+        ]
     }
 
     /// Puts the built-in default text in `prompt`'s editor.
@@ -312,6 +351,7 @@ impl SettingsWindow {
 
     fn read_form(&self) -> SettingsForm {
         SettingsForm {
+            resets: self.row_resets.borrow().clone(),
             general: self.general.read(),
             microphone: self.microphone.read(),
             deepgram: self.deepgram.read(),
@@ -416,6 +456,19 @@ impl SettingsWindow {
 
     pub fn hotkey_value(&self, target: HotkeyCaptureTarget) -> String {
         self.hotkey_field(target).stringValue().to_string()
+    }
+
+    /// The shortcut in effect for `target`: the field's value, or the
+    /// default it shows as placeholder while blank.
+    pub fn effective_hotkey_value(&self, target: HotkeyCaptureTarget) -> String {
+        let field = self.hotkey_field(target);
+        match field.stringValue().to_string() {
+            value if value.trim().is_empty() => field
+                .placeholderString()
+                .map(|placeholder| placeholder.to_string())
+                .unwrap_or_default(),
+            value => value,
+        }
     }
 
     pub fn set_hotkey_value(&self, target: HotkeyCaptureTarget, value: &str) {

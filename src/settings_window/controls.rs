@@ -17,7 +17,10 @@ use objc2_foundation::{
     NSNumberFormatterStyle, NSSize, NSString,
 };
 
+use std::collections::BTreeSet;
+
 use super::actions::SettingsAction;
+use super::defaulted::DefaultedRow;
 
 extern "C" {
     static NSFontAttributeName: &'static objc2_foundation::NSAttributedStringKey;
@@ -209,6 +212,49 @@ pub fn push_button(
             mtm,
         )
     })
+}
+
+/// The Reset buttons of a pane's defaulted rows (see `defaulted`).
+#[derive(Debug, Default)]
+pub struct ResetButtons(Vec<(DefaultedRow, Retained<NSButton>)>);
+
+impl ResetButtons {
+    /// Creates `row`'s Reset button, tagged with the row, and returns it for
+    /// the pane's grid.
+    pub fn add(
+        &mut self,
+        mtm: MainThreadMarker,
+        target: &AnyObject,
+        row: DefaultedRow,
+    ) -> Retained<NSButton> {
+        let button = push_button(mtm, "Reset", target, SettingsAction::ResetSettingToDefault);
+        button.setTag(row.tag());
+        button.setToolTip(Some(ns_string!(
+            "Remove this setting from config.toml so it follows the built-in default"
+        )));
+        self.0.push((row, button.clone()));
+        button
+    }
+
+    /// Shows the button of each row whose key `config.toml` has.
+    pub fn show_written(&self, written: &BTreeSet<&str>) {
+        for (row, button) in &self.0 {
+            button.setHidden(!written.contains(row.config_key()));
+        }
+    }
+
+    pub fn hide(&self, row: DefaultedRow) {
+        for (button_row, button) in &self.0 {
+            if *button_row == row {
+                button.setHidden(true);
+            }
+        }
+    }
+}
+
+/// Shows `text` in `field` while it is empty.
+pub fn set_placeholder(field: &NSTextField, text: &str) {
+    field.setPlaceholderString(Some(&NSString::from_str(text)));
 }
 
 pub fn checkbox(mtm: MainThreadMarker, title: &str) -> Retained<NSButton> {

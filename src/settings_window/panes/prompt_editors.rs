@@ -3,7 +3,7 @@
 //! dictation prompt is the system prompt of a transformation, and the
 //! correction prompt replaces it for correction runs.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -15,7 +15,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSRange, NSString};
 
 use super::activate;
-use crate::config::PromptResets;
+use crate::config::DefaultResets;
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
     for_auto_layout, prompt_editor, push_button, section_header,
@@ -37,7 +37,7 @@ pub struct PromptEditors {
     system_prompt_view: Retained<NSTextView>,
     correction_system_prompt_view: Retained<NSTextView>,
     /// Prompts reset since the last `load`; see `PromptsForm::resets`.
-    resets: Cell<PromptResets>,
+    resets: RefCell<DefaultResets>,
 }
 
 impl PromptEditors {
@@ -92,7 +92,7 @@ impl PromptEditors {
         Self {
             system_prompt_view,
             correction_system_prompt_view,
-            resets: Cell::new(PromptResets::default()),
+            resets: RefCell::new(DefaultResets::default()),
         }
     }
 
@@ -101,14 +101,14 @@ impl PromptEditors {
             .setString(&NSString::from_str(&form.system_prompt));
         self.correction_system_prompt_view
             .setString(&NSString::from_str(&form.correction_system_prompt));
-        self.resets.set(form.resets);
+        self.resets.replace(form.resets.clone());
     }
 
     pub fn read(&self) -> PromptsForm {
         PromptsForm {
             system_prompt: self.system_prompt_view.string().to_string(),
             correction_system_prompt: self.correction_system_prompt_view.string().to_string(),
-            resets: self.resets.get(),
+            resets: self.resets.borrow().clone(),
         }
     }
 
@@ -118,7 +118,7 @@ impl PromptEditors {
         let mut form = self.read();
         form.reset_to_default(prompt);
         if replace_text_as_user_edit(self.editor(prompt), form.text(prompt)) {
-            self.resets.set(form.resets);
+            self.resets.replace(form.resets);
         }
     }
 

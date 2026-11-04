@@ -1,4 +1,4 @@
-use super::{save_config, Config, PromptResets};
+use super::{save_config, Config, DefaultResets};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -46,7 +46,7 @@ fn save_inline_section(section: &str, fields: &str) {
     config.deepgram.language = "fr".to_owned();
     config.transformation.auto = !config.transformation.auto;
 
-    save_config(&file.path, &config, PromptResets::default()).unwrap();
+    save_config(&file.path, &config, &DefaultResets::default()).unwrap();
 
     let saved = std::fs::read_to_string(&file.path).unwrap();
     assert_eq!(toml::from_str::<Config>(&saved).unwrap(), config);
@@ -91,7 +91,7 @@ fn non_table_managed_sections_return_errors_without_changing_the_file() {
             let contents = format!("{section} = {value}\n");
             let file = ConfigFile::new(&contents);
             let error =
-                save_config(&file.path, &Config::default(), PromptResets::default()).unwrap_err();
+                save_config(&file.path, &Config::default(), &DefaultResets::default()).unwrap_err();
             assert!(error.contains(section), "{section}: {error}");
             assert_eq!(std::fs::read_to_string(&file.path).unwrap(), contents);
         }
@@ -104,7 +104,7 @@ fn managed_arrays_of_tables_return_errors_without_changing_the_file() {
         let contents = format!("[[{section}]]\ncustom = true\n");
         let file = ConfigFile::new(&contents);
         let error =
-            save_config(&file.path, &Config::default(), PromptResets::default()).unwrap_err();
+            save_config(&file.path, &Config::default(), &DefaultResets::default()).unwrap_err();
         assert!(error.contains(section), "{section}: {error}");
         assert_eq!(std::fs::read_to_string(&file.path).unwrap(), contents);
     }

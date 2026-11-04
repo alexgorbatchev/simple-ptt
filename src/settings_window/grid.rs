@@ -122,10 +122,6 @@ impl FormGrid {
             "a form grid row has at most {} accessories",
             self.column_count - 2
         );
-        assert!(
-            accessories.is_empty() || width == ControlWidth::Fill,
-            "a control followed by accessories fills its cells"
-        );
         let label = form_label(self.mtm, label);
         for accessory in accessories {
             accessory.setContentHuggingPriority_forOrientation(
@@ -149,7 +145,7 @@ impl FormGrid {
         {
             cell.setXPlacement(NSGridCellPlacement::Fill);
         }
-        self.hug_label_and_accessory_columns(&label, control, accessories);
+        self.hug_label_and_accessory_columns(&label, control, width, accessories);
         self.set_control_width(control, width);
 
         if alignment == RowAlignment::Center {
@@ -161,9 +157,36 @@ impl FormGrid {
     /// Adds a view without a label that spans the control and accessory
     /// columns: a checkbox, or a hint below the row above it.
     pub fn add_detail_row(&self, view: &NSView, width: ControlWidth) -> Retained<NSGridRow> {
+        self.add_detail_row_with_accessories(view, width, &[])
+    }
+
+    /// Adds a view without a label followed by its trailing `accessories`,
+    /// which line up with the accessories of the labelled rows.
+    pub fn add_detail_row_with_accessories(
+        &self,
+        view: &NSView,
+        width: ControlWidth,
+        accessories: &[&NSView],
+    ) -> Retained<NSGridRow> {
         let empty = NSGridCell::emptyContentView(self.mtm);
-        let row = self.add_row_views(&[&empty, view]);
-        merge_cells(&row, 1, self.column_count - 1);
+        let span = self.column_count - 1 - accessories.len();
+        let mut views: Vec<&NSView> = vec![&empty, view];
+        views.extend(std::iter::repeat_n(&*empty, span - 1));
+        views.extend_from_slice(accessories);
+        let row = self.add_row_views(&views);
+        merge_cells(&row, 1, span);
+        if let Some(cell) = accessories
+            .last()
+            .and_then(|accessory| self.grid.cellForView(accessory))
+        {
+            cell.setXPlacement(NSGridCellPlacement::Fill);
+        }
+        for accessory in accessories {
+            accessory.setContentHuggingPriority_forOrientation(
+                NSLayoutPriorityDefaultHigh,
+                NSLayoutConstraintOrientation::Horizontal,
+            );
+        }
         self.set_control_width(view, width);
         row
     }
@@ -195,23 +218,31 @@ impl FormGrid {
     /// its cells, so its trailing edge is the control column's). Only the
     /// widest view of a column can satisfy its pull, which makes that column
     /// exactly as wide as it.
+    ///
+    /// A control that keeps its intrinsic width does not reach its cells'
+    /// trailing edge, so the accessory after it is not pulled towards it; the
+    /// rows whose controls fill set that column's position.
     fn hug_label_and_accessory_columns(
         &self,
         label: &NSView,
         control: &NSView,
+        width: ControlWidth,
         accessories: &[&NSView],
     ) {
         let mut pulls = vec![label
             .leadingAnchor()
             .constraintEqualToAnchor(&self.grid.leadingAnchor())];
-        let mut previous = control;
+        let mut previous = (width == ControlWidth::Fill).then_some(control);
         for accessory in accessories {
-            pulls.push(
-                accessory
-                    .leadingAnchor()
-                    .constraintEqualToAnchor_constant(&previous.trailingAnchor(), COLUMN_SPACING),
-            );
-            previous = accessory;
+            if let Some(previous) = previous {
+                pulls.push(
+                    accessory.leadingAnchor().constraintEqualToAnchor_constant(
+                        &previous.trailingAnchor(),
+                        COLUMN_SPACING,
+                    ),
+                );
+            }
+            previous = Some(accessory);
         }
         for pull in &pulls {
             pull.setPriority(NSLayoutPriorityDefaultLow);

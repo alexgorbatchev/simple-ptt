@@ -188,14 +188,75 @@ impl Default for TransformationConfig {
     }
 }
 
-/// Prompts the user reset to their built-in default in the settings window.
-/// `save_config` removes a reset prompt's key while its value still equals the
-/// default, even when the file already had the key, so the config follows
-/// future changes to the default again.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct PromptResets {
-    pub system_prompt: bool,
-    pub correction_system_prompt: bool,
+/// Keys with a built-in default, as `section.key`, with the aliases a file
+/// may spell them with. `save_config` writes each only when its value differs
+/// from the default or the file already has it.
+pub const DEFAULTED_KEYS: &[(&str, &[&str])] = &[
+    ("ui.start_on_login", &[]),
+    ("ui.auto_check_updates", &[]),
+    ("ui.hotkey", &[]),
+    ("ui.correction_key", &["instruction_key"]),
+    ("ui.font_size", &[]),
+    ("ui.meter_style", &[]),
+    ("mic.sample_rate", &[]),
+    ("mic.gain", &[]),
+    ("mic.hold_ms", &[]),
+    ("mic.always_on", &[]),
+    ("deepgram.language", &[]),
+    ("deepgram.model", &[]),
+    ("deepgram.endpointing_ms", &[]),
+    ("deepgram.utterance_end_ms", &[]),
+    ("transformation.hotkey", &[]),
+    ("transformation.auto", &[]),
+    ("transformation.model", &[]),
+    ("transformation.system_prompt", &[]),
+    ("transformation.correction_system_prompt", &["instruction_system_prompt"]),
+];
+
+/// Defaulted keys (`DEFAULTED_KEYS`) the user reset to their built-in default
+/// in the settings window. `save_config` removes a reset key while its value
+/// still equals the default, even when the file already had it, so the
+/// config follows future changes to the default again.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DefaultResets(std::collections::BTreeSet<&'static str>);
+
+impl DefaultResets {
+    pub fn insert(&mut self, key: &'static str) {
+        self.0.insert(key);
+    }
+
+    pub fn contains(&self, key: &str) -> bool {
+        self.0.contains(key)
+    }
+
+    pub fn extend(&mut self, other: &DefaultResets) {
+        self.0.extend(other.0.iter().copied());
+    }
+}
+
+impl FromIterator<&'static str> for DefaultResets {
+    fn from_iter<I: IntoIterator<Item = &'static str>>(keys: I) -> Self {
+        Self(keys.into_iter().collect())
+    }
+}
+
+/// The defaulted keys (`DEFAULTED_KEYS`) the config file at `path` has,
+/// under their name or an alias. A missing file has none.
+pub fn defaulted_keys_in_file(path: &Path) -> Result<std::collections::BTreeSet<&'static str>, String> {
+    let document = load_document(path)?;
+    Ok(DEFAULTED_KEYS
+        .iter()
+        .filter(|(path, aliases)| {
+            let (section, key) = path.split_once('.').expect("defaulted keys are section.key");
+            document
+                .get(section)
+                .and_then(Item::as_table_like)
+                .is_some_and(|table| {
+                    table.contains_key(key) || aliases.iter().any(|alias| table.contains_key(alias))
+                })
+        })
+        .map(|(path, _)| *path)
+        .collect())
 }
 
 fn default_auto_check_updates() -> bool {
@@ -732,18 +793,24 @@ fn set_defaulted_string_key(
 /// Writes a key that has a built-in default only when `field_value` differs
 /// from `default_value` or the file already has the key (under `key` or an
 /// alias). A config that leaves a default out keeps following the default of
-/// later releases, and a key the user wrote stays, keeping its comments.
+/// later releases, and a key the user wrote stays, keeping its comments,
+/// unless it was `reset` and still equals the default.
 fn set_defaulted_key<V>(
     table: &mut dyn TableLike,
     key: &str,
     aliases: &[&str],
     field_value: V,
     default_value: V,
+    reset: bool,
 ) where
     V: PartialEq + Into<toml_edit::Value>,
 {
     let in_file = table.contains_key(key) || aliases.iter().any(|alias| table.contains_key(alias));
-    if !in_file && field_value == default_value {
+    if field_value == default_value && (reset || !in_file) {
+        table.remove(key);
+        for alias in aliases {
+            table.remove(alias);
+        }
         return;
     }
 
@@ -766,23 +833,29 @@ fn set_string_array_key(table: &mut dyn TableLike, key: &str, values: &[String])
     }
 }
 
-fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), String> {
+fn write_ui_table(
+    document: &mut DocumentMut,
+    ui: &UiConfig,
+    resets: &DefaultResets,
+) -> Result<(), String> {
     let table = ensure_named_table(document, "ui")?;
-    set_defaulted_key(table, "start_on_login", &[], ui.start_on_login, false);
+    set_defaulted_key(table, "start_on_login", &[], ui.start_on_login, false, resets.contains("ui.start_on_login"));
     set_defaulted_key(
         table,
         "auto_check_updates",
         &[],
         ui.auto_check_updates,
         default_auto_check_updates(),
+        resets.contains("ui.auto_check_updates"),
     );
-    set_defaulted_key(table, "hotkey", &[], ui.hotkey.as_str(), &default_hotkey());
+    set_defaulted_key(table, "hotkey", &[], ui.hotkey.as_str(), &default_hotkey(), resets.contains("ui.hotkey"));
     set_defaulted_key(
         table,
         "correction_key",
         &["instruction_key"],
         ui.correction_key.as_str(),
         &default_correction_key(),
+        resets.contains("ui.correction_key"),
     );
     set_optional_string_key(
         table,
@@ -790,7 +863,7 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), Strin
         &["overlay_font_family"],
         ui.font_name.as_deref(),
     );
-    set_defaulted_key(table, "font_size", &[], ui.font_size, default_overlay_font_size());
+    set_defaulted_key(table, "font_size", &[], ui.font_size, default_overlay_font_size(), resets.contains("ui.font_size"));
     match ui.footer_font_size {
         Some(footer_font_size) => set_float_key(table, "footer_font_size", footer_font_size),
         None => {
@@ -803,11 +876,16 @@ fn write_ui_table(document: &mut DocumentMut, ui: &UiConfig) -> Result<(), Strin
         &[],
         meter_style_name(ui.meter_style),
         meter_style_name(UiMeterStyle::default()),
+        resets.contains("ui.meter_style"),
     );
     Ok(())
 }
 
-fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) -> Result<(), String> {
+fn write_mic_table(
+    document: &mut DocumentMut,
+    mic: &MicConfig,
+    resets: &DefaultResets,
+) -> Result<(), String> {
     let table = ensure_named_table(document, "mic")?;
     set_optional_string_key(table, "audio_device", &[], mic.audio_device.as_deref());
     set_defaulted_key(
@@ -816,20 +894,26 @@ fn write_mic_table(document: &mut DocumentMut, mic: &MicConfig) -> Result<(), St
         &[],
         i64::from(mic.sample_rate),
         i64::from(default_sample_rate()),
+        resets.contains("mic.sample_rate"),
     );
-    set_defaulted_key(table, "gain", &[], f64::from(mic.gain), f64::from(default_gain()));
+    set_defaulted_key(table, "gain", &[], f64::from(mic.gain), f64::from(default_gain()), resets.contains("mic.gain"));
     set_defaulted_key(
         table,
         "hold_ms",
         &[],
         i64::try_from(mic.hold_ms).unwrap_or(i64::MAX),
         i64::try_from(default_hold_ms()).unwrap_or(i64::MAX),
+        resets.contains("mic.hold_ms"),
     );
-    set_defaulted_key(table, "always_on", &[], mic.always_on, default_always_on());
+    set_defaulted_key(table, "always_on", &[], mic.always_on, default_always_on(), resets.contains("mic.always_on"));
     Ok(())
 }
 
-fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -> Result<(), String> {
+fn write_deepgram_table(
+    document: &mut DocumentMut,
+    deepgram: &DeepgramConfig,
+    resets: &DefaultResets,
+) -> Result<(), String> {
     let table = ensure_named_table(document, "deepgram")?;
     set_optional_string_key(table, "api_key", &[], deepgram.api_key.as_deref());
     set_defaulted_key(
@@ -838,14 +922,16 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -
         &[],
         deepgram.language.as_str(),
         &default_deepgram_language(),
+        resets.contains("deepgram.language"),
     );
-    set_defaulted_key(table, "model", &[], deepgram.model.as_str(), &default_deepgram_model());
+    set_defaulted_key(table, "model", &[], deepgram.model.as_str(), &default_deepgram_model(), resets.contains("deepgram.model"));
     set_defaulted_key(
         table,
         "endpointing_ms",
         &[],
         i64::from(deepgram.endpointing_ms),
         i64::from(default_endpointing_ms()),
+        resets.contains("deepgram.endpointing_ms"),
     );
     set_defaulted_key(
         table,
@@ -853,6 +939,7 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -
         &[],
         i64::from(deepgram.utterance_end_ms),
         i64::from(default_utterance_end_ms()),
+        resets.contains("deepgram.utterance_end_ms"),
     );
     set_string_array_key(table, "keyterms", &deepgram.keyterms);
     Ok(())
@@ -861,7 +948,7 @@ fn write_deepgram_table(document: &mut DocumentMut, deepgram: &DeepgramConfig) -
 fn write_transformation_table(
     document: &mut DocumentMut,
     transformation: &TransformationConfig,
-    prompt_resets: PromptResets,
+    resets: &DefaultResets,
 ) -> Result<(), String> {
     let table = ensure_named_table(document, "transformation")?;
     set_defaulted_key(
@@ -870,8 +957,9 @@ fn write_transformation_table(
         &[],
         transformation.hotkey.as_str(),
         &default_transformation_hotkey(),
+        resets.contains("transformation.hotkey"),
     );
-    set_defaulted_key(table, "auto", &[], transformation.auto, default_transformation_auto());
+    set_defaulted_key(table, "auto", &[], transformation.auto, default_transformation_auto(), resets.contains("transformation.auto"));
     set_optional_string_key(table, "provider", &[], transformation.provider.as_deref());
     set_optional_string_key(table, "api_key", &[], transformation.api_key.as_deref());
     let default_model = transformation
@@ -880,14 +968,21 @@ fn write_transformation_table(
         .and_then(|provider| provider.parse::<TransformationProvider>().ok())
         .and_then(TransformationProvider::default_model)
         .unwrap_or_default();
-    set_defaulted_string_key(table, "model", &[], &transformation.model, default_model, false);
+    set_defaulted_string_key(
+        table,
+        "model",
+        &[],
+        &transformation.model,
+        default_model,
+        resets.contains("transformation.model"),
+    );
     set_defaulted_string_key(
         table,
         "system_prompt",
         &[],
         &transformation.system_prompt,
         &default_transformation_system_prompt(),
-        prompt_resets.system_prompt,
+        resets.contains("transformation.system_prompt"),
     );
     set_defaulted_string_key(
         table,
@@ -895,7 +990,7 @@ fn write_transformation_table(
         &["instruction_system_prompt"],
         &transformation.correction_system_prompt,
         &default_transformation_correction_system_prompt(),
-        prompt_resets.correction_system_prompt,
+        resets.contains("transformation.correction_system_prompt"),
     );
     Ok(())
 }
@@ -914,14 +1009,14 @@ fn meter_style_name(meter_style: UiMeterStyle) -> &'static str {
 pub fn save_config(
     path: &Path,
     config: &Config,
-    prompt_resets: PromptResets,
+    resets: &DefaultResets,
 ) -> Result<(), String> {
     let mut document = load_document(path)?;
     let sections_in_file = CONFIG_SECTIONS.map(|section| root_table(&mut document).contains_key(section));
-    write_ui_table(&mut document, &config.ui)?;
-    write_mic_table(&mut document, &config.mic)?;
-    write_deepgram_table(&mut document, &config.deepgram)?;
-    write_transformation_table(&mut document, &config.transformation, prompt_resets)?;
+    write_ui_table(&mut document, &config.ui, resets)?;
+    write_mic_table(&mut document, &config.mic, resets)?;
+    write_deepgram_table(&mut document, &config.deepgram, resets)?;
+    write_transformation_table(&mut document, &config.transformation, resets)?;
     // A section Save created only to hold keys that all stayed at their
     // defaults is left out too.
     let root = root_table(&mut document);
@@ -1120,7 +1215,7 @@ mod tests {
     use super::{
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
         materialize_runtime_config, save_config, Config, ConfigFileSnapshot,
-        PromptResets, UiMeterStyle,
+        DefaultResets, UiMeterStyle,
     };
 
     fn env_lock() -> MutexGuard<'static, ()> {
@@ -1212,7 +1307,7 @@ mod tests {
 
         let mut config = Config::default();
         config.ui.meter_style = UiMeterStyle::Pills;
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1251,7 +1346,7 @@ mod tests {
         config.ui.meter_style = UiMeterStyle::AnimatedHeight;
         config.transformation.correction_system_prompt = "Apply the spoken correction.".to_owned();
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
 
         assert!(updated_contents.contains("# top comment"));
@@ -1351,7 +1446,7 @@ mod tests {
         std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1380,7 +1475,7 @@ mod tests {
 
         let mut config = Config::default();
         config.deepgram.keyterms = vec!["macOS".to_owned(), "GitHub".to_owned()];
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1399,7 +1494,7 @@ mod tests {
         test_name: &str,
         initial_contents: Option<&str>,
         config: &Config,
-        prompt_resets: PromptResets,
+        resets: DefaultResets,
     ) -> toml_edit::Table {
         let temp_directory =
             std::env::temp_dir().join(format!("simple-ptt-{}-{}", test_name, std::process::id()));
@@ -1409,7 +1504,7 @@ mod tests {
             std::fs::write(&path, initial_contents).unwrap();
         }
 
-        save_config(&path, config, prompt_resets).unwrap();
+        save_config(&path, config, &resets).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1431,11 +1526,47 @@ mod tests {
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
 
-        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert_eq!(contents.trim(), "", "a default config wrote:\n{contents}");
+    }
+
+    #[test]
+    fn a_reset_key_the_file_has_is_removed_while_it_equals_its_default() {
+        let temp_directory = std::env::temp_dir()
+            .join(format!("simple-ptt-reset-keys-{}", std::process::id()));
+        std::fs::create_dir_all(&temp_directory).unwrap();
+        let path = temp_directory.join("config.toml");
+        std::fs::write(
+            &path,
+            "[ui]\nhotkey = \"F5\"\nstart_on_login = false\n[mic]\nhold_ms = 300 # mine\n",
+        )
+        .unwrap();
+        let mut config = Config::default();
+        config.mic.hold_ms = 450;
+
+        assert_eq!(
+            super::defaulted_keys_in_file(&path).unwrap(),
+            std::collections::BTreeSet::from(["ui.hotkey", "ui.start_on_login", "mic.hold_ms"])
+        );
+        let resets = DefaultResets::from_iter(["ui.hotkey", "ui.start_on_login", "mic.hold_ms"]);
+        save_config(&path, &config, &resets).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&temp_directory).unwrap();
+
+        // The two defaults go; the reset value the user then changed stays.
+        assert_eq!(contents, "[ui]\n[mic]\nhold_ms = 450 # mine\n");
+    }
+
+    #[test]
+    fn a_missing_file_has_no_defaulted_keys() {
+        let path = std::env::temp_dir()
+            .join(format!("simple-ptt-missing-{}", std::process::id()))
+            .join("config.toml");
+
+        assert!(super::defaulted_keys_in_file(&path).unwrap().is_empty());
     }
 
     #[test]
@@ -1448,7 +1579,7 @@ mod tests {
         config.mic.gain = 6.0;
         config.deepgram.endpointing_ms = 450;
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let document = std::fs::read_to_string(&path)
             .unwrap()
             .parse::<toml_edit::DocumentMut>()
@@ -1499,7 +1630,7 @@ mod tests {
         let path = temp_directory.join("config.toml");
         std::fs::write(&path, &initial_contents).unwrap();
 
-        save_config(&path, &defaults, PromptResets::default()).unwrap();
+        save_config(&path, &defaults, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_dir_all(&temp_directory).unwrap();
 
@@ -1512,7 +1643,7 @@ mod tests {
             "defaults-new-file",
             None,
             &Config::default(),
-            PromptResets::default(),
+            DefaultResets::default(),
         );
 
         for key in [
@@ -1533,7 +1664,7 @@ mod tests {
             "defaults-example",
             Some(EXAMPLE_CONFIG),
             &config,
-            PromptResets::default(),
+            DefaultResets::default(),
         );
 
         for key in ["model", "system_prompt", "correction_system_prompt"] {
@@ -1547,12 +1678,12 @@ mod tests {
         config.transformation.provider = Some("anthropic".to_owned());
         config.transformation.model = "claude-haiku-5-5".to_owned();
         let table =
-            saved_transformation_table("provider-default", None, &config, PromptResets::default());
+            saved_transformation_table("provider-default", None, &config, DefaultResets::default());
         assert!(!table.contains_key("model"), "model was written:\n{table}");
 
         config.transformation.model = "gpt-5.4-mini".to_owned();
         let table =
-            saved_transformation_table("other-default", None, &config, PromptResets::default());
+            saved_transformation_table("other-default", None, &config, DefaultResets::default());
         assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
     }
 
@@ -1580,7 +1711,7 @@ mod tests {
         config.transformation.correction_system_prompt = "Custom correction prompt.".to_owned();
 
         let table =
-            saved_transformation_table("customized", None, &config, PromptResets::default());
+            saved_transformation_table("customized", None, &config, DefaultResets::default());
 
         assert_eq!(table["model"].as_str(), Some("claude-test"));
         assert_eq!(
@@ -1611,7 +1742,7 @@ mod tests {
             "defaults-present",
             Some(&initial_contents),
             &config,
-            PromptResets::default(),
+            DefaultResets::default(),
         );
 
         assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
@@ -1638,10 +1769,10 @@ mod tests {
             "reset-present",
             Some(initial_contents),
             &Config::default(),
-            PromptResets {
-                system_prompt: true,
-                correction_system_prompt: true,
-            },
+            DefaultResets::from_iter([
+                "transformation.system_prompt",
+                "transformation.correction_system_prompt",
+            ]),
         );
 
         for key in [
@@ -1664,10 +1795,10 @@ mod tests {
             "reset-edited",
             Some("[transformation]\nsystem_prompt = \"Old custom prompt.\"\n"),
             &config,
-            PromptResets {
-                system_prompt: true,
-                correction_system_prompt: true,
-            },
+            DefaultResets::from_iter([
+                "transformation.system_prompt",
+                "transformation.correction_system_prompt",
+            ]),
         );
 
         assert_eq!(table["system_prompt"].as_str(), Some("Edited after reset."));
@@ -1685,7 +1816,7 @@ mod tests {
         config.transformation.correction_system_prompt = "  ".to_owned();
 
         let table =
-            saved_transformation_table("defaults-padded", None, &config, PromptResets::default());
+            saved_transformation_table("defaults-padded", None, &config, DefaultResets::default());
 
         assert!(!table.contains_key("system_prompt"), "{table}");
         assert!(!table.contains_key("correction_system_prompt"), "{table}");
@@ -1705,7 +1836,7 @@ mod tests {
                 "instruction_system_prompt = \"Old custom correction prompt.\"\n",
             )),
             &config,
-            PromptResets::default(),
+            DefaultResets::default(),
         );
 
         for key in [
@@ -1733,7 +1864,7 @@ mod tests {
         let mut config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
         config.transformation.model = "claude-test".to_owned();
         config.transformation.system_prompt = "Custom dictation prompt.".to_owned();
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         assert_ne!(std::fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
 
         snapshot.restore().unwrap();
@@ -1753,7 +1884,7 @@ mod tests {
         let path = temp_directory.join("config.toml");
 
         let snapshot = ConfigFileSnapshot::take(&path).unwrap();
-        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
         assert!(path.exists());
 
         snapshot.restore().unwrap();
@@ -1845,7 +1976,7 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
         let path = temp_dir.join("config.toml");
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("auto_check_updates = false"));
         std::fs::remove_dir_all(&temp_dir).unwrap();
@@ -1862,7 +1993,7 @@ mod tests {
         std::fs::create_dir_all(&temp_directory).unwrap();
         let path = temp_directory.join("config.toml");
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         assert!(updated_contents.contains("always_on = false"));
         std::fs::remove_dir_all(&temp_directory).unwrap();
@@ -1911,7 +2042,7 @@ api_key = "test-key"
 
 #[cfg(test)]
 mod file_security_tests {
-    use super::{save_config, Config, ConfigFileSnapshot, PromptResets};
+    use super::{save_config, Config, ConfigFileSnapshot, DefaultResets};
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1954,7 +2085,7 @@ mod file_security_tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions)).unwrap();
             let snapshot = ConfigFileSnapshot::take(&path).unwrap();
 
-            save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+            save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
             assert_eq!(mode(&path), permissions);
             snapshot.restore().unwrap();
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "# original\n");
@@ -1966,7 +2097,7 @@ mod file_security_tests {
     fn new_config_is_private() {
         let directory = TestDirectory::new();
         let path = directory.config();
-        save_config(&path, &Config::default(), PromptResets::default()).unwrap();
+        save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
         assert_eq!(mode(&path), 0o600);
     }
 
@@ -1984,7 +2115,7 @@ mod file_security_tests {
         let mut config = Config::default();
         config.mic.gain = 6.0;
 
-        save_config(&path, &config, PromptResets::default()).unwrap();
+        save_config(&path, &config, &DefaultResets::default()).unwrap();
         assert_eq!(
             std::fs::read_link(&path).unwrap(),
             Path::new("private/actual.toml")
@@ -2005,7 +2136,7 @@ mod file_security_tests {
         let directory = TestDirectory::new();
         let path = directory.config();
         symlink("missing.toml", &path).unwrap();
-        assert!(save_config(&path, &Config::default(), PromptResets::default()).is_err());
+        assert!(save_config(&path, &Config::default(), &DefaultResets::default()).is_err());
         assert_eq!(
             std::fs::read_link(&path).unwrap(),
             Path::new("missing.toml")

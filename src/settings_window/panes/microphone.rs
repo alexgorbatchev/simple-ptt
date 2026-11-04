@@ -14,9 +14,11 @@ use crate::config::{UiMeterStyle, MIC_GAIN_MAX_DB, MIC_GAIN_MIN_DB};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
     checkbox, fixed_width, for_auto_layout, is_checked, minimum_width, number_field,
-    pop_up_button_with_action, set_checked, set_text_value, set_unsigned_value, slider,
-    unsigned_value, NumberFieldKind, NUMBER_FIELD_WIDTH,
+    pop_up_button_with_action, set_checked, set_placeholder, set_text_value, set_unsigned_value,
+    slider, unsigned_value, NumberFieldKind, ResetButtons, NUMBER_FIELD_WIDTH,
 };
+use crate::config::Config;
+use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{mic_gain_label, MicrophoneForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, RowAlignment};
 use crate::settings_window::helpers::{mic_audio_device_popup_state, MicAudioDeviceOption};
@@ -38,6 +40,7 @@ pub struct MicrophonePane {
     gain_label: Retained<NSTextField>,
     meter_view: UiMeterView,
     always_on_checkbox: Retained<NSButton>,
+    pub reset_buttons: ResetButtons,
 }
 
 impl MicrophonePane {
@@ -75,7 +78,13 @@ impl MicrophonePane {
                 .constraintEqualToConstant(meter_container_height(UiMeterStyle::AnimatedColor)),
         ]);
 
-        let grid = FormGrid::new(mtm, 2);
+        set_placeholder(&sample_rate_field, &Config::default().mic.sample_rate.to_string());
+        let mut reset_buttons = ResetButtons::default();
+        let sample_rate_reset = reset_buttons.add(mtm, target, DefaultedRow::SampleRate);
+        let gain_reset = reset_buttons.add(mtm, target, DefaultedRow::MicGain);
+        let always_on_reset = reset_buttons.add(mtm, target, DefaultedRow::AlwaysOn);
+
+        let grid = FormGrid::new(mtm, 3);
         grid.add_row(
             &labels::AUDIO_DEVICE.row_title(),
             &audio_device_popup,
@@ -86,16 +95,20 @@ impl MicrophonePane {
             &labels::SAMPLE_RATE.row_title(),
             &sample_rate_field,
             ControlWidth::Intrinsic,
-            &[],
+            &[&sample_rate_reset],
         );
         grid.add_aligned_row(
             &labels::MIC_GAIN.row_title(),
             &gain_slider,
             ControlWidth::Fill,
-            &[&gain_label, meter],
+            &[&gain_label, meter, &gain_reset],
             RowAlignment::Center,
         );
-        grid.add_detail_row(&always_on_checkbox, ControlWidth::Intrinsic);
+        grid.add_detail_row_with_accessories(
+            &always_on_checkbox,
+            ControlWidth::Intrinsic,
+            &[&always_on_reset],
+        );
         grid.add_hint_row(Some(ALWAYS_ON_HINT));
 
         let pane = Self {
@@ -106,6 +119,7 @@ impl MicrophonePane {
             gain_label,
             meter_view,
             always_on_checkbox,
+            reset_buttons,
         };
         let view = pane_view(mtm, grid.view(), PaneContentHeight::Fitting);
         (pane, view)
@@ -124,6 +138,19 @@ impl MicrophonePane {
         self.update_gain_label(self.gain_slider_value());
         set_checked(&self.always_on_checkbox, form.always_on);
         audio_device_problem.into_iter().collect()
+    }
+
+    /// Shows `row`'s value from `form` after a reset.
+    pub fn apply_row(&self, row: DefaultedRow, form: &MicrophoneForm) {
+        match row {
+            DefaultedRow::SampleRate => set_unsigned_value(&self.sample_rate_field, form.sample_rate),
+            DefaultedRow::MicGain => {
+                self.gain_slider.setDoubleValue(f64::from(form.gain));
+                self.update_gain_label(self.gain_slider_value());
+            }
+            DefaultedRow::AlwaysOn => set_checked(&self.always_on_checkbox, form.always_on),
+            _ => {}
+        }
     }
 
     pub fn read(&self) -> MicrophoneForm {

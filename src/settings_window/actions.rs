@@ -41,6 +41,7 @@ settings_actions! {
     CheckTransformationProvider => checkTransformationProvider,
     ResetDictationPrompt => resetDictationPrompt,
     ResetCorrectionPrompt => resetCorrectionPrompt,
+    ResetSettingToDefault => resetSettingToDefault,
     SaveSettings => applySettingsPressed,
     CancelSettings => cancelSettingsPressed,
 }

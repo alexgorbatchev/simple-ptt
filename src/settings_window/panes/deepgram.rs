@@ -6,10 +6,10 @@ use objc2_app_kit::{NSButton, NSPopUpButton, NSTextField, NSView};
 use super::{pane_view, PaneContentHeight};
 use crate::settings_window::actions::SettingsAction;
 use crate::settings_window::controls::{
-    fixed_width, minimum_width, number_field, pop_up_button, push_button, selected_title,
-    set_text_value, set_unsigned_value, text_field, text_value, unsigned_value, NumberFieldKind,
-    FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH,
+    fixed_width, minimum_width, number_field, pop_up_button, push_button, selected_title, set_placeholder, set_text_value, set_unsigned_value, text_field, text_value, unsigned_value, FIELD_MIN_WIDTH, NUMBER_FIELD_WIDTH, NumberFieldKind, ResetButtons,
 };
+use crate::config::Config;
+use crate::settings_window::defaulted::DefaultedRow;
 use crate::settings_window::form::{optional_text, DeepgramForm};
 use crate::settings_window::grid::{ControlWidth, FormGrid, HintRow};
 use crate::settings_window::labels;
@@ -33,6 +33,7 @@ pub struct DeepgramPane {
     model_popup: Retained<NSPopUpButton>,
     endpointing_ms_field: Retained<NSTextField>,
     utterance_end_ms_field: Retained<NSTextField>,
+    pub reset_buttons: ResetButtons,
 }
 
 impl DeepgramPane {
@@ -57,6 +58,16 @@ impl DeepgramPane {
         fixed_width(&endpointing_ms_field, NUMBER_FIELD_WIDTH);
         fixed_width(&utterance_end_ms_field, NUMBER_FIELD_WIDTH);
 
+        let defaults = Config::default().deepgram;
+        set_placeholder(&language_field, &defaults.language);
+        set_placeholder(&endpointing_ms_field, &defaults.endpointing_ms.to_string());
+        set_placeholder(&utterance_end_ms_field, &defaults.utterance_end_ms.to_string());
+        let mut reset_buttons = ResetButtons::default();
+        let language_reset = reset_buttons.add(mtm, target, DefaultedRow::DeepgramLanguage);
+        let model_reset = reset_buttons.add(mtm, target, DefaultedRow::DeepgramModel);
+        let endpointing_reset = reset_buttons.add(mtm, target, DefaultedRow::Endpointing);
+        let utterance_end_reset = reset_buttons.add(mtm, target, DefaultedRow::UtteranceEnd);
+
         let grid = FormGrid::new(mtm, 1);
         grid.add_row(
             &labels::DEEPGRAM_API_KEY.row_title(),
@@ -65,21 +76,31 @@ impl DeepgramPane {
             &[&api_key_check_button],
         );
         let api_key_env_hint = grid.add_hint_row(None);
-        grid.add_row(&labels::DEEPGRAM_LANGUAGE.row_title(), &language_field, ControlWidth::Fill, &[]);
+        grid.add_row(
+            &labels::DEEPGRAM_LANGUAGE.row_title(),
+            &language_field,
+            ControlWidth::Fill,
+            &[&language_reset],
+        );
         grid.add_row(&labels::DEEPGRAM_KEYTERMS.row_title(), &keyterms_field, ControlWidth::Fill, &[]);
         grid.add_hint_row(Some(KEYTERMS_HINT));
-        grid.add_row(&labels::DEEPGRAM_MODEL.row_title(), &model_popup, ControlWidth::Intrinsic, &[]);
+        grid.add_row(
+            &labels::DEEPGRAM_MODEL.row_title(),
+            &model_popup,
+            ControlWidth::Intrinsic,
+            &[&model_reset],
+        );
         grid.add_row(
             &labels::ENDPOINTING.row_title(),
             &endpointing_ms_field,
             ControlWidth::Intrinsic,
-            &[],
+            &[&endpointing_reset],
         );
         grid.add_row(
             &labels::UTTERANCE_END.row_title(),
             &utterance_end_ms_field,
             ControlWidth::Intrinsic,
-            &[],
+            &[&utterance_end_reset],
         );
 
         let pane = Self {
@@ -91,6 +112,7 @@ impl DeepgramPane {
             model_popup,
             endpointing_ms_field,
             utterance_end_ms_field,
+            reset_buttons,
         };
         let view = pane_view(mtm, grid.view(), PaneContentHeight::Fitting);
         (pane, view)
@@ -104,6 +126,23 @@ impl DeepgramPane {
         populate_deepgram_model_popup(&self.model_popup, form.model_title.as_deref());
         set_unsigned_value(&self.endpointing_ms_field, form.endpointing_ms);
         set_unsigned_value(&self.utterance_end_ms_field, form.utterance_end_ms);
+    }
+
+    /// Shows `row`'s value from `form` after a reset.
+    pub fn apply_row(&self, row: DefaultedRow, form: &DeepgramForm) {
+        match row {
+            DefaultedRow::DeepgramLanguage => set_text_value(&self.language_field, &form.language),
+            DefaultedRow::DeepgramModel => {
+                populate_deepgram_model_popup(&self.model_popup, form.model_title.as_deref())
+            }
+            DefaultedRow::Endpointing => {
+                set_unsigned_value(&self.endpointing_ms_field, form.endpointing_ms)
+            }
+            DefaultedRow::UtteranceEnd => {
+                set_unsigned_value(&self.utterance_end_ms_field, form.utterance_end_ms)
+            }
+            _ => {}
+        }
     }
 
     pub fn read(&self) -> DeepgramForm {
