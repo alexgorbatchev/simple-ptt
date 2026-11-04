@@ -5,7 +5,8 @@ use super::defaults::{
     default_always_on, default_auto_check_updates, default_correction_key,
     default_deepgram_language, default_deepgram_model, default_endpointing_ms, default_gain,
     default_hold_ms, default_hotkey, default_overlay_font_size, default_sample_rate,
-    default_transformation_auto, default_transformation_hotkey, default_utterance_end_ms,
+    default_start_on_login, default_transformation_auto, default_transformation_hotkey,
+    default_utterance_end_ms,
 };
 use super::file::{load_document, write_document_atomically};
 use super::prompts::{
@@ -54,7 +55,7 @@ fn write_ui_table(
         "start_on_login",
         &[],
         ui.start_on_login,
-        false,
+        default_start_on_login(),
         resets.contains("ui.start_on_login"),
     );
     set_defaulted_key(
@@ -300,23 +301,19 @@ mod tests {
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
         save_config, Config, DefaultResets, UiMeterStyle,
     };
-    use crate::config::test_support::{assert_example_config_values, EXAMPLE_CONFIG};
+    use crate::config::test_support::{
+        assert_example_config_values, TestDirectory, EXAMPLE_CONFIG,
+    };
 
     #[test]
     fn pills_meter_style_is_saved_and_read_as_pills() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-config-pills-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(&path, "[ui]\nmeter_style = \"animated-height\"\n").unwrap();
+        let directory = TestDirectory::with_config("[ui]\nmeter_style = \"animated-height\"\n");
+        let path = directory.config();
 
         let mut config = Config::default();
         config.ui.meter_style = UiMeterStyle::Pills;
         save_config(&path, &config, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert!(contents.contains("meter_style = \"pills\""), "{contents}");
         let read: Config = toml::from_str(&contents).unwrap();
@@ -325,24 +322,17 @@ mod tests {
 
     #[test]
     fn save_config_preserves_unknown_sections_and_comments() {
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-config-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(
-            &path,
-            concat!(
-                "# top comment\n",
-                "[ui]\n",
-                "# keep this comment\n",
-                "hotkey = \"F4\"\n",
-                "overlay_font_family = \"Menlo\"\n",
-                "\n",
-                "[custom]\n",
-                "keep_me = true\n"
-            ),
-        )
-        .unwrap();
+        let directory = TestDirectory::with_config(concat!(
+            "# top comment\n",
+            "[ui]\n",
+            "# keep this comment\n",
+            "hotkey = \"F4\"\n",
+            "overlay_font_family = \"Menlo\"\n",
+            "\n",
+            "[custom]\n",
+            "keep_me = true\n"
+        ));
+        let path = directory.config();
 
         let mut config = Config::default();
         config.ui.hotkey = "F5".to_owned();
@@ -370,18 +360,12 @@ mod tests {
 
     #[test]
     fn save_config_keeps_every_example_config_line_in_order_and_reparses() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-example-config-test-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
+        let directory = TestDirectory::with_config(EXAMPLE_CONFIG);
+        let path = directory.config();
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
         save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         // Every original line (comments, blank lines, headers, and unchanged
         // key/value lines) must survive in its original order.
@@ -401,16 +385,13 @@ mod tests {
 
     #[test]
     fn save_config_writes_keyterms_as_inline_string_array() {
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-keyterms-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         let mut config = Config::default();
         config.deepgram.keyterms = vec!["macOS".to_owned(), "GitHub".to_owned()];
         save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert!(
             updated_contents.contains("keyterms = [\"macOS\", \"GitHub\"]\n"),
@@ -424,22 +405,18 @@ mod tests {
     /// Saves `config` over a file holding `initial_contents` (no file when
     /// `None`) and returns the `[transformation]` table that was written.
     fn saved_transformation_table(
-        test_name: &str,
         initial_contents: Option<&str>,
         config: &Config,
         resets: DefaultResets,
     ) -> toml_edit::Table {
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-{}-{}", test_name, std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
         if let Some(initial_contents) = initial_contents {
             std::fs::write(&path, initial_contents).unwrap();
         }
 
         save_config(&path, config, &resets).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         toml::from_str::<Config>(&updated_contents).unwrap();
         // A [transformation] table whose keys all stay at their defaults is
@@ -458,31 +435,21 @@ mod tests {
 
     #[test]
     fn saving_the_default_config_to_a_new_file_writes_no_defaulted_key() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-defaults-everywhere-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert_eq!(contents.trim(), "", "a default config wrote:\n{contents}");
     }
 
     #[test]
     fn a_reset_key_the_file_has_is_removed_while_it_equals_its_default() {
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-reset-keys-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(
-            &path,
+        let directory = TestDirectory::with_config(
             "[ui]\nhotkey = \"F5\"\nstart_on_login = false\n[mic]\nhold_ms = 300 # mine\n",
-        )
-        .unwrap();
+        );
+        let path = directory.config();
         let mut config = Config::default();
         config.mic.hold_ms = 450;
 
@@ -493,7 +460,6 @@ mod tests {
         let resets = DefaultResets::from_iter(["ui.hotkey", "ui.start_on_login", "mic.hold_ms"]);
         save_config(&path, &config, &resets).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         // The two defaults go; the reset value the user then changed stays.
         assert_eq!(contents, "[ui]\n[mic]\nhold_ms = 450 # mine\n");
@@ -503,12 +469,8 @@ mod tests {
     /// reset, removes again.
     #[test]
     fn every_defaulted_key_is_written_when_changed_and_removed_when_reset() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-every-defaulted-key-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
         let mut changed = Config::default();
         changed.ui.start_on_login = true;
         changed.ui.auto_check_updates = false;
@@ -544,28 +506,22 @@ mod tests {
         let all_reset = DefaultResets::from_iter(every_key.iter().copied());
         save_config(&path, &Config::default(), &all_reset).unwrap();
         let remaining = super::defaulted_keys_in_file(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert!(remaining.is_empty(), "{remaining:?}");
     }
 
     #[test]
     fn a_missing_file_has_no_defaulted_keys() {
-        let path = std::env::temp_dir()
-            .join(format!("simple-ptt-missing-{}", std::process::id()))
-            .join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         assert!(super::defaulted_keys_in_file(&path).unwrap().is_empty());
     }
 
     #[test]
     fn save_config_writes_only_the_values_that_differ_from_their_defaults() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-changed-defaults-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
         let mut config = Config::default();
         config.mic.gain = 6.0;
         config.deepgram.endpointing_ms = 450;
@@ -575,7 +531,6 @@ mod tests {
             .unwrap()
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert_eq!(document["mic"].as_table().unwrap().len(), 1, "{document}");
         assert_eq!(document["mic"]["gain"].as_float(), Some(6.0));
@@ -622,27 +577,18 @@ mod tests {
             defaults.transformation.hotkey,
             defaults.transformation.auto,
         );
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-defaults-kept-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(&path, &initial_contents).unwrap();
+        let directory = TestDirectory::with_config(&initial_contents);
+        let path = directory.config();
 
         save_config(&path, &defaults, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
         assert_eq!(contents, initial_contents);
     }
 
     #[test]
     fn save_config_leaves_default_prompts_and_model_out_of_a_new_file() {
-        let table = saved_transformation_table(
-            "defaults-new-file",
-            None,
-            &Config::default(),
-            DefaultResets::default(),
-        );
+        let table = saved_transformation_table(None, &Config::default(), DefaultResets::default());
 
         for key in [
             "model",
@@ -658,12 +604,8 @@ mod tests {
     fn save_config_leaves_default_prompts_and_model_out_of_the_example_config() {
         let config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
 
-        let table = saved_transformation_table(
-            "defaults-example",
-            Some(EXAMPLE_CONFIG),
-            &config,
-            DefaultResets::default(),
-        );
+        let table =
+            saved_transformation_table(Some(EXAMPLE_CONFIG), &config, DefaultResets::default());
 
         for key in ["model", "system_prompt", "correction_system_prompt"] {
             assert!(!table.contains_key(key), "{key} was written:\n{table}");
@@ -675,13 +617,11 @@ mod tests {
         let mut config = Config::default();
         config.transformation.provider = Some("anthropic".to_owned());
         config.transformation.model = "claude-haiku-5-5".to_owned();
-        let table =
-            saved_transformation_table("provider-default", None, &config, DefaultResets::default());
+        let table = saved_transformation_table(None, &config, DefaultResets::default());
         assert!(!table.contains_key("model"), "model was written:\n{table}");
 
         config.transformation.model = "gpt-5.4-mini".to_owned();
-        let table =
-            saved_transformation_table("other-default", None, &config, DefaultResets::default());
+        let table = saved_transformation_table(None, &config, DefaultResets::default());
         assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
     }
 
@@ -692,8 +632,7 @@ mod tests {
         config.transformation.system_prompt = "Custom dictation prompt.".to_owned();
         config.transformation.correction_system_prompt = "Custom correction prompt.".to_owned();
 
-        let table =
-            saved_transformation_table("customized", None, &config, DefaultResets::default());
+        let table = saved_transformation_table(None, &config, DefaultResets::default());
 
         assert_eq!(table["model"].as_str(), Some("claude-test"));
         assert_eq!(
@@ -720,12 +659,8 @@ mod tests {
         config.transformation.provider = Some("openai".to_owned());
         config.transformation.model = "gpt-5.4-mini".to_owned();
 
-        let table = saved_transformation_table(
-            "defaults-present",
-            Some(&initial_contents),
-            &config,
-            DefaultResets::default(),
-        );
+        let table =
+            saved_transformation_table(Some(&initial_contents), &config, DefaultResets::default());
 
         assert_eq!(table["model"].as_str(), Some("gpt-5.4-mini"));
         assert_eq!(
@@ -748,7 +683,6 @@ mod tests {
         );
 
         let table = saved_transformation_table(
-            "reset-present",
             Some(initial_contents),
             &Config::default(),
             DefaultResets::from_iter([
@@ -774,7 +708,6 @@ mod tests {
         config.transformation.system_prompt = "Edited after reset.".to_owned();
 
         let table = saved_transformation_table(
-            "reset-edited",
             Some("[transformation]\nsystem_prompt = \"Old custom prompt.\"\n"),
             &config,
             DefaultResets::from_iter([
@@ -797,8 +730,7 @@ mod tests {
             format!("\n{}\n", default_transformation_system_prompt());
         config.transformation.correction_system_prompt = "  ".to_owned();
 
-        let table =
-            saved_transformation_table("defaults-padded", None, &config, DefaultResets::default());
+        let table = saved_transformation_table(None, &config, DefaultResets::default());
 
         assert!(!table.contains_key("system_prompt"), "{table}");
         assert!(!table.contains_key("correction_system_prompt"), "{table}");
@@ -811,7 +743,6 @@ mod tests {
         config.transformation.correction_system_prompt = " \n ".to_owned();
 
         let table = saved_transformation_table(
-            "blank-present",
             Some(concat!(
                 "[transformation]\n",
                 "system_prompt = \"Old custom dictation prompt.\"\n",
@@ -836,15 +767,12 @@ mod tests {
         assert!(config.ui.auto_check_updates);
 
         config.ui.auto_check_updates = false;
-        let temp_dir =
-            std::env::temp_dir().join(format!("simple-ptt-autocheck-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_dir).unwrap();
-        let path = temp_dir.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         save_config(&path, &config, &DefaultResets::default()).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("auto_check_updates = false"));
-        std::fs::remove_dir_all(&temp_dir).unwrap();
     }
 
     #[test]
@@ -853,14 +781,11 @@ mod tests {
         assert!(config.mic.always_on);
 
         config.mic.always_on = false;
-        let temp_directory =
-            std::env::temp_dir().join(format!("simple-ptt-always-on-test-{}", std::process::id()));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         save_config(&path, &config, &DefaultResets::default()).unwrap();
         let updated_contents = std::fs::read_to_string(&path).unwrap();
         assert!(updated_contents.contains("always_on = false"));
-        std::fs::remove_dir_all(&temp_directory).unwrap();
     }
 }

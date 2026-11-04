@@ -4,7 +4,8 @@ use super::defaults::{
     default_always_on, default_auto_check_updates, default_correction_key,
     default_deepgram_language, default_deepgram_model, default_endpointing_ms, default_gain,
     default_hold_ms, default_hotkey, default_overlay_font_size, default_sample_rate,
-    default_transformation_auto, default_transformation_hotkey, default_utterance_end_ms,
+    default_start_on_login, default_transformation_auto, default_transformation_hotkey,
+    default_utterance_end_ms,
 };
 use super::prompts::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
@@ -39,7 +40,7 @@ pub enum UiMeterStyle {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct UiConfig {
-    #[serde(default)]
+    #[serde(default = "default_start_on_login")]
     pub start_on_login: bool,
 
     #[serde(default = "default_auto_check_updates")]
@@ -66,8 +67,8 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            start_on_login: false,
-            auto_check_updates: true,
+            start_on_login: default_start_on_login(),
+            auto_check_updates: default_auto_check_updates(),
             hotkey: default_hotkey(),
             correction_key: default_correction_key(),
             font_name: None,

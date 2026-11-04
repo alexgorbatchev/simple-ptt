@@ -1,32 +1,5 @@
+use super::test_support::TestDirectory;
 use super::{save_config, Config, DefaultResets};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-struct ConfigFile {
-    directory: PathBuf,
-    path: PathBuf,
-}
-
-impl ConfigFile {
-    fn new(contents: &str) -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-        let directory = std::env::temp_dir().join(format!(
-            "simple-ptt-inline-config-{}-{}",
-            std::process::id(),
-            NEXT_ID.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&directory).unwrap();
-        let path = directory.join("config.toml");
-        std::fs::write(&path, contents).unwrap();
-        Self { directory, path }
-    }
-}
-
-impl Drop for ConfigFile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.directory);
-    }
-}
 
 fn save_inline_section(section: &str, fields: &str) {
     let contents = format!(
@@ -38,7 +11,8 @@ fn save_inline_section(section: &str, fields: &str) {
         section = section,
         fields = fields,
     );
-    let file = ConfigFile::new(&contents);
+    let directory = TestDirectory::with_config(&contents);
+    let path = directory.config();
     // The same deserializer used by load_config accepts the inline section.
     let mut config: Config = toml::from_str(&contents).unwrap();
     config.ui.hotkey = "F7".to_owned();
@@ -46,9 +20,9 @@ fn save_inline_section(section: &str, fields: &str) {
     config.deepgram.language = "fr".to_owned();
     config.transformation.auto = !config.transformation.auto;
 
-    save_config(&file.path, &config, &DefaultResets::default()).unwrap();
+    save_config(&path, &config, &DefaultResets::default()).unwrap();
 
-    let saved = std::fs::read_to_string(&file.path).unwrap();
+    let saved = std::fs::read_to_string(&path).unwrap();
     assert_eq!(toml::from_str::<Config>(&saved).unwrap(), config);
     let document = saved.parse::<toml_edit::DocumentMut>().unwrap();
     assert_eq!(document[section]["future"]["nested"].as_str(), Some("keep"));
@@ -89,11 +63,12 @@ fn non_table_managed_sections_return_errors_without_changing_the_file() {
     for section in ["ui", "mic", "deepgram", "transformation"] {
         for value in ["\"not a table\"", "42", "true", "[]"] {
             let contents = format!("{section} = {value}\n");
-            let file = ConfigFile::new(&contents);
+            let directory = TestDirectory::with_config(&contents);
+            let path = directory.config();
             let error =
-                save_config(&file.path, &Config::default(), &DefaultResets::default()).unwrap_err();
+                save_config(&path, &Config::default(), &DefaultResets::default()).unwrap_err();
             assert!(error.contains(section), "{section}: {error}");
-            assert_eq!(std::fs::read_to_string(&file.path).unwrap(), contents);
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
         }
     }
 }
@@ -102,10 +77,10 @@ fn non_table_managed_sections_return_errors_without_changing_the_file() {
 fn managed_arrays_of_tables_return_errors_without_changing_the_file() {
     for section in ["ui", "mic", "deepgram", "transformation"] {
         let contents = format!("[[{section}]]\ncustom = true\n");
-        let file = ConfigFile::new(&contents);
-        let error =
-            save_config(&file.path, &Config::default(), &DefaultResets::default()).unwrap_err();
+        let directory = TestDirectory::with_config(&contents);
+        let path = directory.config();
+        let error = save_config(&path, &Config::default(), &DefaultResets::default()).unwrap_err();
         assert!(error.contains(section), "{section}: {error}");
-        assert_eq!(std::fs::read_to_string(&file.path).unwrap(), contents);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), contents);
     }
 }

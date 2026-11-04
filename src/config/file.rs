@@ -155,20 +155,17 @@ impl ConfigFileSnapshot {
 #[cfg(test)]
 mod tests {
     use super::ConfigFileSnapshot;
-    use crate::config::test_support::EXAMPLE_CONFIG;
+    use crate::config::test_support::{TestDirectory, EXAMPLE_CONFIG};
     use crate::config::{save_config, Config, DefaultResets};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::path::Path;
 
     /// A failed apply restores the file byte for byte, so keys the file left
     /// out stay out instead of coming back as defaults.
     #[test]
     fn config_file_snapshot_restores_the_file_saved_over() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-snapshot-restore-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
-        std::fs::write(&path, EXAMPLE_CONFIG).unwrap();
+        let directory = TestDirectory::with_config(EXAMPLE_CONFIG);
+        let path = directory.config();
 
         let snapshot = ConfigFileSnapshot::take(&path).unwrap();
         let mut config: Config = toml::from_str(EXAMPLE_CONFIG).unwrap();
@@ -178,63 +175,22 @@ mod tests {
         assert_ne!(std::fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
 
         snapshot.restore().unwrap();
-        let restored_contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
-        assert_eq!(restored_contents, EXAMPLE_CONFIG);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE_CONFIG);
     }
 
     #[test]
     fn config_file_snapshot_of_a_missing_file_removes_the_saved_file() {
-        let temp_directory = std::env::temp_dir().join(format!(
-            "simple-ptt-snapshot-missing-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&temp_directory).unwrap();
-        let path = temp_directory.join("config.toml");
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
         let snapshot = ConfigFileSnapshot::take(&path).unwrap();
         save_config(&path, &Config::default(), &DefaultResets::default()).unwrap();
         assert!(path.exists());
 
         snapshot.restore().unwrap();
-        let file_exists = path.exists();
-        std::fs::remove_dir_all(&temp_directory).unwrap();
 
-        assert!(!file_exists);
-    }
-}
-
-#[cfg(test)]
-mod file_security_tests {
-    use crate::config::{save_config, Config, ConfigFileSnapshot, DefaultResets};
-    use std::os::unix::fs::{symlink, PermissionsExt};
-    use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    struct TestDirectory(PathBuf);
-
-    impl TestDirectory {
-        fn new() -> Self {
-            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "simple-ptt-config-security-{}-{}",
-                std::process::id(),
-                NEXT_ID.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-
-        fn config(&self) -> PathBuf {
-            self.0.join("config.toml")
-        }
-    }
-
-    impl Drop for TestDirectory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+        assert!(!path.exists());
     }
 
     fn mode(path: &Path) -> u32 {
@@ -244,9 +200,8 @@ mod file_security_tests {
     #[test]
     fn existing_config_permissions_survive_save_and_rollback() {
         for permissions in [0o600, 0o640] {
-            let directory = TestDirectory::new();
+            let directory = TestDirectory::with_config("# original\n");
             let path = directory.config();
-            std::fs::write(&path, "# original\n").unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions)).unwrap();
             let snapshot = ConfigFileSnapshot::take(&path).unwrap();
 
@@ -269,7 +224,7 @@ mod file_security_tests {
     #[test]
     fn relative_symlink_and_target_survive_save_and_rollback() {
         let directory = TestDirectory::new();
-        let target_directory = directory.0.join("private");
+        let target_directory = directory.path().join("private");
         std::fs::create_dir(&target_directory).unwrap();
         let target = target_directory.join("actual.toml");
         std::fs::write(&target, "# original\n").unwrap();
@@ -306,6 +261,6 @@ mod file_security_tests {
             std::fs::read_link(&path).unwrap(),
             Path::new("missing.toml")
         );
-        assert!(!directory.0.join("missing.toml").exists());
+        assert!(!directory.path().join("missing.toml").exists());
     }
 }

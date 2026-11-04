@@ -6,7 +6,7 @@ pub fn load_config() -> Config {
         Ok(path) => path,
         Err(error) => {
             log::warn!("failed to resolve config path: {}, using defaults", error);
-            return default_config();
+            return Config::default();
         }
     };
 
@@ -37,11 +37,11 @@ pub fn load_config() -> Config {
                 path.display(),
                 error
             );
-            default_config()
+            Config::default()
         }),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             log::info!("no config at {}, using defaults", path.display());
-            default_config()
+            Config::default()
         }
         Err(error) => {
             log::warn!(
@@ -49,11 +49,7 @@ pub fn load_config() -> Config {
                 path.display(),
                 error
             );
-            default_config()
+            Config::default()
         }
     }
-}
-
-fn default_config() -> Config {
-    Config::default()
 }

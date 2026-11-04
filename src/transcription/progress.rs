@@ -79,8 +79,8 @@ impl SessionProgress {
             .as_chunks::<2>()
             .0
             .iter()
-            .map(|bytes| {
-                let sample = i16::from_le_bytes([bytes[0], bytes[1]]) as f64 / 32768.0;
+            .map(|pair| {
+                let sample = i16::from_le_bytes(*pair) as f64 / 32768.0;
                 sample * sample
             })
             .sum::<f64>()

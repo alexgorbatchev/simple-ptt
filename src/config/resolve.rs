@@ -1,4 +1,4 @@
-use super::paths::{config_location_hint, config_path};
+use super::paths::config_location_hint;
 use super::prompts::{
     default_transformation_correction_system_prompt, default_transformation_system_prompt,
 };
@@ -61,14 +61,9 @@ impl Config {
             }
         }
 
-        let config_location_hint = match config_path() {
-            Ok(path) => format!("{}", path.display()),
-            Err(error) => error,
-        };
-
         Err(format!(
             "Deepgram API key is missing. Set deepgram.api_key in {} or export DEEPGRAM_API_KEY.",
-            config_location_hint
+            config_location_hint()
         ))
     }
 
@@ -94,9 +89,6 @@ impl Config {
         let api_key =
             resolve_transformation_api_key(self.transformation.api_key.as_deref(), provider);
 
-        let system_prompt = self.transformation.system_prompt.trim();
-        let correction_system_prompt = self.transformation.correction_system_prompt.trim();
-
         Ok(TransformationRuntimeConfig {
             provider,
             api_key,
@@ -104,16 +96,14 @@ impl Config {
                 self.transformation.ollama_base_url.as_deref(),
             ),
             model,
-            system_prompt: if system_prompt.is_empty() {
-                default_transformation_system_prompt()
-            } else {
-                system_prompt.to_owned()
-            },
-            correction_system_prompt: if correction_system_prompt.is_empty() {
-                default_transformation_correction_system_prompt()
-            } else {
-                correction_system_prompt.to_owned()
-            },
+            system_prompt: prompt_or_default(
+                self.transformation.system_prompt.trim(),
+                default_transformation_system_prompt,
+            ),
+            correction_system_prompt: prompt_or_default(
+                self.transformation.correction_system_prompt.trim(),
+                default_transformation_correction_system_prompt,
+            ),
         })
     }
 }
@@ -229,24 +219,25 @@ pub fn materialize_runtime_config(config: &Config) -> Config {
     {
         runtime_config.transformation.model = model;
     }
-    if runtime_config
-        .transformation
-        .system_prompt
-        .trim()
-        .is_empty()
-    {
-        runtime_config.transformation.system_prompt = default_transformation_system_prompt();
-    }
-    if runtime_config
-        .transformation
-        .correction_system_prompt
-        .trim()
-        .is_empty()
-    {
-        runtime_config.transformation.correction_system_prompt =
-            default_transformation_correction_system_prompt();
-    }
+    runtime_config.transformation.system_prompt = prompt_or_default(
+        &config.transformation.system_prompt,
+        default_transformation_system_prompt,
+    );
+    runtime_config.transformation.correction_system_prompt = prompt_or_default(
+        &config.transformation.correction_system_prompt,
+        default_transformation_correction_system_prompt,
+    );
     runtime_config
+}
+
+/// `configured` as given, or the built-in `default` when it is blank. Callers
+/// that send the prompt to a model pass it trimmed.
+fn prompt_or_default(configured: &str, default: fn() -> String) -> String {
+    if configured.trim().is_empty() {
+        default()
+    } else {
+        configured.to_owned()
+    }
 }
 
 #[cfg(test)]

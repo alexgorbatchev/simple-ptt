@@ -53,6 +53,10 @@ impl FromIterator<&'static str> for DefaultResets {
     }
 }
 
+pub(super) fn default_start_on_login() -> bool {
+    false
+}
+
 pub(super) fn default_auto_check_updates() -> bool {
     true
 }
