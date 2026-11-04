@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use self::platform::run_hotkey_event_loop;
 use crate::audio::NO_MICROPHONE_MESSAGE;
+use crate::config::Config;
 use crate::correction_binding::CorrectionBinding;
 use crate::hotkey_binding::{parse_hotkey_binding, HotkeyBinding, HotkeyModifiers};
 use crate::hotkey_capture::HotkeyCaptureController;
@@ -48,7 +49,44 @@ struct CurrentHotkeyConfig {
     mic_gain_problem: Option<String>,
     record_hotkey: Option<HotkeyBinding>,
     transform_hotkey: Option<HotkeyBinding>,
-    transformation_hotkey_enabled: bool,
+}
+
+/// The bindings in effect for a config; `None` is a binding that is off.
+/// The hotkey thread and the overlay's shortcut hint both read this, so the
+/// hint advertises only shortcuts that work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ActiveBindings {
+    pub record_hotkey: Option<HotkeyBinding>,
+    pub correction_key: Option<CorrectionBinding>,
+    pub transform_hotkey: Option<HotkeyBinding>,
+}
+
+impl ActiveBindings {
+    /// A binding that does not parse is off, and so is one that
+    /// `config::problems` reports as sharing keys with another: the
+    /// correction key when it overlaps the record hotkey, and the transform
+    /// hotkey when transformation does not resolve, when it equals the record
+    /// hotkey, or when it overlaps the configured correction key.
+    pub fn from_config(config: &Config) -> Self {
+        let record_hotkey = parse_hotkey_binding(&config.ui.hotkey).ok();
+        let configured_correction_key = parse_correction_key(config.ui.correction_key.as_str());
+        let correction_key = configured_correction_key
+            .filter(|key| !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey)));
+        let transform_hotkey = config
+            .resolve_transformation_config()
+            .ok()
+            .and_then(|_| parse_hotkey_binding(&config.transformation.hotkey).ok())
+            .filter(|transform_hotkey| {
+                Some(*transform_hotkey) != record_hotkey
+                    && !configured_correction_key.is_some_and(|key| key.overlaps(*transform_hotkey))
+            });
+
+        Self {
+            record_hotkey,
+            correction_key,
+            transform_hotkey,
+        }
+    }
 }
 
 /// What the hotkey thread remembers between key events.
@@ -318,11 +356,10 @@ fn handle_key_press(
         return false;
     }
 
-    if hotkey_config.transformation_hotkey_enabled
-        && hotkey_config
-            .transform_hotkey
-            .map(|binding| binding.matches_press(key, current_modifiers))
-            .unwrap_or(false)
+    if hotkey_config
+        .transform_hotkey
+        .map(|binding| binding.matches_press(key, current_modifiers))
+        .unwrap_or(false)
     {
         if transform_hotkey_is_down.replace(true) {
             return true;
@@ -458,11 +495,10 @@ fn handle_key_release(
         return true;
     }
 
-    if hotkey_config.transformation_hotkey_enabled
-        && hotkey_config
-            .transform_hotkey
-            .map(|binding| binding.matches_release(key))
-            .unwrap_or(false)
+    if hotkey_config
+        .transform_hotkey
+        .map(|binding| binding.matches_release(key))
+        .unwrap_or(false)
     {
         let was_down = transform_hotkey_is_down.replace(false);
         if !was_down {
@@ -497,24 +533,13 @@ fn handle_key_release(
     false
 }
 
-/// The bindings in effect. A binding `config::problems` reports as sharing
-/// keys with another is off: the correction key when it overlaps the record
-/// hotkey, and the transform hotkey when it equals the record hotkey or
-/// overlaps the correction key.
 fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig {
     let config = config_store.current();
-    let record_hotkey = parse_hotkey_binding(&config.ui.hotkey).ok();
-    let correction_key = parse_correction_key(config.ui.correction_key.as_str())
-        .filter(|key| !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey)));
-    let transform_hotkey = config
-        .resolve_transformation_config()
-        .ok()
-        .and_then(|_| parse_hotkey_binding(&config.transformation.hotkey).ok());
-    let transformation_hotkey_enabled = transform_hotkey.is_some_and(|transform_hotkey| {
-        Some(transform_hotkey) != record_hotkey
-            && !parse_correction_key(config.ui.correction_key.as_str())
-                .is_some_and(|key| key.overlaps(transform_hotkey))
-    });
+    let ActiveBindings {
+        record_hotkey,
+        correction_key,
+        transform_hotkey,
+    } = ActiveBindings::from_config(&config);
 
     CurrentHotkeyConfig {
         auto_transform_enabled: config.transformation.auto
@@ -529,7 +554,6 @@ fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig 
         correction_key,
         record_hotkey,
         transform_hotkey,
-        transformation_hotkey_enabled,
     }
 }
 
@@ -992,14 +1016,14 @@ mod tests {
         let mut config = crate::config::Config::default();
         config.transformation.provider = Some("openai".to_owned());
         config.transformation.api_key = Some("test-key".to_owned());
-        assert!(hotkey_config_for(config.clone()).transformation_hotkey_enabled);
+        assert!(hotkey_config_for(config.clone()).transform_hotkey.is_some());
 
         config.ui.correction_key = "F6".to_owned();
         config.transformation.hotkey = "Shift+F6".to_owned();
         let hotkey_config = hotkey_config_for(config);
 
         assert!(hotkey_config.correction_key.is_some());
-        assert!(!hotkey_config.transformation_hotkey_enabled);
+        assert_eq!(hotkey_config.transform_hotkey, None);
     }
 
     #[test]

@@ -32,6 +32,7 @@ use crate::correction_binding::CorrectionBinding;
 use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
 };
+use crate::hotkey::ActiveBindings;
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
     HotkeyCaptureTarget,
@@ -1592,21 +1593,18 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
         }
         Some(_) | None => 10.0,
     };
-    let transformation_hotkey = config
-        .resolve_transformation_config()
-        .ok()
-        .map(|_| config.transformation.hotkey.as_str());
-    let correction_key_label = correction_key_hint_label(config.ui.correction_key.as_str());
-    let shortcut_hint = Some(match transformation_hotkey {
-        Some(hotkey) => format!(
-            "<Hold {}> correction <{}> transform <{}> paste <Cmd+V> insert <ESC> cancel",
-            correction_key_label, hotkey, config.ui.hotkey
-        ),
-        None => format!(
-            "<Hold {}> correction <{}> paste <Cmd+V> insert <ESC> cancel",
-            correction_key_label, config.ui.hotkey
-        ),
-    });
+    let bindings = ActiveBindings::from_config(config);
+    let mut shortcuts = Vec::new();
+    if let Some(correction_key) = bindings.correction_key {
+        shortcuts.push(format!("<Hold {}> correction", correction_key.hint_label()));
+    }
+    if bindings.transform_hotkey.is_some() {
+        shortcuts.push(format!("<{}> transform", config.transformation.hotkey));
+    }
+    shortcuts.push(format!("<{}> paste", config.ui.hotkey));
+    shortcuts.push("<Cmd+V> insert".to_owned());
+    shortcuts.push("<ESC> cancel".to_owned());
+    let shortcut_hint = Some(shortcuts.join(" "));
 
     OverlayStyle {
         font_name: config.ui.font_name.clone(),
@@ -1645,12 +1643,6 @@ fn settings_deepgram_api_key_problem(resolved_key: Result<String, String>) -> Op
             labels::DEEPGRAM_API_KEY
         )
     })
-}
-
-fn correction_key_hint_label(raw: &str) -> String {
-    CorrectionBinding::parse(raw)
-        .map(CorrectionBinding::hint_label)
-        .unwrap_or_else(|_| raw.trim().to_owned())
 }
 
 fn make_hidden_main_menu(delegate: &AppDelegate, mtm: MainThreadMarker) -> Retained<NSMenu> {
@@ -2125,6 +2117,70 @@ mod tests {
         assert_eq!(
             style.shortcut_hint.as_deref(),
             Some("<Hold Alt> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    fn transformation_configured_config() -> Config {
+        let mut config = Config::default();
+        config.transformation.provider = Some("openai".to_owned());
+        config
+    }
+
+    #[test]
+    fn overlay_style_shows_every_shortcut_when_no_bindings_conflict() {
+        let mut config = transformation_configured_config();
+        config.ui.hotkey = "F7".to_owned();
+        config.ui.correction_key = "F8".to_owned();
+        config.transformation.hotkey = "Shift+F9".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some(
+                "<Hold F8> correction <Shift+F9> transform <F7> paste <Cmd+V> insert <ESC> cancel"
+            )
+        );
+    }
+
+    #[test]
+    fn overlay_style_omits_a_correction_key_that_overlaps_the_record_hotkey() {
+        let mut config = transformation_configured_config();
+        config.ui.hotkey = "Cmd+F5".to_owned();
+        config.ui.correction_key = "LeftMeta".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<F6> transform <Cmd+F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn overlay_style_omits_a_transform_hotkey_equal_to_the_record_hotkey() {
+        let mut config = transformation_configured_config();
+        config.transformation.hotkey = "F5".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<Hold Alt+Cmd> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn overlay_style_omits_a_transform_hotkey_that_overlaps_the_correction_key() {
+        let mut config = transformation_configured_config();
+        config.ui.correction_key = "F6".to_owned();
+        config.transformation.hotkey = "Shift+F6".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<Hold F6> correction <F5> paste <Cmd+V> insert <ESC> cancel")
         );
     }
 
