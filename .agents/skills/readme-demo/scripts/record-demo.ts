@@ -3,13 +3,16 @@
 //
 //   bun <skill>/scripts/record-demo.ts record
 //   bun <skill>/scripts/record-demo.ts encode
+//   bun <skill>/scripts/record-demo.ts check
 //
 // Run from the repository root. `record` temporarily wires the demo timeline
 // into the debug tuner, finds the overlay's screen rect with a dry run, records
 // it with screencapture, restores every source file it touched, and writes an
 // overview contact sheet. `encode` trims the recording from the overlay's pop
 // in to the end of its pop out and writes an H.264 MP4 at the overlay's
-// on-screen size, with contact sheets of its first and last frames.
+// on-screen size, with contact sheets of its first and last frames. `check`
+// wires the same code in, runs `cargo check`, and restores the sources, so CI
+// catches a change to the overlay that breaks the demo; it launches nothing.
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -148,14 +151,13 @@ async function contactSheet(video: string, name: string, seek: string[], filter:
   return sheet;
 }
 
-async function record() {
-  for (const tool of ["cargo", "ffmpeg", "ffprobe", "magick", "pgrep"]) {
-    if (!Bun.which(tool)) fail(`${tool} is not installed`);
-  }
+/// Wires the demo timeline and the view probe into the debug tuner, runs
+/// `body`, and restores every source file it touched, even on failure or
+/// Ctrl-C.
+async function withDemoWired(body: () => Promise<void>) {
   if (!existsSync(tunerPath)) fail("run from the simple-ptt repository root");
   if (existsSync(probePath)) fail(`${probePath} already exists; another probe is wired in, so stop and clear it first`);
   if (!existsSync(probeAsset)) fail(`missing ${probeAsset}`);
-  mkdirSync(outDir, { recursive: true });
 
   const tunerOriginal = await Bun.file(tunerPath).text();
   const modOriginal = await Bun.file(modPath).text();
@@ -181,7 +183,31 @@ async function record() {
     await Bun.write(tunerPath, replaceOnce(tunerOriginal, ANCHOR, block + ANCHOR, "the end of tuner::run in tuner.rs"));
     await Bun.write(modPath, replaceOnce(modOriginal, MOD_FROM, MOD_TO, "the tuner's mod line in mod.rs"));
     await Bun.write(probePath, Bun.file(probeAsset));
+    await body();
+  } finally {
+    restore();
+  }
+}
 
+async function check() {
+  if (!Bun.which("cargo")) fail("cargo is not installed");
+  await withDemoWired(async () => {
+    console.error("record-demo: checking the demo and view probe compile");
+    // The view probe is a toolkit and the demo uses only some of its helpers,
+    // so its dead-code lints are capped at warnings for this crate. Under CI's
+    // `RUSTFLAGS="-D warnings"` only compile errors fail; the product code is
+    // linted by the normal gates, and the dependencies keep their flags.
+    await must(["cargo", "rustc", "--locked", "--bin", "simple-ptt", "--profile", "check", "--", "--cap-lints", "warn"]);
+  });
+}
+
+async function record() {
+  for (const tool of ["cargo", "ffmpeg", "ffprobe", "magick", "pgrep"]) {
+    if (!Bun.which(tool)) fail(`${tool} is not installed`);
+  }
+  mkdirSync(outDir, { recursive: true });
+
+  await withDemoWired(async () => {
     console.error("record-demo: building");
     await must(["cargo", "build", "--locked"]);
 
@@ -201,9 +227,7 @@ async function record() {
       if (waited > 30_000) fail("screencapture is still running 30 s after the demo ended");
       await Bun.sleep(250);
     }
-  } finally {
-    restore();
-  }
+  });
 
   if (!existsSync(movPath)) fail("screencapture wrote no video; grant the terminal Screen Recording permission and retry");
   const info = await must(["ffprobe", "-v", "error", "-show_entries", "stream=width,height:format=duration", "-of", "compact", movPath]);
@@ -298,7 +322,8 @@ const [command] = process.argv.slice(2);
 try {
   if (command === "record") await record();
   else if (command === "encode") await encode();
-  else fail("usage: record-demo.ts record | encode");
+  else if (command === "check") await check();
+  else fail("usage: record-demo.ts record | encode | check");
 } catch (error) {
   if (!(error instanceof DemoError)) throw error;
   console.error(`record-demo: ${error.message}`);

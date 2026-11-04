@@ -4,7 +4,7 @@ description: Use when recording, re-recording, or updating the simple-ptt README
 author: alexgorbatchev
 metadata:
   created_on: 2026-10-02 16:15
-  last_modified: 2026-10-02 22:02
+  last_modified: 2026-11-04 14:33
   status: current
 ---
 
@@ -18,6 +18,7 @@ The demo is a scripted timeline (`assets/demo_block.rs`) that runs inside the de
   - GitHub plays a README video only from a `https://github.com/user-attachments/assets/<id>` link on a line of its own, which it renders as a collapsible player (controls, muted, no autoplay or loop). Tested on a branch: GitHub strips `<video>` tags from a README entirely, by relative path or by `raw` URL, and serves a committed `.mp4` as `application/octet-stream` with `nosniff` from `raw.githubusercontent.com`, which github.com's `media-src` policy does not allow.
   - A GIF has 256 colours and was 3–4 MB for an earlier demo; the MP4 is under 1 MB in full colour.
 - `encode` finds the trim in the video: from the last frame before the pop in to the first frame after the pop out, by comparing frames with the still background before and after. It refuses a recording whose background moved (pop in outside its expected window, or an overlay duration that disagrees with the timeline's). Then ask the user to keep the screen still (no scrolling output, animations, or a moving pointer behind the overlay) and record again. Do not trim by hand to get around it.
+- `scripts/record-demo.ts check` wires the same code in, runs `cargo check` on it, and restores the sources. It launches nothing, and CI runs it, so a change to the overlay that breaks `assets/demo_block.rs` or the view probe fails the pull request. Run it after editing either asset.
 - If the script stops with `expected one match for …` or the build fails, the tuner's code changed. Update `assets/demo_block.rs` or the anchors in `scripts/record-demo.ts`, then record again. Do not edit the tuner itself to make the script match.
 
 ## Workflow
