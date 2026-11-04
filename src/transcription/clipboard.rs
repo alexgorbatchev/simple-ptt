@@ -3,10 +3,10 @@ use std::ptr::NonNull;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use dispatch2::DispatchQueue;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
-use dispatch2::DispatchQueue;
 use objc2_foundation::{MainThreadMarker, NSString};
 
 use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE};
