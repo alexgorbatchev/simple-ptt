@@ -185,12 +185,17 @@ pub fn problems(config: &Config) -> Vec<ConfigProblem> {
         }
     }
 
+    // Only the ollama provider uses the server, and Settings edits it only
+    // while that provider is chosen.
+    let uses_ollama = configured_provider
+        .and_then(|provider| provider.parse::<TransformationProvider>().ok())
+        == Some(TransformationProvider::Ollama);
     if let Some(url) = config
         .transformation
         .ollama_base_url
         .as_deref()
         .map(str::trim)
-        .filter(|url| !url.is_empty())
+        .filter(|url| uses_ollama && !url.is_empty())
     {
         if let Err(error) = http_url(url) {
             problems.push(ConfigProblem::new(
@@ -372,6 +377,8 @@ mod tests {
     #[test]
     fn an_ollama_server_must_be_an_http_url() {
         let mut config = Config::default();
+        config.transformation.provider = Some("ollama".to_owned());
+        config.transformation.model = "llama3.2".to_owned();
         for url in ["http://ollama.lan:11434", "https://ollama.example.com/", "  "] {
             config.transformation.ollama_base_url = Some(url.to_owned());
             assert_eq!(keys(&config), Vec::<&str>::new(), "{url}");
@@ -384,6 +391,10 @@ mod tests {
         );
         config.transformation.ollama_base_url = Some("not a url".to_owned());
         assert_eq!(keys(&config), ["transformation.ollama_base_url"]);
+
+        // Another provider never uses the server, so it is not checked.
+        config.transformation.provider = Some("openai".to_owned());
+        assert_eq!(keys(&config), Vec::<&str>::new());
     }
 
     #[test]

@@ -80,7 +80,9 @@ impl TransformationProviderRequest {
     /// Where the request's models are listed.
     fn models_url(&self) -> String {
         match self.provider {
-            TransformationProvider::Ollama => format!("{}/api/tags", self.ollama_base_url),
+            TransformationProvider::Ollama => {
+                format!("{}{}", self.ollama_base_url, models_endpoint(self.provider).url)
+            }
             provider => models_endpoint(provider).url.to_owned(),
         }
     }
@@ -656,9 +658,9 @@ fn models_endpoint(provider: TransformationProvider) -> ModelsEndpoint {
         TransformationProvider::Mira => ("https://api.mira.network/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Mistral => ("https://api.mistral.ai/models", ModelsAuth::Bearer),
         TransformationProvider::Moonshot => ("https://api.moonshot.cn/v1/models", ModelsAuth::Bearer),
-        // `TransformationProviderRequest::models_url` puts in the configured
-        // server.
-        TransformationProvider::Ollama => ("http://localhost:11434/api/tags", ModelsAuth::OptionalBearer),
+        // A path on the configured server; see
+        // `TransformationProviderRequest::models_url`.
+        TransformationProvider::Ollama => ("/api/tags", ModelsAuth::OptionalBearer),
         TransformationProvider::Openai => ("https://api.openai.com/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Openrouter => ("https://openrouter.ai/api/v1/models", ModelsAuth::Bearer),
         TransformationProvider::Perplexity => ("https://api.perplexity.ai/models", ModelsAuth::Bearer),

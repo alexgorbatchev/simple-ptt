@@ -110,9 +110,11 @@ mod tests {
         config.mic.gain = 40.0;
         config.transformation.provider = Some("ollama".to_owned());
         config.transformation.hotkey = "Nope".to_owned();
-        config.transformation.ollama_base_url = Some("nope".to_owned());
         let mut keys: Vec<_> = problems(&config).iter().map(|problem| problem.key).collect();
         config.transformation.provider = Some("galadriel".to_owned());
+        keys.extend(problems(&config).iter().map(|problem| problem.key));
+        config.transformation.provider = Some("ollama".to_owned());
+        config.transformation.ollama_base_url = Some("nope".to_owned());
         keys.extend(problems(&config).iter().map(|problem| problem.key));
 
         for key in keys {
