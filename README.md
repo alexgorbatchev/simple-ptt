@@ -4,24 +4,15 @@ https://github.com/user-attachments/assets/bee52a5c-f207-4414-be92-f4aae5e65231
 
 A fast, minimal push-to-talk app for macOS with live Deepgram transcription and optional LLM cleanup before paste.
 
-`simple-ptt` is intentionally small: menu bar app, global hotkey, live on-screen transcript, fast paste into the currently focused app. In normal use it aims to stay around **35 MB of RAM**. The goal is not to be feature-rich. The goal is to stay fast, understandable, and out of the way.
+`simple-ptt` is intentionally small: a menu bar app, a global hotkey, a live on-screen transcript, and a fast paste into the app you are using. The goal is not to be feature-rich. The goal is to stay fast, understandable, and out of the way.
 
-## Quick start
+## What it does
 
-> [!IMPORTANT]
-> The bundled app is ad-hoc signed but **not notarized**. macOS will block it on first launch, run this to fix:
->
-> ```bash
-> xattr -dr com.apple.quarantine /Applications/simple-ptt.app
-> ```
-
-`simple-ptt` requires macOS 26 or later on Apple Silicon.
-
-Expect the usual macOS prompts for: **Microphone** and **Accessibility** for the global hotkey and synthetic paste workflow.
-
-## Deepgram Costs
-
-Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. As a rough example, **10 hours of speech-to-text should cost less than $5 USD**, which covers close to a month of personal usage for this workflow. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
+- Streams your speech to Deepgram while you hold or toggle a global hotkey, and shows the transcript live in an overlay you can edit.
+- Pastes the text into the focused app when you stop recording.
+- Optionally sends the transcript through an LLM first, to remove filler words, correct punctuation, and format technical terms.
+- With an LLM configured, applies spoken corrections ("make that five attempts") to the text you have dictated so far.
+- Boosts recognition of product names, jargon, and acronyms you list as Deepgram `keyterms`.
 
 ## How it works
 
@@ -49,11 +40,9 @@ Deepgram usage for this kind of developer push-to-talk workflow is usually cheap
 - **`Cmd+,` while the overlay is visible:** discard the dictation and open Settings without transforming or pasting it.
 - **`Cmd+V` while recording:** splice the current plain-text clipboard contents into the active transcript.
 
-### Microphones and Instant Recording
+### Microphones
 
-To make sure your voice is captured the exact millisecond you press the hotkey, `simple-ptt` keeps your microphone "warm" and ready in the background. 
-
-Starting up a microphone in macOS normally takes about a quarter of a second, which would cut off the first word or two of your dictation. Keeping it warm ensures a zero-delay experience at a tiny trade-off of around 1.0% to 1.5% CPU usage when the app is idle. To save that idle CPU at the cost of the startup delay, clear **Keep microphone connection open** in Settings > Microphone (`mic.always_on = false`); the microphone stream is then paused except while you record or while the Settings window is open.
+`simple-ptt` keeps the microphone stream open between recordings, so capture starts the moment you press the hotkey instead of after macOS starts the microphone, which can cut off the start of what you say. Keeping the stream open uses a little CPU while the app is idle. To give that up in exchange for the startup delay, clear **Keep microphone connection open** in Settings > Microphone (`mic.always_on = false`); the microphone stream is then paused except while you record or while the Settings window is open.
 
 When you plug in or remove a microphone, or switch the system default (for example by connecting AirPods), macOS notifies the app right away. While idle, it reopens the right input on the next status check (within about 75 ms), plus the time macOS takes to start a microphone; during a recording, it switches once the recording ends.
 
@@ -61,14 +50,31 @@ If the microphone in use disconnects, `simple-ptt` switches to the Mac's built-i
 
 If audio capture silently stops, the app detects the missing audio callbacks after 1.5 seconds and rebuilds the microphone connection. During recording, the overlay asks you to press the record shortcut again. An intentionally paused microphone does not trigger this recovery.
 
+## Installation
 
-## Features
+`simple-ptt` requires macOS 26 or later on Apple Silicon.
 
-### LLM text transformation
-Simple PTT can optionally send your dictation through an LLM to remove filler words, correct punctuation, and format technical terms before pasting.
+1. Download the `.dmg` from the [latest release](https://github.com/alexgorbatchev/simple-ptt/releases/latest).
+2. Open it and drag `simple-ptt.app` into **Applications**.
+3. Launch `simple-ptt` from Applications. It runs in the menu bar and has no Dock icon.
 
-### Deepgram Keyterms
-You can specify custom `keyterms` in the configuration to boost the transcription accuracy for specific vocabulary like product names, technical jargon, or acronyms.
+> [!IMPORTANT]
+> Releases up to v1.6.0 are ad-hoc signed and **not notarized**, so macOS blocks them on first launch. To open one, run:
+>
+> ```bash
+> xattr -dr com.apple.quarantine /Applications/simple-ptt.app
+> ```
+
+## Quick start
+
+1. **Grant permissions.** On first launch the **Application Permissions** window asks for three grants:
+   - **Accessibility**, to send the paste keystroke.
+   - **Input Monitoring**, for the global shortcuts. The app requests it on its own.
+   - **Microphone**, to capture audio.
+
+   Use the window's buttons to request each one, then click **Re-check**. When the window shows **Quit and Reopen**, click it: the global shortcuts start working only after the app restarts with the new grants. You can reopen the window from the menu bar with **Application Permissions…**.
+2. **Add your Deepgram API key.** Settings opens when the app has no Deepgram key. Select the **Deepgram** pane, enter the key, and click **Save**. See [Deepgram costs](#deepgram-costs) for what usage costs.
+3. **Dictate.** Click into any text field, tap `F5`, speak, and tap `F5` again. The transcript is pasted where you clicked.
 
 ## Configuration
 
@@ -80,14 +86,24 @@ You can specify custom `keyterms` in the configuration to boost the transcriptio
 
 If no config file is found, defaults are used where possible and the app opens **Settings** so you can create one. For normal app launches, `~/.config/simple-ptt/config.toml` is the correct default.
 
-**Settings** groups the options into toolbar panes: **General** (dictation shortcut, the hold threshold that separates a tap from hold-to-talk, correction key, overlay font and meter, updates, start on login), **Microphone** (input device, sample rate, gain in dB with a live meter, keep microphone connection open), **Deepgram** (API key, language, keyterms, model, endpointing, utterance end), and **Transformation** (transform shortcut, auto-transform, provider, API key, Ollama server, model, and editors for the dictation and correction prompts, which are sent only to the transformation model). Choosing a transformation provider fills the model list from the model cache (`transformation-models.toml` in `$XDG_CACHE_HOME/simple-ptt`, by default `~/.cache/simple-ptt`), or fetches the provider's models when none are cached for that provider and API key. Providers other than Ollama and Hugging Face need their API key, in the field or its environment variable, before their models can be fetched. Ollama uses the **Ollama server** field (`transformation.ollama_base_url`, the local server when blank) for both the model list and transformations, and sends the API key to it when one is set. The API key field is shared by every provider, so a key typed there is sent automatically only when it is the key saved for the selected provider; otherwise enter that provider's key and click **Fetch models**. **Fetch models** reloads the list, and **Check** tests the connection. A blank model field uses the provider's built-in default model, which it shows as a placeholder; OpenAI, Anthropic, and Gemini have one, and every other provider needs a model. **Save** writes every pane to the config file. Each setting is written only when it differs from its built-in default (for the transformation model, the selected provider's default), so a config that leaves it out picks up improved defaults in later releases; a key the file already has is kept even when it matches the default, and Save keeps the comment after any key it rewrites. A text, number, or shortcut field that follows its default is blank and shows the default in grey; a row whose value is written in `config.toml` has a **Reset** button that puts the default back and removes the key on Save. **Reset to Default** above each prompt editor in the Transformation pane puts the built-in prompt back; saving it without further edits removes that prompt from the config file even if the file had it. If the audio input devices can't be listed, or `mic.gain` is outside the slider's 0 to 10 dB range, Settings still loads every pane and explains the problem in its status area, naming each field as *Pane > Label*; the configured device stays selected, and **Save** writes the gain the slider shows. Choosing **Settings…** brings its window to the front and gives it keyboard focus.
+### Settings
+
+**Settings** groups the options into toolbar panes:
+
+- **General**: dictation shortcut, the hold threshold that separates a tap from hold-to-talk, correction key, overlay font and meter, updates, and start on login.
+- **Microphone**: input device, sample rate, gain in dB with a live meter, and keep microphone connection open.
+- **Deepgram**: API key, language, keyterms, model, endpointing, and utterance end.
+- **Transformation**: transform shortcut, auto-transform, provider, API key, Ollama server, model, and editors for the dictation prompt (`transformation.system_prompt`), which cleans up or rewrites dictated text, and the correction prompt (`transformation.correction_system_prompt`), which receives the current annotation together with the spoken correction request. Both prompts go only to the transformation model.
+
+Choosing a transformation provider fills the model list from the model cache (`transformation-models.toml` in `$XDG_CACHE_HOME/simple-ptt`, by default `~/.cache/simple-ptt`), or fetches the provider's models when none are cached for that provider and API key. Providers other than Ollama and Hugging Face need their API key, in the field or its environment variable, before their models can be fetched. Ollama uses the **Ollama server** field (`transformation.ollama_base_url`, the local server when blank) for both the model list and transformations, and sends the API key to it when one is set. The API key field is shared by every provider, so a key typed there is sent automatically only when it is the key saved for the selected provider; otherwise enter that provider's key and click **Fetch models**. **Fetch models** reloads the list, and **Check** tests the connection. A blank model field uses the provider's built-in default model, which it shows as a placeholder; OpenAI, Anthropic, and Gemini have one, and every other provider needs a model.
+
+**Save** writes every pane to the config file. Each setting is written only when it differs from its built-in default (for the transformation model, the selected provider's default), so a config that leaves it out picks up improved defaults in later releases; a key the file already has is kept even when it matches the default, and Save keeps the comment after any key it rewrites. A text, number, or shortcut field that follows its default is blank and shows the default in grey; a row whose value is written in `config.toml` has a **Reset** button that puts the default back and removes the key on Save. **Reset to Default** above each prompt editor in the Transformation pane puts the built-in prompt back; saving it without further edits removes that prompt from the config file even if the file had it.
+
+If the audio input devices can't be listed, or `mic.gain` is outside the slider's 0 to 10 dB range, Settings still loads every pane and explains the problem in its status area, naming each field as *Pane > Label*; the configured device stays selected, and **Save** writes the gain the slider shows. Choosing **Settings…** brings its window to the front and gives it keyboard focus.
+
+### Correction key
 
 The correction interrupt is configured separately from the record and transform hotkeys via `ui.correction_key`. It accepts a specific key such as `LeftAlt`, `RightAlt`, `F7`, or `LeftMeta`, or a modifier-only chord such as the default `Alt+Cmd` (Option+Command on macOS). Modifier chords accept either side of the keyboard and either press order; release either modifier to apply the correction. The shortcut must not overlap with the record or transform triggers. Command alone remains available for `Cmd+C` and `Cmd+V`. Existing explicit bindings are retained; change **Correction key** in Settings > General to choose another shortcut.
-
-Transformation uses two separate prompts:
-
-- `transformation.system_prompt` for normal cleanup or rewrite of dictated text.
-- `transformation.correction_system_prompt` for correction mode, where the model receives both the current annotation and the spoken correction request.
 
 ### Minimal config
 
@@ -100,25 +116,13 @@ api_key = "YOUR_DEEPGRAM_API_KEY"
 
 Replace `YOUR_DEEPGRAM_API_KEY` with your Deepgram API key. A non-empty `deepgram.api_key` takes precedence over the `DEEPGRAM_API_KEY` environment variable, which simple-ptt reads only when the key is omitted or empty. Apps opened from Finder or the Dock don't reliably inherit shell environment variables, so keep the key in the config file for normal launches.
 
+## Deepgram costs
+
+Deepgram usage for this kind of developer push-to-talk workflow is usually cheap. As a rough example, **10 hours of speech-to-text should cost less than $5 USD**, which covers close to a month of personal usage for this workflow. Actual cost depends on how long you dictate, which Deepgram plan you are on, which model you use, and Deepgram's current pricing. Check the official [Deepgram pricing page](https://deepgram.com/pricing) before treating that number as current.
+
 ## Development
 
-For the repo-local development config (`./config.toml`, gitignored; `just setup` creates it from `config.example.toml` when it is missing):
-
-```bash
-just run
-```
-
-Useful helper targets:
-
-```bash
-just run-config path/to/config.toml
-just run-xdg
-just bundle-release
-just bundle-dmg
-just install-app
-just start
-just list-devices
-```
+Build, test, and packaging commands are in [AGENTS.md](./AGENTS.md).
 
 ## License
 
