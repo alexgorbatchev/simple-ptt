@@ -1,6 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::num::NonZeroU64;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use sha2::{Digest, Sha256};
 
@@ -88,12 +89,51 @@ pub struct MicMeterSnapshot {
     pub mic_active: bool,
 }
 
+/// Identifies one recording: a dictation the record hotkey starts, together
+/// with the buffer, corrections, and transformations that continue it.
+/// Generations only increase.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct RecordingGeneration(NonZeroU64);
+
+impl RecordingGeneration {
+    /// The recording the app starts with, before the record hotkey starts one.
+    pub const FIRST: Self = Self(NonZeroU64::MIN);
+
+    fn next(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("recording generations outlast the app"),
+        )
+    }
+}
+
+/// What starting a recording published.
+#[derive(Debug)]
+pub struct RecordingStart {
+    pub generation: RecordingGeneration,
+    /// The editable annotation the recording continues; empty unless it
+    /// resumes a ready buffer.
+    pub prefix: String,
+}
+
+/// Holds the current recording while a cancelled one is settled, so a
+/// recording cannot start until the settlement's writes are done.
+pub struct CurrentRecording<'a> {
+    _recording: MutexGuard<'a, RecordingGeneration>,
+}
+
 #[derive(Debug)]
 pub struct AppState {
     /// Paste sequences started; tests count them instead of pasting.
     #[cfg(test)]
     paste_attempts: AtomicU32,
-    abort_requested: AtomicBool,
+    /// The recording the overlay and state belong to. Starting a recording
+    /// and settling a cancelled one both hold this lock.
+    recording: Mutex<RecordingGeneration>,
+    /// The generation of the recording an abort was requested for, or 0 when
+    /// none is pending.
+    abort_requested: AtomicU64,
     abort_notification: tokio::sync::Notify,
     deepgram_waiting: AtomicBool,
     clip_event_counter: AtomicU32,
@@ -143,7 +183,8 @@ impl AppState {
         Arc::new(Self {
             #[cfg(test)]
             paste_attempts: AtomicU32::new(0),
-            abort_requested: AtomicBool::new(false),
+            recording: Mutex::new(RecordingGeneration::FIRST),
+            abort_requested: AtomicU64::new(0),
             abort_notification: tokio::sync::Notify::new(),
             deepgram_waiting: AtomicBool::new(false),
             clip_event_counter: AtomicU32::new(0),
@@ -271,17 +312,64 @@ impl AppState {
         self.state.load(Ordering::Relaxed)
     }
 
+    /// Starts a new recording: captures the editable annotation it continues,
+    /// then publishes `STATE_RECORDING` under a new generation. The worker
+    /// may receive the start command afterwards, so the annotation is read
+    /// first. A cancelled recording's settlement holds the same lock, so it
+    /// either finishes first or sees that this recording replaced it.
+    pub fn begin_recording(&self) -> RecordingStart {
+        let mut recording = self.lock_recording();
+        let prefix = if self.get_state() == STATE_BUFFER_READY {
+            self.overlay_text().to_string()
+        } else {
+            String::new()
+        };
+        *recording = recording.next();
+        self.set_state(STATE_RECORDING);
+        RecordingStart {
+            generation: *recording,
+            prefix,
+        }
+    }
+
+    pub fn recording_generation(&self) -> RecordingGeneration {
+        *self.lock_recording()
+    }
+
+    /// Holds the recording while `generation` is still the current one, so
+    /// its settlement can write the state and overlay without overwriting a
+    /// recording started after it. `None` means a newer recording owns them.
+    /// Neither start a recording nor request an abort while holding it.
+    pub fn current_recording(
+        &self,
+        generation: RecordingGeneration,
+    ) -> Option<CurrentRecording<'_>> {
+        let recording = self.lock_recording();
+        (*recording == generation).then_some(CurrentRecording {
+            _recording: recording,
+        })
+    }
+
+    fn lock_recording(&self) -> MutexGuard<'_, RecordingGeneration> {
+        // The generation stays valid if a holder panicked.
+        self.recording
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Requests an abort of the current recording's work in progress.
     pub fn request_abort(&self) {
-        self.abort_requested.store(true, Ordering::Release);
+        let generation = self.recording_generation();
+        self.abort_requested
+            .fetch_max(generation.0.get(), Ordering::AcqRel);
         self.abort_notification.notify_waiters();
     }
 
-    pub fn clear_abort_request(&self) {
-        self.abort_requested.store(false, Ordering::Relaxed);
-    }
-
+    /// Whether an abort is pending. Running sessions and transformations stop
+    /// for any pending abort: a recording only starts once the previous one
+    /// has stopped capturing, so the work still running is what it cancels.
     pub fn is_abort_requested(&self) -> bool {
-        self.abort_requested.load(Ordering::Acquire)
+        self.abort_requested.load(Ordering::Acquire) != 0
     }
 
     /// Waits without polling, including a request made before this wait.
@@ -304,8 +392,32 @@ impl AppState {
         self.deepgram_waiting.load(Ordering::Relaxed)
     }
 
-    pub fn consume_abort_request(&self) -> bool {
-        self.abort_requested.swap(false, Ordering::Relaxed)
+    /// Settles a pending abort for the work of the recording `generation`,
+    /// returning whether that work is cancelled. An abort requested for it
+    /// is used up. One requested for a later recording also cancels it, and
+    /// stays pending for that recording to settle. One requested for an
+    /// earlier recording that nothing settled is dropped without cancelling
+    /// this one.
+    pub fn consume_abort_request(&self, generation: RecordingGeneration) -> bool {
+        let generation = generation.0.get();
+        let mut requested = self.abort_requested.load(Ordering::Acquire);
+        loop {
+            if requested == 0 {
+                return false;
+            }
+            if requested > generation {
+                return true;
+            }
+            match self.abort_requested.compare_exchange_weak(
+                requested,
+                0,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return requested == generation,
+                Err(current) => requested = current,
+            }
+        }
     }
 
     pub fn dismiss_overlay(&self) {
@@ -827,6 +939,66 @@ mod tests {
 
         state.set_live_overlay_text("hello", Some(9));
         assert_eq!(state.overlay_text_snapshot().provisional_start, None);
+    }
+
+    #[test]
+    fn an_abort_cancels_the_recording_it_was_requested_for_once() {
+        let state = AppState::new();
+        let recording = state.begin_recording().generation;
+        state.request_abort();
+
+        assert!(state.consume_abort_request(recording));
+        assert!(!state.is_abort_requested());
+        assert!(!state.consume_abort_request(recording));
+    }
+
+    #[test]
+    fn an_unsettled_abort_of_an_earlier_recording_does_not_cancel_the_next() {
+        let state = AppState::new();
+        let earlier = state.begin_recording().generation;
+        state.request_abort();
+        let next = state.begin_recording().generation;
+        assert!(next > earlier);
+
+        assert!(!state.consume_abort_request(next));
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn an_abort_of_a_later_recording_cancels_earlier_work_and_waits_for_its_own() {
+        let state = AppState::new();
+        let earlier = state.begin_recording().generation;
+        let later = state.begin_recording().generation;
+        state.request_abort();
+
+        assert!(state.consume_abort_request(earlier));
+        assert!(state.is_abort_requested());
+        assert!(state.consume_abort_request(later));
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn only_the_current_recording_owns_the_presentation() {
+        let state = AppState::new();
+        let earlier = state.recording_generation();
+        assert!(state.current_recording(earlier).is_some());
+
+        let start = state.begin_recording();
+
+        assert_eq!(state.get_state(), STATE_RECORDING);
+        assert!(state.current_recording(earlier).is_none());
+        assert!(state.current_recording(start.generation).is_some());
+    }
+
+    #[test]
+    fn starting_a_recording_resumes_only_a_ready_buffer() {
+        let state = AppState::new();
+        state.set_overlay_text("The ready buffer.");
+        state.set_state(STATE_BUFFER_READY);
+        assert_eq!(state.begin_recording().prefix, "The ready buffer.");
+
+        state.set_state(STATE_IDLE);
+        assert!(state.begin_recording().prefix.is_empty());
     }
 
     #[test]

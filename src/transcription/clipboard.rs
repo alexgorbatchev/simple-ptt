@@ -9,7 +9,7 @@ use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
 use objc2_foundation::{MainThreadMarker, NSString};
 
-use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE};
+use crate::state::{AppState, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE};
 
 const COMMAND_FLAGGED_V_KEYCODE: u16 = 9;
 const KEY_EVENT_DELAY_MS: u64 = 20;
@@ -54,15 +54,23 @@ pub fn describe_paste_diagnostics(diagnostics: &PasteDiagnostics) -> String {
     )
 }
 
-pub fn flush_buffered_text_or_paste(state: &AppState, buffered_text: &mut String, paste: bool) {
-    if state.consume_abort_request() {
+/// `generation` is the recording the buffered text belongs to.
+pub fn flush_buffered_text_or_paste(
+    state: &AppState,
+    generation: RecordingGeneration,
+    buffered_text: &mut String,
+    paste: bool,
+) {
+    if state.consume_abort_request(generation) {
         log::info!("discarding buffered text because abort was requested");
         buffered_text.clear();
-        state.clear_overlay_text();
-        state.clear_overlay_correction_text();
-        state.set_overlay_correction_active(false);
-        state.set_overlay_text_opacity(1.0);
-        state.set_state(STATE_IDLE);
+        if let Some(_recording) = state.current_recording(generation) {
+            state.clear_overlay_text();
+            state.clear_overlay_correction_text();
+            state.set_overlay_correction_active(false);
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_IDLE);
+        }
         return;
     }
 
@@ -85,11 +93,12 @@ pub fn flush_buffered_text_or_paste(state: &AppState, buffered_text: &mut String
     match run_paste_sequence(state, buffered_text.as_str()) {
         Ok(()) => {
             buffered_text.clear();
-            state.clear_abort_request();
+            // An abort requested while the paste ran has nothing left to cancel.
+            state.consume_abort_request(generation);
             log::info!("buffer pasted successfully");
         }
         Err(error) => {
-            if state.consume_abort_request() {
+            if state.consume_abort_request(generation) {
                 log::info!("discarding buffered text because abort was requested during paste");
                 buffered_text.clear();
                 return;

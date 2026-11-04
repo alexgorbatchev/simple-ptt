@@ -10,14 +10,17 @@ pub use text_builder::*;
 
 use bytes::Bytes;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
 use tokio::runtime::Runtime;
 
 use crate::config::{Config, DeepgramConfig};
 use crate::settings::LiveConfigStore;
-use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING};
+use crate::state::{
+    AppState, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING,
+    STATE_TRANSFORMING,
+};
 use crate::transformation::{
     transform_text, TransformationPreviewMode, TransformationRuntimeConfig,
 };
@@ -27,8 +30,11 @@ const DEFAULT_SAMPLE_RATE: u32 = 16000;
 
 enum Command {
     SetSampleRate(u32),
+    /// Starts the recording `generation`. Every command queued after it
+    /// belongs to that recording, until the next start.
     StartSession {
         recording_prefix: String,
+        generation: RecordingGeneration,
     },
     StartCorrectionSession,
     PushAudio(Bytes),
@@ -68,16 +74,12 @@ impl TranscriptionController {
     }
 
     pub fn start_session(&self, state: &AppState) -> Result<(), String> {
-        // Capture the editable annotation before the hotkey changes the state
-        // to recording; the worker may receive this command afterwards.
-        let recording_prefix = if state.get_state() == STATE_BUFFER_READY {
-            state.overlay_text().to_string()
-        } else {
-            String::new()
-        };
-        state.set_state(STATE_RECORDING);
+        let start = state.begin_recording();
         self.command_tx
-            .send(Command::StartSession { recording_prefix })
+            .send(Command::StartSession {
+                recording_prefix: start.prefix,
+                generation: start.generation,
+            })
             .map_err(|_| "transcription worker thread is not running".to_owned())
     }
 
@@ -145,6 +147,16 @@ pub fn spawn_transcription_thread(
     config_store: LiveConfigStore,
 ) -> TranscriptionController {
     let (command_tx, command_rx) = channel();
+    spawn_worker(state, config_store, command_rx);
+    TranscriptionController { command_tx }
+}
+
+/// Runs the worker until every sender of `command_rx` is gone.
+fn spawn_worker(
+    state: Arc<AppState>,
+    config_store: LiveConfigStore,
+    command_rx: Receiver<Command>,
+) -> thread::JoinHandle<()> {
     let worker_sample_rate = Arc::new(AtomicU32::new(DEFAULT_SAMPLE_RATE));
     let thread_worker_sample_rate = Arc::clone(&worker_sample_rate);
 
@@ -166,6 +178,8 @@ pub fn spawn_transcription_thread(
         let mut buffered_text = String::new();
         let mut resume_after_correction = false;
         let mut transformation_history = TransformationHistory::default();
+        // The recording the commands being handled belong to.
+        let mut generation = RecordingGeneration::FIRST;
 
         while let Ok(command) = command_rx.recv() {
             match command {
@@ -174,19 +188,22 @@ pub fn spawn_transcription_thread(
                 }
                 Command::StartSession {
                     recording_prefix: requested_prefix,
+                    generation: requested_generation,
                 } => {
                     if let Some(old_session) = active_session.take() {
                         log::info!(
                             "cleaning up previous active session before starting new session"
                         );
-                        if matches!(finish_session(old_session, &state), Ok(None)) {
+                        // A cancellation of the earlier recording settles
+                        // only that one; this start checks its own below.
+                        if matches!(finish_session(old_session, &state, generation), Ok(None)) {
                             buffered_text.clear();
                             recording_prefix.clear();
                             resume_after_correction = false;
-                            continue;
                         }
                     }
 
+                    generation = requested_generation;
                     recording_prefix = requested_prefix;
                     transformation_history.begin_dictation(&recording_prefix);
 
@@ -203,14 +220,16 @@ pub fn spawn_transcription_thread(
                     let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
                     // Skipping the start uses the abort up; left set, it would
                     // skip every later start too.
-                    if state.consume_abort_request() {
+                    if state.consume_abort_request(generation) {
                         log::info!(
                             "skipping dictation start because abort was requested before startup completed"
                         );
                         recording_prefix.clear();
-                        state.clear_overlay_text();
-                        state.set_overlay_text_opacity(1.0);
-                        state.set_state(STATE_IDLE);
+                        if let Some(_recording) = state.current_recording(generation) {
+                            state.clear_overlay_text();
+                            state.set_overlay_text_opacity(1.0);
+                            state.set_state(STATE_IDLE);
+                        }
                         continue;
                     }
 
@@ -232,6 +251,7 @@ pub fn spawn_transcription_thread(
                         Err(SessionError::Cancelled) => {
                             complete_session_cancellation(
                                 &state,
+                                generation,
                                 &mut buffered_text,
                                 SessionKind::Dictation,
                             );
@@ -252,7 +272,7 @@ pub fn spawn_transcription_thread(
                         .unwrap_or(false);
 
                     if let Some(session) = active_session.take() {
-                        match finish_session(session, &state) {
+                        match finish_session(session, &state, generation) {
                             Ok(None) => {
                                 buffered_text.clear();
                                 recording_prefix.clear();
@@ -293,14 +313,16 @@ pub fn spawn_transcription_thread(
 
                     let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
                     // As for the dictation start: skipping uses the abort up.
-                    if state.consume_abort_request() {
+                    if state.consume_abort_request(generation) {
                         log::info!(
                             "skipping correction start because abort was requested before startup completed"
                         );
-                        state.clear_overlay_correction_text();
-                        state.set_overlay_correction_active(false);
-                        state.set_overlay_text_opacity(1.0);
-                        state.set_state(STATE_BUFFER_READY);
+                        if let Some(_recording) = state.current_recording(generation) {
+                            state.clear_overlay_correction_text();
+                            state.set_overlay_correction_active(false);
+                            state.set_overlay_text_opacity(1.0);
+                            state.set_state(STATE_BUFFER_READY);
+                        }
                         continue;
                     }
 
@@ -336,6 +358,7 @@ pub fn spawn_transcription_thread(
                         Err(SessionError::Cancelled) => {
                             complete_session_cancellation(
                                 &state,
+                                generation,
                                 &mut buffered_text,
                                 SessionKind::Correction,
                             );
@@ -358,7 +381,7 @@ pub fn spawn_transcription_thread(
                                 let session = active_session
                                     .take()
                                     .expect("the closed queue belongs to the active session");
-                                match finish_session(session, &state) {
+                                match finish_session(session, &state, generation) {
                                     Ok(None) => {
                                         buffered_text.clear();
                                         recording_prefix.clear();
@@ -374,7 +397,7 @@ pub fn spawn_transcription_thread(
                 }
                 Command::StopSessionAndPaste => {
                     if let Some(session) = active_session.take() {
-                        match finish_session(session, &state) {
+                        match finish_session(session, &state, generation) {
                             Ok(None) => {
                                 buffered_text.clear();
                                 recording_prefix.clear();
@@ -383,7 +406,12 @@ pub fn spawn_transcription_thread(
                             }
                             Ok(Some(text)) => {
                                 buffered_text = text;
-                                flush_buffered_text_or_paste(&state, &mut buffered_text, true);
+                                flush_buffered_text_or_paste(
+                                    &state,
+                                    generation,
+                                    &mut buffered_text,
+                                    true,
+                                );
                             }
                             Err(error) => {
                                 log::error!("Deepgram session failed: {}", error);
@@ -415,7 +443,7 @@ pub fn spawn_transcription_thread(
                     let was_recording = state.is_recording();
                     if was_recording {
                         if let Some(session) = active_session.take() {
-                            match finish_session(session, &state) {
+                            match finish_session(session, &state, generation) {
                                 Ok(None) => {
                                     buffered_text.clear();
                                     recording_prefix.clear();
@@ -484,6 +512,7 @@ pub fn spawn_transcription_thread(
                             Err(SessionError::Cancelled) => {
                                 complete_session_cancellation(
                                     &state,
+                                    generation,
                                     &mut buffered_text,
                                     SessionKind::Dictation,
                                 );
@@ -513,7 +542,7 @@ pub fn spawn_transcription_thread(
                     // correction connection failed and there is no session.
                     let _resuming = ResumingDictation::new(&state, should_resume_after_correction);
                     if let Some(session) = active_session.take() {
-                        let correction_request = match finish_session(session, &state) {
+                        let correction_request = match finish_session(session, &state, generation) {
                             Ok(None) => {
                                 buffered_text.clear();
                                 recording_prefix.clear();
@@ -536,6 +565,7 @@ pub fn spawn_transcription_thread(
                         match apply_correction_request(
                             &runtime,
                             &state,
+                            generation,
                             &current_config,
                             &mut buffered_text,
                             &correction_request,
@@ -574,6 +604,7 @@ pub fn spawn_transcription_thread(
                                     Err(SessionError::Cancelled) => {
                                         complete_session_cancellation(
                                             &state,
+                                            generation,
                                             &mut buffered_text,
                                             SessionKind::Dictation,
                                         );
@@ -599,7 +630,7 @@ pub fn spawn_transcription_thread(
                 }
                 Command::StopSessionAndTransformAndPaste => {
                     if let Some(session) = active_session.take() {
-                        match finish_session(session, &state) {
+                        match finish_session(session, &state, generation) {
                             Ok(None) => {
                                 buffered_text.clear();
                                 recording_prefix.clear();
@@ -615,14 +646,16 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                if state.consume_abort_request() {
+                                if state.consume_abort_request(generation) {
                                     log::info!(
                                         "discarding transformation because abort was requested"
                                     );
                                     buffered_text.clear();
-                                    state.clear_overlay_text();
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.set_state(STATE_IDLE);
+                                    if let Some(_recording) = state.current_recording(generation) {
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                    }
                                     continue;
                                 }
 
@@ -640,6 +673,7 @@ pub fn spawn_transcription_thread(
                                 if let Some(transformation_config) = transformation_config {
                                     match runtime.block_on(transformation_history.finish_automatic(
                                         &state,
+                                        generation,
                                         &buffered_text,
                                         async {
                                             state.set_state(STATE_TRANSFORMING);
@@ -660,6 +694,7 @@ pub fn spawn_transcription_thread(
                                             buffered_text = transformed_text;
                                             flush_buffered_text_or_paste(
                                                 &state,
+                                                generation,
                                                 &mut buffered_text,
                                                 true,
                                             );
@@ -678,7 +713,12 @@ pub fn spawn_transcription_thread(
                                     }
                                 } else {
                                     state.set_overlay_text_opacity(1.0);
-                                    flush_buffered_text_or_paste(&state, &mut buffered_text, true);
+                                    flush_buffered_text_or_paste(
+                                        &state,
+                                        generation,
+                                        &mut buffered_text,
+                                        true,
+                                    );
                                 }
                             }
                             Err(error) => {
@@ -695,7 +735,7 @@ pub fn spawn_transcription_thread(
                     // capture carries on until this ends, however it ends.
                     let _resuming = ResumingDictation::new(&state, true);
                     if let Some(session) = active_session.take() {
-                        match finish_session(session, &state) {
+                        match finish_session(session, &state, generation) {
                             Ok(None) => {
                                 buffered_text.clear();
                                 recording_prefix.clear();
@@ -711,14 +751,16 @@ pub fn spawn_transcription_thread(
                                     continue;
                                 }
 
-                                if state.consume_abort_request() {
+                                if state.consume_abort_request(generation) {
                                     log::info!(
                                         "discarding transformation because abort was requested"
                                     );
                                     buffered_text.clear();
-                                    state.clear_overlay_text();
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.set_state(STATE_IDLE);
+                                    if let Some(_recording) = state.current_recording(generation) {
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                    }
                                     continue;
                                 }
 
@@ -737,6 +779,7 @@ pub fn spawn_transcription_thread(
                                     state.set_state(STATE_TRANSFORMING);
                                     match runtime.block_on(transformation_history.finish_manual(
                                         &state,
+                                        generation,
                                         transform_text(
                                             state.clone(),
                                             &transformation_config,
@@ -805,6 +848,7 @@ pub fn spawn_transcription_thread(
                                     Err(SessionError::Cancelled) => {
                                         complete_session_cancellation(
                                             &state,
+                                            generation,
                                             &mut buffered_text,
                                             SessionKind::Dictation,
                                         );
@@ -825,7 +869,7 @@ pub fn spawn_transcription_thread(
                     }
                 }
                 Command::TransformBuffer => {
-                    if !prepare_buffer_transform(&state, &mut buffered_text) {
+                    if !prepare_buffer_transform(&state, generation, &mut buffered_text) {
                         continue;
                     }
 
@@ -844,6 +888,7 @@ pub fn spawn_transcription_thread(
 
                     match runtime.block_on(transformation_history.finish_manual(
                         &state,
+                        generation,
                         transform_text(
                             state.clone(),
                             &transformation_config,
@@ -877,6 +922,7 @@ pub fn spawn_transcription_thread(
                     resume_after_correction = false;
                     complete_session_cancellation(
                         &state,
+                        generation,
                         &mut buffered_text,
                         SessionKind::Dictation,
                     );
@@ -890,6 +936,7 @@ pub fn spawn_transcription_thread(
                     resume_after_correction = false;
                     complete_session_cancellation(
                         &state,
+                        generation,
                         &mut buffered_text,
                         SessionKind::Dictation,
                     );
@@ -897,15 +944,17 @@ pub fn spawn_transcription_thread(
                 }
             }
         }
-    });
-
-    TranscriptionController { command_tx }
+    })
 }
 
 /// Refresh from the editable annotation before deciding whether to transform.
-fn prepare_buffer_transform(state: &AppState, buffered_text: &mut String) -> bool {
+fn prepare_buffer_transform(
+    state: &AppState,
+    generation: RecordingGeneration,
+    buffered_text: &mut String,
+) -> bool {
     if state.is_abort_requested() {
-        complete_session_cancellation(state, buffered_text, SessionKind::Dictation);
+        complete_session_cancellation(state, generation, buffered_text, SessionKind::Dictation);
         return false;
     }
 
@@ -927,6 +976,7 @@ fn prepare_buffer_transform(state: &AppState, buffered_text: &mut String) -> boo
 fn apply_correction_request(
     runtime: &Runtime,
     state: &Arc<AppState>,
+    generation: RecordingGeneration,
     config: &Config,
     buffered_text: &mut String,
     correction_request: &str,
@@ -934,10 +984,12 @@ fn apply_correction_request(
 ) -> Result<Option<String>, String> {
     state.set_overlay_correction_active(false);
     state.clear_overlay_correction_text();
-    if state.consume_abort_request() {
-        state.set_overlay_text(buffered_text.clone());
-        state.set_overlay_text_opacity(1.0);
-        state.set_state(STATE_BUFFER_READY);
+    if state.consume_abort_request(generation) {
+        if let Some(_recording) = state.current_recording(generation) {
+            state.set_overlay_text(buffered_text.clone());
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_BUFFER_READY);
+        }
         return Ok(None);
     }
 
@@ -953,6 +1005,7 @@ fn apply_correction_request(
         state.set_state(STATE_TRANSFORMING);
         let transformed = runtime.block_on(finish_transformation(
             state,
+            generation,
             transform_text(
                 state.clone(),
                 &correction_config,
@@ -986,6 +1039,7 @@ fn apply_correction_request(
 /// settle it through the same discard path as cancelled transcription.
 async fn finish_transformation(
     state: &AppState,
+    generation: RecordingGeneration,
     transformation: impl std::future::Future<Output = Result<String, String>>,
 ) -> Result<Option<String>, String> {
     let result = tokio::select! {
@@ -993,28 +1047,37 @@ async fn finish_transformation(
         _ = state.wait_for_abort() => Err(SessionError::Cancelled),
         result = transformation => result.map_err(SessionError::Failed),
     };
-    settle_session_finish(result, state)
+    settle_session_finish(result, state, generation)
 }
 
 /// Settle cancellation before any caller can paste, transform, or resume.
 /// `None` means the recording was discarded, not an empty transcript.
-fn finish_session(session: ActiveSession, state: &AppState) -> Result<Option<String>, String> {
-    settle_session_finish(session.finish(state), state)
+fn finish_session(
+    session: ActiveSession,
+    state: &AppState,
+    generation: RecordingGeneration,
+) -> Result<Option<String>, String> {
+    settle_session_finish(session.finish(state), state, generation)
 }
 
+/// `generation` is the recording the finished work belongs to. A recording
+/// started since then keeps its state and overlay when this one is discarded.
 fn settle_session_finish(
     result: Result<String, SessionError>,
     state: &AppState,
+    generation: RecordingGeneration,
 ) -> Result<Option<String>, String> {
     // Also catch an abort that raced a normal completion or timeout.
-    if state.consume_abort_request() || matches!(result, Err(SessionError::Cancelled)) {
-        state.set_deepgram_waiting(false);
-        state.set_dictation_resuming(false);
-        state.set_overlay_correction_active(false);
-        state.clear_overlay_correction_text();
-        state.clear_overlay_text();
-        state.set_overlay_text_opacity(1.0);
-        state.set_state(STATE_IDLE);
+    if state.consume_abort_request(generation) || matches!(result, Err(SessionError::Cancelled)) {
+        if let Some(_recording) = state.current_recording(generation) {
+            state.set_deepgram_waiting(false);
+            state.set_dictation_resuming(false);
+            state.set_overlay_correction_active(false);
+            state.clear_overlay_correction_text();
+            state.clear_overlay_text();
+            state.set_overlay_text_opacity(1.0);
+            state.set_state(STATE_IDLE);
+        }
         log::info!("discarded aborted transcription session");
         return Ok(None);
     }
@@ -1025,8 +1088,23 @@ fn settle_session_finish(
     }
 }
 
-fn complete_session_cancellation(state: &AppState, buffered_text: &mut String, kind: SessionKind) {
-    state.consume_abort_request();
+/// Settles the cancelled work of the recording `generation`. Only the worker's
+/// own text is cleared when a recording started since then owns the state and
+/// overlay.
+fn complete_session_cancellation(
+    state: &AppState,
+    generation: RecordingGeneration,
+    buffered_text: &mut String,
+    kind: SessionKind,
+) {
+    state.consume_abort_request(generation);
+    if kind == SessionKind::Dictation {
+        buffered_text.clear();
+    }
+    let Some(_recording) = state.current_recording(generation) else {
+        log::info!("a newer recording started; leaving its state and overlay");
+        return;
+    };
     state.set_dictation_resuming(false);
     state.set_deepgram_waiting(false);
     state.clear_overlay_error_text();
@@ -1035,7 +1113,6 @@ fn complete_session_cancellation(state: &AppState, buffered_text: &mut String, k
     state.set_overlay_text_opacity(1.0);
     match kind {
         SessionKind::Dictation => {
-            buffered_text.clear();
             state.clear_overlay_text();
             state.set_state(STATE_IDLE);
         }
@@ -1127,7 +1204,11 @@ mod tests {
             state.apply_overlay_edit(&buffered_text, edited);
             state.set_state(crate::state::STATE_TRANSFORMING);
 
-            assert!(super::prepare_buffer_transform(&state, &mut buffered_text));
+            assert!(super::prepare_buffer_transform(
+                &state,
+                state.recording_generation(),
+                &mut buffered_text
+            ));
             assert_eq!(
                 buffered_text, edited,
                 "F6 must transform the editable annotation"
@@ -1144,7 +1225,11 @@ mod tests {
             state.apply_overlay_edit(&buffered_text, edited);
             state.set_state(crate::state::STATE_TRANSFORMING);
 
-            assert!(!super::prepare_buffer_transform(&state, &mut buffered_text));
+            assert!(!super::prepare_buffer_transform(
+                &state,
+                state.recording_generation(),
+                &mut buffered_text
+            ));
             assert!(buffered_text.trim().is_empty());
             assert_eq!(state.get_state(), crate::state::STATE_IDLE);
             assert!(state.overlay_text().is_empty());
@@ -1160,7 +1245,11 @@ mod tests {
         state.dismiss_overlay();
         state.clear_overlay_text();
 
-        assert!(!super::prepare_buffer_transform(&state, &mut buffered_text));
+        assert!(!super::prepare_buffer_transform(
+            &state,
+            state.recording_generation(),
+            &mut buffered_text
+        ));
         assert!(buffered_text.is_empty());
         assert!(!state.is_abort_requested());
         assert!(state.is_overlay_dismissed());
@@ -1175,21 +1264,28 @@ mod tests {
         let mut history = super::TransformationHistory::default();
 
         let transformed = runtime
-            .block_on(history.finish_manual(&state, async {
-                requests.set(requests.get() + 1);
-                Ok("The cleaned transcript.".to_owned())
-            }))
+            .block_on(
+                history.finish_manual(&state, state.recording_generation(), async {
+                    requests.set(requests.get() + 1);
+                    Ok("The cleaned transcript.".to_owned())
+                }),
+            )
             .unwrap()
             .unwrap();
         // The resumed session adds its normal separator, with no new speech.
         let final_transcript = super::join_transcript_parts(&transformed, &[]);
         state.set_state(crate::state::STATE_PROCESSING);
         let pasted = runtime
-            .block_on(history.finish_automatic(&state, &final_transcript, async {
-                state.set_state(crate::state::STATE_TRANSFORMING);
-                requests.set(requests.get() + 1);
-                Ok(final_transcript.clone())
-            }))
+            .block_on(history.finish_automatic(
+                &state,
+                state.recording_generation(),
+                &final_transcript,
+                async {
+                    state.set_state(crate::state::STATE_TRANSFORMING);
+                    requests.set(requests.get() + 1);
+                    Ok(final_transcript.clone())
+                },
+            ))
             .unwrap()
             .unwrap();
 
@@ -1220,7 +1316,7 @@ mod tests {
             .block_on(async {
                 tokio::time::timeout(
                     std::time::Duration::from_secs(1),
-                    super::finish_transformation(&state, request),
+                    super::finish_transformation(&state, state.recording_generation(), request),
                 )
                 .await
             })
@@ -1247,10 +1343,14 @@ mod tests {
             state.dismiss_overlay();
             assert_eq!(
                 runtime
-                    .block_on(super::finish_transformation(&state, async {
-                        state.request_abort();
-                        result
-                    }))
+                    .block_on(super::finish_transformation(
+                        &state,
+                        state.recording_generation(),
+                        async {
+                            state.request_abort();
+                            result
+                        }
+                    ))
                     .unwrap(),
                 None
             );
@@ -1260,9 +1360,11 @@ mod tests {
             // The abort is consumed, so subsequent work can finish normally.
             assert_eq!(
                 runtime
-                    .block_on(super::finish_transformation(&state, async {
-                        Ok("The next rewrite".to_owned())
-                    }))
+                    .block_on(super::finish_transformation(
+                        &state,
+                        state.recording_generation(),
+                        async { Ok("The next rewrite".to_owned()) }
+                    ))
                     .unwrap(),
                 Some("The next rewrite".to_owned())
             );
@@ -1281,7 +1383,10 @@ mod tests {
         state.set_state(crate::state::STATE_RECORDING);
         state.set_overlay_text("A later UI update");
 
-        let super::Command::StartSession { recording_prefix } = command_rx.recv().unwrap() else {
+        let super::Command::StartSession {
+            recording_prefix, ..
+        } = command_rx.recv().unwrap()
+        else {
             panic!("expected a dictation start");
         };
         assert_eq!(
@@ -1306,6 +1411,7 @@ mod tests {
             let prefix = super::apply_correction_request(
                 &runtime,
                 &state,
+                state.recording_generation(),
                 &crate::config::Config::default(),
                 &mut annotation,
                 request,
@@ -1335,6 +1441,7 @@ mod tests {
             super::apply_correction_request(
                 &runtime,
                 &state,
+                state.recording_generation(),
                 &crate::config::Config::default(),
                 &mut annotation,
                 "",
@@ -1360,6 +1467,7 @@ mod tests {
         let prefix = super::apply_correction_request(
             &runtime,
             &state,
+            state.recording_generation(),
             &crate::config::Config::default(),
             &mut annotation,
             "",
@@ -1384,6 +1492,7 @@ mod tests {
         let mut buffered_text = "must not be pasted".to_owned();
         super::complete_session_cancellation(
             &state,
+            state.recording_generation(),
             &mut buffered_text,
             super::SessionKind::Dictation,
         );
@@ -1406,6 +1515,7 @@ mod tests {
         let mut buffered_text = "the annotation".to_owned();
         super::complete_session_cancellation(
             &state,
+            state.recording_generation(),
             &mut buffered_text,
             super::SessionKind::Correction,
         );
@@ -1429,7 +1539,11 @@ mod tests {
         state.dismiss_overlay();
         state.request_abort();
 
-        let result = super::settle_session_finish(Err(super::SessionError::Cancelled), &state);
+        let result = super::settle_session_finish(
+            Err(super::SessionError::Cancelled),
+            &state,
+            state.recording_generation(),
+        );
 
         assert_eq!(result, Ok(None));
         assert_eq!(state.get_state(), STATE_IDLE);
@@ -1449,7 +1563,7 @@ mod tests {
         state.request_abort();
 
         assert_eq!(
-            super::settle_session_finish(Ok(String::new()), &state),
+            super::settle_session_finish(Ok(String::new()), &state, state.recording_generation()),
             Ok(None)
         );
         assert!(!state.is_abort_requested());
@@ -1463,6 +1577,7 @@ mod tests {
         let result = super::settle_session_finish(
             Err(super::SessionError::Failed("shutdown timed out".to_owned())),
             &state,
+            state.recording_generation(),
         );
         assert_eq!(result, Err("shutdown timed out".to_owned()));
     }
@@ -1483,9 +1598,7 @@ mod tests {
     /// A worker for `state`, with a Deepgram API key set so a dictation start
     /// gets as far as its abort check. No test here lets it connect.
     fn worker(state: &std::sync::Arc<crate::state::AppState>) -> super::TranscriptionController {
-        let mut config = crate::config::Config::default();
-        config.deepgram.api_key = Some("test-key".to_owned());
-        worker_with_config(state, config)
+        super::spawn_transcription_thread(state.clone(), config_store(config_with_deepgram_key()))
     }
 
     /// Builds a worker from an explicit config; tests do not connect to Deepgram.
@@ -1493,12 +1606,240 @@ mod tests {
         state: &std::sync::Arc<crate::state::AppState>,
         config: crate::config::Config,
     ) -> super::TranscriptionController {
-        let config_store = crate::settings::LiveConfigStore::new(
+        super::spawn_transcription_thread(state.clone(), config_store(config))
+    }
+
+    fn config_with_deepgram_key() -> crate::config::Config {
+        let mut config = crate::config::Config::default();
+        config.deepgram.api_key = Some("test-key".to_owned());
+        config
+    }
+
+    fn config_store(config: crate::config::Config) -> crate::settings::LiveConfigStore {
+        crate::settings::LiveConfigStore::new(
             config.clone(),
             config,
             std::path::PathBuf::from("/tmp/config.toml"),
+        )
+    }
+
+    /// A controller whose commands wait in the returned queue, so a test
+    /// decides what the hotkey does before the worker handles any of them.
+    fn queued_controller() -> (
+        super::TranscriptionController,
+        std::sync::mpsc::Receiver<super::Command>,
+    ) {
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        (super::TranscriptionController { command_tx }, command_rx)
+    }
+
+    /// Hands `commands` to a worker, in order, and returns once it has
+    /// handled every one of them.
+    fn run_worker(state: &std::sync::Arc<crate::state::AppState>, commands: Vec<super::Command>) {
+        let (command_tx, command_rx) = std::sync::mpsc::channel();
+        for command in commands {
+            command_tx.send(command).unwrap();
+        }
+        drop(command_tx);
+        super::spawn_worker(
+            state.clone(),
+            config_store(config_with_deepgram_key()),
+            command_rx,
+        )
+        .join()
+        .unwrap();
+    }
+
+    /// The queued commands, split before the last dictation start: the
+    /// commands queued earlier, and the start's prefix and generation.
+    fn split_before_last_start(
+        queue: &std::sync::mpsc::Receiver<super::Command>,
+    ) -> (
+        Vec<super::Command>,
+        String,
+        crate::state::RecordingGeneration,
+    ) {
+        let mut commands: Vec<_> = queue.try_iter().collect();
+        let Some(super::Command::StartSession {
+            recording_prefix,
+            generation,
+        }) = commands.pop()
+        else {
+            panic!("expected a dictation start last");
+        };
+        (commands, recording_prefix, generation)
+    }
+
+    /// What the hotkey does for Escape during a dictation.
+    fn escape_dictation(
+        state: &crate::state::AppState,
+        controller: &super::TranscriptionController,
+    ) {
+        state.request_abort();
+        state.dismiss_overlay();
+        state.clear_overlay_text();
+        controller.abort_session().unwrap();
+        state.set_state(crate::state::STATE_IDLE);
+    }
+
+    /// What the record hotkey does to start a dictation, with words then
+    /// typed into its overlay.
+    fn start_dictation_with_typed_words(
+        state: &crate::state::AppState,
+        controller: &super::TranscriptionController,
+    ) {
+        state.restore_overlay();
+        state.clear_overlay_error_text();
+        if state.get_state() != crate::state::STATE_BUFFER_READY {
+            state.clear_overlay_text();
+        }
+        controller.start_session(state).unwrap();
+        state.set_overlay_text("Words typed into the new recording.");
+    }
+
+    fn assert_new_recording_intact(state: &crate::state::AppState) {
+        assert_eq!(state.get_state(), crate::state::STATE_RECORDING);
+        assert_eq!(
+            &*state.overlay_text(),
+            "Words typed into the new recording."
         );
-        super::spawn_transcription_thread(state.clone(), config_store)
+        assert!(!state.is_overlay_dismissed());
+        assert!(state.is_capturing_audio());
+        // Nothing is left to skip the new recording's start.
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn an_aborted_dictation_settled_after_the_next_start_leaves_that_recording_alone() {
+        let state = crate::state::AppState::new();
+        let (controller, queue) = queued_controller();
+        controller.start_session(&state).unwrap();
+        escape_dictation(&state, &controller);
+        start_dictation_with_typed_words(&state, &controller);
+        let new_recording = state.recording_generation();
+
+        // The first start, skipped for its abort, and the abort itself.
+        let (earlier, prefix, generation) = split_before_last_start(&queue);
+        assert_eq!(earlier.len(), 2);
+        run_worker(&state, earlier);
+
+        assert_new_recording_intact(&state);
+        assert_eq!(generation, new_recording);
+        assert!(prefix.is_empty());
+    }
+
+    #[test]
+    fn a_discarded_buffer_settled_after_the_next_start_leaves_that_recording_alone() {
+        use crate::state::{AppState, STATE_BUFFER_READY};
+
+        let state = AppState::new();
+        state.set_overlay_text("A buffer to discard.");
+        state.set_state(STATE_BUFFER_READY);
+        let (controller, queue) = queued_controller();
+        // Escape on the ready buffer leaves its state to the worker.
+        state.request_abort();
+        state.dismiss_overlay();
+        state.clear_overlay_text();
+        controller.discard_buffer().unwrap();
+        assert_eq!(state.get_state(), STATE_BUFFER_READY);
+        start_dictation_with_typed_words(&state, &controller);
+
+        let (earlier, prefix, generation) = split_before_last_start(&queue);
+        run_worker(&state, earlier);
+
+        assert_new_recording_intact(&state);
+        assert_eq!(generation, state.recording_generation());
+        assert!(prefix.is_empty(), "the discarded buffer must not resume");
+    }
+
+    #[test]
+    fn an_abort_nothing_settled_does_not_skip_the_next_recording_start() {
+        if run_in_child(
+            "an_abort_nothing_settled_does_not_skip_the_next_recording_start",
+            |child| {
+                child.env("SIMPLE_PTT_SIMULATE_ERROR", "connection reached");
+            },
+        ) {
+            return;
+        }
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_TRANSFORMING};
+
+        // Escape during a transformation lands after the worker's last abort
+        // check, so the worker publishes the result and leaves the abort set.
+        let state = AppState::new();
+        state.set_state(STATE_TRANSFORMING);
+        state.request_abort();
+        state.dismiss_overlay();
+        state.clear_overlay_text();
+        state.set_overlay_text("The transformed text.");
+        state.set_state(STATE_BUFFER_READY);
+        let (controller, queue) = queued_controller();
+        start_dictation_with_typed_words(&state, &controller);
+
+        let commands: Vec<_> = queue.try_iter().collect();
+        assert_eq!(commands.len(), 1);
+        run_worker(&state, commands);
+
+        // The start went on to connect, here to a simulated failure, rather
+        // than being skipped for the earlier recording's abort.
+        assert_eq!(state.get_state(), STATE_ERROR);
+        let error = state.overlay_error_text();
+        assert!(
+            error.contains("simulated error: connection reached"),
+            "{error}"
+        );
+        assert!(!state.is_abort_requested());
+    }
+
+    #[test]
+    fn a_cancellation_settled_after_a_newer_recording_started_clears_only_the_worker_text() {
+        use crate::state::{AppState, STATE_BUFFER_READY};
+
+        for kind in [
+            super::SessionKind::Dictation,
+            super::SessionKind::Correction,
+        ] {
+            let state = AppState::new();
+            state.set_overlay_text("The cancelled recording's annotation.");
+            state.set_state(STATE_BUFFER_READY);
+            let cancelled = state.recording_generation();
+            state.request_abort();
+            state.dismiss_overlay();
+            state.clear_overlay_text();
+            let (controller, _queue) = queued_controller();
+            start_dictation_with_typed_words(&state, &controller);
+
+            let mut buffered_text = "The cancelled recording's annotation.".to_owned();
+            super::complete_session_cancellation(&state, cancelled, &mut buffered_text, kind);
+
+            assert_new_recording_intact(&state);
+            assert_eq!(
+                buffered_text.is_empty(),
+                kind == super::SessionKind::Dictation
+            );
+        }
+    }
+
+    #[test]
+    fn a_session_finish_discarded_after_a_newer_recording_started_leaves_that_recording_alone() {
+        use crate::state::AppState;
+
+        for result in [
+            Err(super::SessionError::Cancelled),
+            Ok("Late words".to_owned()),
+        ] {
+            let state = AppState::new();
+            let cancelled = state.recording_generation();
+            state.request_abort();
+            let (controller, _queue) = queued_controller();
+            start_dictation_with_typed_words(&state, &controller);
+
+            assert_eq!(
+                super::settle_session_finish(result, &state, cancelled),
+                Ok(None)
+            );
+            assert_new_recording_intact(&state);
+        }
     }
 
     /// Waits up to 2 s for `state` to reach `expected`.
@@ -1549,15 +1890,17 @@ mod tests {
 
     #[test]
     fn a_dictation_start_skipped_for_an_abort_uses_the_abort_up() {
-        use crate::state::{AppState, STATE_IDLE, STATE_RECORDING};
+        use crate::state::{AppState, STATE_IDLE};
 
         // The record key was pressed, then Escape before the session started.
         let state = AppState::new();
-        state.set_state(STATE_RECORDING);
+        let (controller, queue) = queued_controller();
+        controller.start_session(&state).unwrap();
         state.request_abort();
-        worker(&state).start_session(&state).unwrap();
+        run_worker(&state, queue.try_iter().collect());
 
-        wait_for_state(&state, STATE_IDLE);
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(state.overlay_text().is_empty());
         // Left set, it would skip every later start as well.
         assert!(!state.is_abort_requested());
     }
@@ -1669,19 +2012,27 @@ mod tests {
     // Run only the requested test in a child with no real credentials. Other
     // configuration tests may mutate the parent process's environment.
     fn run_without_deepgram_key(test_name: &str) -> bool {
-        if std::env::var("SIMPLE_PTT_MISSING_KEY_TEST").as_deref() == Ok(test_name) {
+        run_in_child(test_name, |child| {
+            child.env_remove("DEEPGRAM_API_KEY");
+        })
+    }
+
+    /// Runs only `test_name` in a child process whose environment `configure`
+    /// changes, and returns whether this is the parent, which is then done.
+    fn run_in_child(test_name: &str, configure: impl FnOnce(&mut std::process::Command)) -> bool {
+        if std::env::var("SIMPLE_PTT_CHILD_TEST").as_deref() == Ok(test_name) {
             return false;
         }
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
             .args([
                 "--exact",
                 &format!("transcription::tests::{test_name}"),
                 "--nocapture",
             ])
-            .env("SIMPLE_PTT_MISSING_KEY_TEST", test_name)
-            .env_remove("DEEPGRAM_API_KEY")
-            .output()
-            .unwrap();
+            .env("SIMPLE_PTT_CHILD_TEST", test_name);
+        configure(&mut child);
+        let output = child.output().unwrap();
         assert!(
             output.status.success(),
             "{}\n{}",

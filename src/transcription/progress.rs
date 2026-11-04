@@ -427,7 +427,7 @@ mod tests {
         );
         assert_eq!(live, Err(SessionError::Cancelled));
         assert_eq!(connection, Err(SessionError::Cancelled));
-        assert!(state.consume_abort_request());
+        assert!(state.consume_abort_request(state.recording_generation()));
         assert!(!state.is_abort_requested());
         assert_eq!(
             connect(state.clone(), limits(), async { Ok("next session") })

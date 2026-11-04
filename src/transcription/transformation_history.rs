@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::state::AppState;
+use crate::state::{AppState, RecordingGeneration};
 
 use super::{finish_transformation, settle_session_finish};
 
@@ -21,9 +21,10 @@ impl TransformationHistory {
     pub(super) async fn finish_manual(
         &mut self,
         state: &AppState,
+        generation: RecordingGeneration,
         transformation: impl Future<Output = Result<String, String>>,
     ) -> Result<Option<String>, String> {
-        let result = finish_transformation(state, transformation).await;
+        let result = finish_transformation(state, generation, transformation).await;
         self.manual_output = match &result {
             Ok(Some(text)) => Some(text.trim().to_owned()),
             _ => None,
@@ -34,6 +35,7 @@ impl TransformationHistory {
     pub(super) async fn finish_automatic(
         &mut self,
         state: &AppState,
+        generation: RecordingGeneration,
         input_text: &str,
         transformation: impl Future<Output = Result<String, String>>,
     ) -> Result<Option<String>, String> {
@@ -41,9 +43,9 @@ impl TransformationHistory {
         // Those separators do not make an otherwise unchanged result dirty.
         let result = if self.manual_output.as_deref() == Some(input_text.trim()) {
             log::info!("reusing unchanged manual transformation for paste");
-            settle_session_finish(Ok(input_text.to_owned()), state)
+            settle_session_finish(Ok(input_text.to_owned()), state, generation)
         } else {
-            finish_transformation(state, transformation).await
+            finish_transformation(state, generation, transformation).await
         };
         if matches!(result, Ok(None)) {
             self.manual_output = None;
@@ -72,7 +74,9 @@ mod tests {
                 let state = AppState::new();
                 let mut history = TransformationHistory::default();
                 let original = history
-                    .finish_manual(&state, async { Ok("Corrected transcript.".to_owned()) })
+                    .finish_manual(&state, state.recording_generation(), async {
+                        Ok("Corrected transcript.".to_owned())
+                    })
                     .await
                     .unwrap()
                     .unwrap();
@@ -87,7 +91,7 @@ mod tests {
                 let final_text = state.overlay_text();
                 let requests = Cell::new(0);
                 let result = history
-                    .finish_automatic(&state, &final_text, async {
+                    .finish_automatic(&state, state.recording_generation(), &final_text, async {
                         requests.set(requests.get() + 1);
                         Ok("New transformation.".to_owned())
                     })
@@ -110,7 +114,7 @@ mod tests {
             for _ in 0..2 {
                 assert_eq!(
                     history
-                        .finish_manual(&state, async {
+                        .finish_manual(&state, state.recording_generation(), async {
                             requests.set(requests.get() + 1);
                             Ok("Same output.".to_owned())
                         })
@@ -122,7 +126,7 @@ mod tests {
             }
             let final_text = join_transcript_parts("Same output.", &[]);
             history
-                .finish_automatic(&state, &final_text, async {
+                .finish_automatic(&state, state.recording_generation(), &final_text, async {
                     requests.set(requests.get() + 1);
                     Ok("Unwanted transformation.".to_owned())
                 })
@@ -139,14 +143,16 @@ mod tests {
             let state = AppState::new();
             let mut history = TransformationHistory::default();
             let text = history
-                .finish_manual(&state, async { Ok("Same words.".to_owned()) })
+                .finish_manual(&state, state.recording_generation(), async {
+                    Ok("Same words.".to_owned())
+                })
                 .await
                 .unwrap()
                 .unwrap();
             history.begin_dictation(&text);
             let requests = Cell::new(0);
             history
-                .finish_automatic(&state, &text, async {
+                .finish_automatic(&state, state.recording_generation(), &text, async {
                     requests.set(requests.get() + 1);
                     Ok(text.clone())
                 })
@@ -156,7 +162,7 @@ mod tests {
 
             history.begin_dictation("");
             let result = history
-                .finish_automatic(&state, &text, async {
+                .finish_automatic(&state, state.recording_generation(), &text, async {
                     requests.set(requests.get() + 1);
                     Ok("Fresh transformation.".to_owned())
                 })
@@ -175,13 +181,15 @@ mod tests {
             let state = AppState::new();
             let mut history = TransformationHistory::default();
             let text = history
-                .finish_manual(&state, async { Ok("Previous result.".to_owned()) })
+                .finish_manual(&state, state.recording_generation(), async {
+                    Ok("Previous result.".to_owned())
+                })
                 .await
                 .unwrap()
                 .unwrap();
             assert_eq!(
                 history
-                    .finish_manual(&state, async {
+                    .finish_manual(&state, state.recording_generation(), async {
                         state.set_overlay_text("Partial preview.");
                         Err("Connection lost".to_owned())
                     })
@@ -191,7 +199,7 @@ mod tests {
             );
             let requests = Cell::new(0);
             history
-                .finish_automatic(&state, &text, async {
+                .finish_automatic(&state, state.recording_generation(), &text, async {
                     requests.set(requests.get() + 1);
                     Ok(text.clone())
                 })
@@ -208,7 +216,9 @@ mod tests {
             let state = AppState::new();
             let mut history = TransformationHistory::default();
             let text = history
-                .finish_manual(&state, async { Ok("Do not paste this.".to_owned()) })
+                .finish_manual(&state, state.recording_generation(), async {
+                    Ok("Do not paste this.".to_owned())
+                })
                 .await
                 .unwrap()
                 .unwrap();
@@ -218,7 +228,7 @@ mod tests {
             let requests = Cell::new(0);
             assert_eq!(
                 history
-                    .finish_automatic(&state, &text, async {
+                    .finish_automatic(&state, state.recording_generation(), &text, async {
                         requests.set(requests.get() + 1);
                         Ok(text.clone())
                     })
@@ -232,7 +242,7 @@ mod tests {
             assert!(!state.is_abort_requested());
 
             history
-                .finish_automatic(&state, &text, async {
+                .finish_automatic(&state, state.recording_generation(), &text, async {
                     requests.set(requests.get() + 1);
                     Ok(text.clone())
                 })
