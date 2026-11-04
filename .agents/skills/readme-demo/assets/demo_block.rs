@@ -5,7 +5,8 @@
     // with the correction key, and keeps dictating. The demo stops the tuner's
     // own timer and drives the overlay through the states the app uses:
     // recording, the correction spoken while recording, the correction applied
-    // (transforming, with the inline preview), recording again, and the pop out.
+    // (transforming, the corrected sentence replacing the transcript), recording
+    // again, and the pop out.
     if std::env::var("VIEW_PROBE").is_ok() {
         use super::view_probe::{overlay_panel, run_script};
 
@@ -24,7 +25,7 @@
         const FIRST_AT: f64 = 0.6;
         const CORRECTION_AT: f64 = 8.2;
         const TRANSFORM_AT: f64 = 10.2;
-        const PREVIEW_AT: f64 = 10.8;
+        const CORRECTED_AT: f64 = 10.8;
         const RESUME_AT: f64 = 11.9;
         const SECOND_AT: f64 = 12.1;
         const HIDE_AT: f64 = 18.9;
@@ -120,8 +121,12 @@
                     let texts = AppState::new();
                     let (main, provisional_start) = if at < CORRECTION_AT {
                         narrated("", FIRST, at - FIRST_AT)
-                    } else if at < RESUME_AT {
+                    } else if at < CORRECTED_AT {
                         (format!("{FIRST} "), None)
+                    } else if at < RESUME_AT {
+                        // The transformation streams the corrected sentence
+                        // into the transcript.
+                        (format!("{CORRECTED} "), None)
                     } else {
                         narrated(&format!("{CORRECTED} "), SECOND, at - SECOND_AT)
                     };
@@ -129,10 +134,8 @@
                     texts.set_live_overlay_text(main, provisional_start);
                     let (correction, correction_provisional) = if at < TRANSFORM_AT {
                         narrated("", CORRECTION, at - CORRECTION_AT)
-                    } else if at < PREVIEW_AT {
-                        (String::new(), None)
                     } else {
-                        (format!("{CORRECTED} "), None)
+                        (String::new(), None)
                     };
                     texts.set_live_overlay_correction_text(correction, correction_provisional);
                     let correction_held = (CORRECTION_AT..TRANSFORM_AT).contains(&at);

@@ -228,9 +228,10 @@ pub fn run(dir: &str) {
             update(STATE_RECORDING, &final_text, "", &correction, true, meter)
         });
 
-        let preview = text(&full.replace("Thursday", "Friday"), None);
+        // The corrected text streams into the overlay while transforming.
+        let corrected = text(&full.replace("Thursday", "Friday"), None);
         ticks("4-correction-retract", 8, &|| {
-            update(STATE_TRANSFORMING, &final_text, "", &preview, false, MicMeterSnapshot::default())
+            update(STATE_TRANSFORMING, &corrected, "", &empty, false, MicMeterSnapshot::default())
         });
         capture(mtm, dir, &format!("{theme}-5-transforming"));
 

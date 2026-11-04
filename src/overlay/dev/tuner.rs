@@ -602,7 +602,7 @@ impl TunerState {
         texts.set_live_overlay_correction_text("make it Friday instead and ", Some(23));
         let correction_text = texts.overlay_correction_text_snapshot();
         texts.set_overlay_text(format!("{final_text}{interim}").replace("Thursday", "Friday"));
-        let preview_text = texts.overlay_text_snapshot();
+        let corrected_text = texts.overlay_text_snapshot();
 
         let meter = if self.microphone.borrow().is_some() {
             // The audio callback publishes the meter and the loudness.
@@ -621,8 +621,9 @@ impl TunerState {
         let quiet = MicMeterSnapshot::default();
         let (state, main, error, scenario_correction, mic) = match scenario {
             0 => (STATE_RECORDING, &main_text, "", &live, meter),
-            1 => (STATE_TRANSFORMING, &main_text, "", &preview_text, quiet),
-            2 => (STATE_BUFFER_READY, &preview_text, "", &live, quiet),
+            // The corrected text streams into the overlay while transforming.
+            1 => (STATE_TRANSFORMING, &corrected_text, "", &live, quiet),
+            2 => (STATE_BUFFER_READY, &corrected_text, "", &live, quiet),
             _ => (STATE_ERROR, &live, "Deepgram connection failed: 401 Unauthorized", &live, quiet),
         };
         let correction_active = self.correction_shown.get();

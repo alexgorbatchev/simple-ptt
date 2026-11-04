@@ -6,7 +6,6 @@ mod selection;
 pub mod private_effects;
 mod text_effects;
 
-
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1217,19 +1216,17 @@ fn working_text_update_is_semantically_unchanged(current_text: &str, next_text: 
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        footer_hint_frame, working_text_update_is_semantically_unchanged, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
+        FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
+    };
+
     #[test]
     fn treats_trailing_whitespace_only_updates_as_unchanged() {
-        use super::working_text_update_is_semantically_unchanged;
-
         assert!(working_text_update_is_semantically_unchanged("hello world", "hello world "));
         assert!(working_text_update_is_semantically_unchanged("hello world  ", "hello world"));
         assert!(!working_text_update_is_semantically_unchanged("hello world", "hello there"));
     }
-
-    use super::{
-        footer_hint_frame, FOOTER_HEIGHT, FOOTER_LINE_HEIGHT,
-        FOOTER_VERTICAL_PADDING, OVERLAY_WIDTH,
-    };
 
     #[test]
     fn a_deepgram_wait_replaces_the_hint_and_restores_it_after_progress() {
