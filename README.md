@@ -68,13 +68,13 @@ If audio capture silently stops, the app detects the missing audio callbacks aft
 ## Quick start
 
 1. **Grant permissions.** On first launch the **Application Permissions** window asks for three grants:
-   - **Accessibility**, to send the paste keystroke.
+   - **Accessibility**, for the global shortcuts and the paste keystroke.
    - **Input Monitoring**, for the global shortcuts. The app requests it on its own.
    - **Microphone**, to capture audio.
 
    Use the window's buttons to request each one, then click **Re-check**. When the window shows **Quit and Reopen**, click it: the global shortcuts start working only after the app restarts with the new grants. You can reopen the window from the menu bar with **Application Permissions…**.
 2. **Add your Deepgram API key.** Settings opens when the app has no Deepgram key. Select the **Deepgram** pane, enter the key, and click **Save**. See [Deepgram costs](#deepgram-costs) for what usage costs.
-3. **Dictate.** Click into any text field, tap `F5`, speak, and tap `F5` again. The transcript is pasted where you clicked.
+3. **Dictate.** Click into any text field, tap `F5`, speak, and tap `F5` again. The transcript is pasted where you clicked. On a Mac laptop keyboard, hold `fn` while pressing `F5` unless the function keys are set to act as standard function keys.
 
 ## Configuration
 
