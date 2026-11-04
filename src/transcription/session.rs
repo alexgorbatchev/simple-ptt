@@ -175,7 +175,14 @@ pub fn start_session(
             )
             .stream(ReceiverStream::new(audio_rx))
             .await
-            .map_err(format_deepgram_error)
+            .map_err(|error| {
+                if matches!(error, deepgram::DeepgramError::UntrustedTlsCertificate { .. }) {
+                    // Read the certificate store again next time, so a CA the
+                    // user installs after this error takes effect.
+                    forget_deepgram_client();
+                }
+                format_deepgram_error(error)
+            })
         }))?;
 
     log::info!(
@@ -407,14 +414,25 @@ pub fn extract_transcript(channel: &Channel) -> String {
         .unwrap_or_default()
 }
 
+/// The Deepgram client of the sessions; see `deepgram_client`.
+static DEEPGRAM_CLIENT: Mutex<Option<(String, Deepgram)>> = Mutex::new(None);
+
 /// The Deepgram client for `api_key`, shared by every session while the key
 /// stays the same. Its WebSocket trust roots include the macOS certificate
 /// store (`rustls-tls-native-roots`), which takes about 100 ms to read, and a
 /// client resolves them once, on its first connection.
 fn deepgram_client(api_key: &str) -> Result<Deepgram, deepgram::DeepgramError> {
-    static CLIENT: Mutex<Option<(String, Deepgram)>> = Mutex::new(None);
-    let mut cached = CLIENT.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut cached = DEEPGRAM_CLIENT.lock().unwrap_or_else(PoisonError::into_inner);
     cached_for_key(&mut cached, api_key, || Deepgram::new(api_key))
+}
+
+/// Drops the shared client, so the next session resolves its trust roots
+/// from the certificate store as it is then.
+fn forget_deepgram_client() {
+    DEEPGRAM_CLIENT
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
 }
 
 /// The value cached for `key`, or a new one from `build` that replaces it.
@@ -444,6 +462,7 @@ mod tests {
     #[test]
     fn a_client_is_reused_while_the_api_key_stays_the_same() {
         let mut cache = None;
+        // Each build numbers its client, so a reused client keeps its number.
         let mut builds = 0;
         let mut build = |label: &str| {
             builds += 1;
@@ -454,11 +473,14 @@ mod tests {
         assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-1".to_owned()));
         assert_eq!(cached_for_key(&mut cache, "key-b", || build("b")), Ok("b-2".to_owned()));
         assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-3".to_owned()));
-        assert_eq!(builds, 3);
 
         // A failed build leaves the previous client in place.
         assert_eq!(cached_for_key(&mut cache, "key-c", || Err::<String, _>(())), Err(()));
         assert_eq!(cache, Some(("key-a".to_owned(), "a-3".to_owned())));
+
+        // A forgotten client, as after a rejected certificate, is built again.
+        cache.take();
+        assert_eq!(cached_for_key(&mut cache, "key-a", || build("a")), Ok("a-4".to_owned()));
     }
 
     fn transcript_response(text: &str, is_final: bool, start: f64, duration: f64) -> StreamResponse {
