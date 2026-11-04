@@ -44,13 +44,19 @@ pub struct AudioController {
     config_store: LiveConfigStore,
     state: Arc<AppState>,
     transcription_controller: TranscriptionController,
-    last_rebuild_attempt: Mutex<Option<Instant>>,
+    /// When the last idle rebuild failed; retries wait `REBUILD_RETRY_INTERVAL`
+    /// after it, while a rebuild after a success runs at once.
+    last_failed_rebuild: Mutex<Option<Instant>>,
     preview_audio_device: Mutex<PreviewDeviceState>,
     /// Whether the built-in microphone stands in for a device that
     /// disappeared.
     built_in_preference: Mutex<BuiltInPreference>,
     #[cfg(target_os = "macos")]
     hardware_generation: AtomicU64,
+    /// The newest notification idle recovery has looked at, rebuilt for or
+    /// not; see `has_pending_device_change`.
+    #[cfg(target_os = "macos")]
+    observed_generation: AtomicU64,
 }
 
 struct ActiveAudioStream {
@@ -121,11 +127,13 @@ impl AudioController {
             config_store,
             state,
             transcription_controller,
-            last_rebuild_attempt: Mutex::new(None),
+            last_failed_rebuild: Mutex::new(None),
             preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
             built_in_preference: Mutex::new(BuiltInPreference::default()),
             #[cfg(target_os = "macos")]
             hardware_generation: AtomicU64::new(DEVICE_CHANGES.generation()),
+            #[cfg(target_os = "macos")]
+            observed_generation: AtomicU64::new(DEVICE_CHANGES.generation()),
         }
     }
 
@@ -168,11 +176,13 @@ impl AudioController {
                 config_store,
                 state,
                 transcription_controller,
-                last_rebuild_attempt: Mutex::new(None),
+                last_failed_rebuild: Mutex::new(None),
                 preview_audio_device: Mutex::new(PreviewDeviceState::Disabled),
                 built_in_preference: Mutex::new(BuiltInPreference::default()),
                 #[cfg(target_os = "macos")]
                 hardware_generation: AtomicU64::new(hardware_generation),
+                #[cfg(target_os = "macos")]
+                observed_generation: AtomicU64::new(hardware_generation),
             },
             startup_error,
         )
@@ -200,13 +210,19 @@ impl AudioController {
         mic_config
     }
 
-    /// Whether Core Audio reported a device change the active stream has not
-    /// been rebuilt for. The status poll refreshes on the next tick while one
-    /// is pending, so the change is acted on without waiting for its
-    /// periodic refresh.
+    /// Whether Core Audio reported a device change that idle recovery has
+    /// not looked at yet. The status poll refreshes on the next tick while
+    /// one is, so the change is acted on without waiting for its periodic
+    /// refresh. A change that recovery saw but could not rebuild for (no
+    /// microphone, an invalid gain) waits for that periodic refresh instead.
     #[cfg(target_os = "macos")]
     pub fn has_pending_device_change(&self) -> bool {
-        DEVICE_CHANGES.has_changed_since(self.hardware_generation.load(Ordering::SeqCst))
+        DEVICE_CHANGES.has_changed_since(self.observed_generation.load(Ordering::SeqCst))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn has_pending_device_change(&self) -> bool {
+        false
     }
 
     pub fn should_rebuild_stream(&self) -> bool {
@@ -340,6 +356,9 @@ impl AudioController {
         if self.state.is_capturing_audio() {
             return;
         }
+        #[cfg(target_os = "macos")]
+        self.observed_generation
+            .store(DEVICE_CHANGES.generation(), Ordering::SeqCst);
 
         let pending_config = self
             .pending_config
@@ -366,21 +385,21 @@ impl AudioController {
         }
 
         let now = Instant::now();
-        if let Ok(mut last_attempt_guard) = self.last_rebuild_attempt.lock() {
-            if let Some(last_attempt) = *last_attempt_guard {
-                if now.duration_since(last_attempt) < REBUILD_RETRY_INTERVAL {
-                    return;
-                }
-            }
-            *last_attempt_guard = Some(now);
+        let Ok(mut last_failed_rebuild) = self.last_failed_rebuild.lock() else {
+            return;
+        };
+        if last_failed_rebuild.is_some_and(|failed_at| now.duration_since(failed_at) < REBUILD_RETRY_INTERVAL) {
+            return;
         }
 
         let current_config_mic = self.effective_mic_config();
         match self.rebuild_stream(&current_config_mic) {
             Ok(()) => {
+                *last_failed_rebuild = None;
                 log::info!("successfully rebuilt audio input stream");
             }
             Err(error) => {
+                *last_failed_rebuild = Some(now);
                 log::error!("failed to switch or reconnect audio input device: {}", error);
             }
         }
@@ -504,16 +523,18 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn a_core_audio_notification_is_pending_until_a_rebuild_takes_it() {
+    fn a_core_audio_notification_is_pending_until_idle_recovery_looks_at_it() {
         let state = crate::state::AppState::new();
-        let config = crate::config::Config::default();
+        let mut config = crate::config::Config::default();
+        // An invalid gain stops recovery before it would open a device.
+        config.mic.gain = 40.0;
         let config_store = crate::settings::LiveConfigStore::new(
             config.clone(),
             config,
             std::path::PathBuf::from("/tmp/config.toml"),
         );
         let controller = AudioController::inactive(
-            state,
+            state.clone(),
             crate::transcription::TranscriptionController::without_worker(),
             config_store,
         );
@@ -522,9 +543,15 @@ mod tests {
         super::DEVICE_CHANGES.notify();
         assert!(controller.has_pending_device_change());
 
-        controller
-            .hardware_generation
-            .store(super::DEVICE_CHANGES.generation(), std::sync::atomic::Ordering::SeqCst);
+        // While recording, recovery does not run, so the change stays pending.
+        state.set_state(crate::state::STATE_RECORDING);
+        controller.apply_pending_if_idle();
+        assert!(controller.has_pending_device_change());
+
+        // Once recovery has looked at it, the change no longer refreshes every
+        // tick, even though no rebuild could be made for it.
+        state.set_state(crate::state::STATE_IDLE);
+        controller.apply_pending_if_idle();
         assert!(!controller.has_pending_device_change());
     }
 
@@ -925,7 +952,7 @@ mod core_audio_listener {
                 "kAudioHardwarePropertyDefaultInputDevice",
             ),
         ] {
-            let mut address = AudioObjectPropertyAddress {
+            let address = AudioObjectPropertyAddress {
                 mSelector: selector,
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain,
@@ -937,7 +964,7 @@ mod core_audio_listener {
             let status = unsafe {
                 AudioObjectAddPropertyListener(
                     kAudioObjectSystemObject as AudioObjectID,
-                    NonNull::from(&mut address),
+                    NonNull::from(&address),
                     Some(hardware_property_listener),
                     std::ptr::null_mut(),
                 )

@@ -55,7 +55,7 @@ To make sure your voice is captured the exact millisecond you press the hotkey, 
 
 Starting up a microphone in macOS normally takes about a quarter of a second, which would cut off the first word or two of your dictation. Keeping it warm ensures a zero-delay experience at a tiny trade-off of around 1.0% to 1.5% CPU usage when the app is idle. To save that idle CPU at the cost of the startup delay, clear **Keep microphone connection open** in Settings > Microphone (`mic.always_on = false`); the microphone stream is then paused except while you record or while the Settings window is open.
 
-When you plug in or remove a microphone, or switch the system default (for example by connecting AirPods), macOS tells the app right away, and it switches to the right input within a tenth of a second while idle, or once the current recording ends.
+When you plug in or remove a microphone, or switch the system default (for example by connecting AirPods), macOS notifies the app right away. While idle, it reopens the right input on the next status check (within about 75 ms), plus the time macOS takes to start a microphone; during a recording, it switches once the recording ends.
 
 If the microphone in use disconnects, `simple-ptt` switches to the Mac's built-in microphone and stays on it until the system default input changes again (for example, when the disconnected device reconnects). A microphone named in `mic.audio_device` is used whenever it is connected, with the built-in microphone standing in while it is not. If it disconnects mid-recording, the overlay says so, and the record shortcut continues on the new microphone. With no microphone connected at all, the record shortcut shows the overlay with a message saying so instead of recording.
 
