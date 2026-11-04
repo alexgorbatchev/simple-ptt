@@ -7,7 +7,9 @@ Rust/AppKit menu bar push-to-talk app for macOS on Apple Silicon. This is a sing
 - Build (release): `cargo build --locked --release`
 - Test: `cargo test --locked`
 - Build sanity/typecheck: `cargo check --message-format=short`
-- CI gate (Apple Silicon macOS, `.github/workflows/ci.yml`): run `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, `RUSTFLAGS="-D warnings" cargo test --locked`, and `RUSTFLAGS="-D warnings" cargo build --locked --release --target aarch64-apple-darwin`. Keep the same `RUSTFLAGS` for all three commands; changing it rebuilds Cargo artifacts, so run this gate as a separate sequence from ordinary development checks.
+- Format: `cargo fmt`; CI runs `cargo fmt --check`.
+- Lint: `cargo clippy --locked --all-targets -- -D warnings`
+- CI gate (Apple Silicon macOS, `.github/workflows/ci.yml`): run `cargo fmt --check`, then `RUSTFLAGS="-D warnings" cargo check --locked --all-targets`, `RUSTFLAGS="-D warnings" cargo clippy --locked --all-targets -- -D warnings`, `RUSTFLAGS="-D warnings" cargo test --locked`, and `RUSTFLAGS="-D warnings" cargo build --locked --release --target aarch64-apple-darwin`. Keep the same `RUSTFLAGS` for all four cargo commands; changing it rebuilds Cargo artifacts, so run this gate as a separate sequence from ordinary development checks.
 - Run with the repo-local dev config: `just setup` then `just run` (both create the gitignored `./config.toml` from `config.example.toml` when it is missing)
 - Prepare the default dev config without starting the app: `just prepare-default-config`
 - Run with an explicit config file: `just run-config path/to/config.toml`
@@ -76,8 +78,9 @@ The release workflow uploads the DMG; complete Sparkle feed publication manually
 
 ## Boundaries
 - Always: there MUST be ZERO errors AND ZERO WARNINGS when the application is checked or built (`cargo check`, `cargo test`, `cargo build`). A successful build that emits warnings is strictly unacceptable and considered a build failure.
-- Always: `.github/workflows/ci.yml` enforces the zero-warnings rule on pull requests and pushes to `main`: it checks all Cargo targets, runs tests, and builds the Apple Silicon release binary using the pinned toolchain and `RUSTFLAGS="-D warnings"`. Reproduce it with the CI gate commands above.
-- Always: after Rust or packaging-script changes, run `cargo test --locked`, `cargo check --message-format=short`, and `cargo build --locked --release`. Verify that output is 100% clean with zero warnings.
+- Always: `.github/workflows/ci.yml` enforces the zero-warnings rule on pull requests and pushes to `main`: it checks formatting, checks and lints all Cargo targets, runs tests, and builds the Apple Silicon release binary using the pinned toolchain and `RUSTFLAGS="-D warnings"`. Reproduce it with the CI gate commands above.
+- Always: after Rust or packaging-script changes, run `cargo fmt`, `cargo test --locked`, `cargo check --message-format=short`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo build --locked --release`. Verify that output is 100% clean with zero warnings. Fix Clippy findings in the code; do not silence them with `allow` attributes unless the user approves the exception.
+- Always: list formatting-only commits in `.git-blame-ignore-revs`.
 - Ask first: changes to `Cargo.toml`, `.github/workflows/release.yml`, bundle metadata/signing in `scripts/build-macos-app.sh`, or the permission architecture in `src/permissions*.rs`.
 - Never: commit secrets in config files, hand-edit generated output under `dist/` or `target/`, bypass `config::save_config` with a destructive config rewrite, or introduce fallbacks, degraded functionality, or secondary alternative execution paths unless explicitly requested by the user.
 

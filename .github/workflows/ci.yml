@@ -38,6 +38,12 @@ jobs:
           set -euo pipefail
           rustup toolchain install --no-self-update
 
+      - name: Check formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+
       - name: Check packaging scripts and notarization recovery
         shell: bash
         run: |
@@ -54,6 +60,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo check --locked --all-targets
+
+      - name: Lint all targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo clippy --locked --all-targets -- -D warnings
 
       - name: Run tests
         shell: bash
