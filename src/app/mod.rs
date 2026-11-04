@@ -3,12 +3,13 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::sync::Arc;
 
-use block2::StackBlock;
+use block2::RcBlock;
+use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSAlert, NSAlertStyle, NSApplication, NSApplicationActivationOptions, NSButton,
+    NSAlert, NSAlertStyle, NSApplication, NSButton,
     NSApplicationActivationPolicy, NSApplicationDelegate, NSImageScaling, NSMenu, NSMenuItem,
     NSStatusBar, NSStatusItem, NSTextDelegate, NSTextViewDelegate, NSWindowDelegate, NSWorkspace,
     NSWorkspaceOpenConfiguration,
@@ -368,11 +369,7 @@ define_class!(
         fn request_accessibility_permission(&self, _sender: Option<&AnyObject>) {
             self.ivars().accessibility_permission_requested.set(true);
             self.deactivate_for_system_settings_transition();
-            if let Err(error) =
-                self.open_system_settings_and_activate(permissions::accessibility_settings_urls())
-            {
-                log::error!("failed to open Accessibility settings: {}", error);
-            }
+            open_system_settings(permissions::accessibility_settings_urls());
             self.sync_hotkey_permissions_ui();
         }
 
@@ -388,11 +385,7 @@ define_class!(
                     | permissions::AVAuthorizationStatus::Restricted
             ) || already_requested
             {
-                if let Err(error) =
-                    self.open_system_settings_and_activate(permissions::microphone_settings_urls())
-                {
-                    log::error!("failed to open microphone settings: {}", error);
-                }
+                open_system_settings(permissions::microphone_settings_urls());
             }
 
             if let Err(error) = permissions::request_microphone_access(|granted| {
@@ -754,76 +747,6 @@ impl AppDelegate {
     fn deactivate_for_system_settings_transition(&self) {
         let app = NSApplication::sharedApplication(MainThreadMarker::from(self));
         app.deactivate();
-    }
-
-    fn open_system_settings_and_activate(&self, urls: [&str; 2]) -> Result<(), String> {
-        let workspace = NSWorkspace::sharedWorkspace();
-        self.open_system_settings_url_with_workspace(&workspace, urls[0])
-            .or_else(|primary_error| {
-                self.open_system_settings_url_with_workspace(&workspace, urls[1])
-                    .map_err(|fallback_error| {
-                        format!(
-                            "primary URL failed: {}; fallback URL failed: {}",
-                            primary_error, fallback_error
-                        )
-                    })
-            })
-    }
-
-    fn open_system_settings_url_with_workspace(
-        &self,
-        workspace: &NSWorkspace,
-        url: &str,
-    ) -> Result<(), String> {
-        let url_string = NSString::from_str(url);
-        let Some(ns_url) = NSURL::URLWithString(&url_string) else {
-            return Err(format!("invalid System Settings URL: {}", url));
-        };
-
-        let configuration = NSWorkspaceOpenConfiguration::configuration();
-        configuration.setActivates(true);
-        configuration.setHides(false);
-        configuration.setHidesOthers(false);
-        configuration.setPromptsUserIfNeeded(true);
-
-        let launch_result = std::rc::Rc::new(std::cell::RefCell::new(None::<Result<(), String>>));
-        let completion_result = launch_result.clone();
-        let completion = StackBlock::new(
-            move |running_app: *mut objc2_app_kit::NSRunningApplication,
-                  error: *mut objc2_foundation::NSError| {
-                if !error.is_null() {
-                    let error = unsafe { &*error };
-                    completion_result
-                        .borrow_mut()
-                        .replace(Err(error.localizedDescription().to_string()));
-                    return;
-                }
-
-                if running_app.is_null() {
-                    completion_result.borrow_mut().replace(Err(
-                        "System Settings launch returned no application instance".to_owned(),
-                    ));
-                    return;
-                }
-
-                let running_app = unsafe { &*running_app };
-                running_app.unhide();
-                let _ = running_app
-                    .activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
-                completion_result.borrow_mut().replace(Ok(()));
-            },
-        );
-
-        workspace.openURL_configuration_completionHandler(
-            &ns_url,
-            &configuration,
-            Some(&completion),
-        );
-
-        let result = launch_result.borrow_mut().take().unwrap_or_else(|| {
-            Err("System Settings launch did not report completion synchronously".to_owned())
-        });
-        result
     }
 
     /// Loads the config file only when opening Settings and presents the window. The
@@ -1549,13 +1472,69 @@ fn settings_rollback_error(
 // `concat!` accepts only literals, and `format!` cannot implicitly capture
 // `{SAVE_BUTTON_TITLE}` from a format string expanded from a macro, so the
 // title is passed as an explicit named argument.
+/// Opens the first of `urls` that System Settings accepts and brings System
+/// Settings forward. macOS reports the outcome on a concurrent queue after
+/// this returns, so the second URL is tried from there, back on the main
+/// queue.
+fn open_system_settings(urls: [&'static str; 2]) {
+    open_system_settings_url(urls[0], Some(urls[1]));
+}
+
+fn open_system_settings_url(url: &'static str, fallback: Option<&'static str>) {
+    let Some(ns_url) = NSURL::URLWithString(&NSString::from_str(url)) else {
+        log::error!("invalid System Settings URL: {}", url);
+        if let Some(fallback) = fallback {
+            open_system_settings_url(fallback, None);
+        }
+        return;
+    };
+
+    let configuration = NSWorkspaceOpenConfiguration::configuration();
+    configuration.setActivates(true);
+    configuration.setHides(false);
+    configuration.setHidesOthers(false);
+    configuration.setPromptsUserIfNeeded(true);
+
+    let completion = RcBlock::new(
+        move |_running_app: *mut objc2_app_kit::NSRunningApplication,
+              error: *mut objc2_foundation::NSError| {
+            // SAFETY: AppKit passes either null or a valid `NSError` for the
+            // duration of the call.
+            let Some(error) = (unsafe { error.as_ref() }) else {
+                return;
+            };
+            let message = error.localizedDescription().to_string();
+            match fallback {
+                Some(fallback) => {
+                    log::warn!(
+                        "System Settings did not open {} ({}); trying {}",
+                        url,
+                        message,
+                        fallback
+                    );
+                    DispatchQueue::main().exec_async(move || {
+                        open_system_settings_url(fallback, None)
+                    });
+                }
+                None => log::error!("failed to open System Settings at {}: {}", url, message),
+            }
+        },
+    );
+
+    NSWorkspace::sharedWorkspace().openURL_configuration_completionHandler(
+        &ns_url,
+        &configuration,
+        Some(&completion),
+    );
+}
+
 fn missing_config_alert_text(config_path: &Path) -> String {
     format!(
         concat!(
             "Settings opens so you can create one on first launch.\n",
             "Review the defaults, then click {save_button} to write:\n\n",
             "{config_path}\n\n",
-            "simple-ptt is a menu bar app, so a successful launch appears in the menu bar rather than the Dock."
+            "simple-ptt runs from the menu bar. Its Dock icon shows only while Settings or the permissions window is open."
         ),
         save_button = SAVE_BUTTON_TITLE,
         config_path = config_path.display(),
