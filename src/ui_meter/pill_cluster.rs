@@ -109,7 +109,7 @@ fn pitch(cluster_width: f64) -> f64 {
 /// from the centre towards both edges, giving speech a centred silhouette.
 fn pill_x(band: usize, cluster_width: f64) -> f64 {
     let centre = (SPECTRUM_BANDS - 1) / 2;
-    let column = if band % 2 == 0 {
+    let column = if band.is_multiple_of(2) {
         centre - band / 2
     } else {
         centre + band / 2 + 1
@@ -143,7 +143,7 @@ mod tests {
                 distance(*a).total_cmp(&distance(*b))
             });
 
-            for (pair, nearest) in bands.chunks_exact(2).enumerate() {
+            for (pair, nearest) in bands.as_chunks::<2>().0.iter().enumerate() {
                 assert!(
                     nearest.contains(&(pair * 2)) && nearest.contains(&(pair * 2 + 1)),
                     "width {cluster_width}: pair {pair} contains {nearest:?}"

@@ -112,7 +112,7 @@ impl PermissionsDialog {
         };
         accessibility_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
-            &*accessibility_button,
+            &accessibility_button,
             HORIZONTAL_PADDING,
             TOP_BUTTON_ROW_Y,
             TWO_BUTTON_ROW_WIDTH,
@@ -130,7 +130,7 @@ impl PermissionsDialog {
         };
         microphone_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
-            &*microphone_button,
+            &microphone_button,
             HORIZONTAL_PADDING + TWO_BUTTON_ROW_WIDTH + BUTTON_GAP,
             TOP_BUTTON_ROW_Y,
             TWO_BUTTON_ROW_WIDTH,
@@ -148,7 +148,7 @@ impl PermissionsDialog {
         };
         reset_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
-            &*reset_button,
+            &reset_button,
             HORIZONTAL_PADDING,
             BOTTOM_BUTTON_ROW_Y,
             THREE_BUTTON_ROW_WIDTH,
@@ -166,7 +166,7 @@ impl PermissionsDialog {
         };
         recheck_button.setFont(Some(&permissions_dialog_font()));
         set_view_frame(
-            &*recheck_button,
+            &recheck_button,
             HORIZONTAL_PADDING + THREE_BUTTON_ROW_WIDTH + BUTTON_GAP,
             BOTTOM_BUTTON_ROW_Y,
             THREE_BUTTON_ROW_WIDTH,
@@ -186,7 +186,7 @@ impl PermissionsDialog {
         quit_button.setKeyEquivalent(ns_string!("q"));
         quit_button.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
         set_view_frame(
-            &*quit_button,
+            &quit_button,
             HORIZONTAL_PADDING + (THREE_BUTTON_ROW_WIDTH * 2.0) + (BUTTON_GAP * 2.0),
             BOTTOM_BUTTON_ROW_Y,
             THREE_BUTTON_ROW_WIDTH,

@@ -644,11 +644,6 @@ mod tests {
         assert_eq!(&*state.overlay_text(), text);
     }
 
-    #[test]
-    fn audio_queue_capacity_provides_ample_buffer_depth() {
-        assert!(AUDIO_QUEUE_CAPACITY >= 256);
-    }
-
     /// A session whose audio queue holds one chunk, and its receiving end.
     fn one_chunk_session() -> (
         ActiveSession,

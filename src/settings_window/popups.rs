@@ -66,7 +66,7 @@ pub fn populate_combo_box_with_values(
     for value in values {
         let string = NSString::from_str(value);
         unsafe {
-            combo_box.addItemWithObjectValue(&*string);
+            combo_box.addItemWithObjectValue(&string);
         }
     }
     combo_box.setStringValue(&NSString::from_str(selected_value.trim()));

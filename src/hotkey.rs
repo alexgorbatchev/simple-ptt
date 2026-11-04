@@ -51,6 +51,16 @@ struct CurrentHotkeyConfig {
     transformation_hotkey_enabled: bool,
 }
 
+/// What the hotkey thread remembers between key events.
+#[derive(Default)]
+struct HotkeyTracking {
+    press_time: Cell<Option<Instant>>,
+    record_hotkey_action: Cell<Option<RecordHotkeyAction>>,
+    correction_key_origin: Cell<Option<CorrectionOrigin>>,
+    transform_hotkey_is_down: Cell<bool>,
+    clipboard_insert_is_down: Cell<bool>,
+}
+
 pub fn spawn_hotkey_thread(
     state: Arc<AppState>,
     controller: TranscriptionController,
@@ -61,11 +71,7 @@ pub fn spawn_hotkey_thread(
         .name("hotkey".into())
         .spawn(move || {
             log::info!("hotkey thread started");
-            let press_time: Cell<Option<Instant>> = Cell::new(None);
-            let record_hotkey_action: Cell<Option<RecordHotkeyAction>> = Cell::new(None);
-            let correction_key_origin: Cell<Option<CorrectionOrigin>> = Cell::new(None);
-            let transform_hotkey_is_down: Cell<bool> = Cell::new(false);
-            let clipboard_insert_is_down: Cell<bool> = Cell::new(false);
+            let tracking = HotkeyTracking::default();
 
             if let Err(error) = run_hotkey_event_loop(move |event| {
                 let settings_window_visible = hotkey_capture_controller.settings_window_visible();
@@ -82,11 +88,7 @@ pub fn spawn_hotkey_thread(
                                 &config_store,
                                 &state,
                                 &controller,
-                                &press_time,
-                                &record_hotkey_action,
-                                &correction_key_origin,
-                                &transform_hotkey_is_down,
-                                &clipboard_insert_is_down,
+                                &tracking,
                             )
                         }
                     }
@@ -102,11 +104,7 @@ pub fn spawn_hotkey_thread(
                                 &config_store,
                                 &state,
                                 &controller,
-                                &press_time,
-                                &record_hotkey_action,
-                                &correction_key_origin,
-                                &transform_hotkey_is_down,
-                                &clipboard_insert_is_down,
+                                &tracking,
                             )
                         }
                     }
@@ -124,12 +122,15 @@ fn handle_key_press(
     config_store: &LiveConfigStore,
     state: &AppState,
     controller: &TranscriptionController,
-    press_time: &Cell<Option<Instant>>,
-    record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
-    correction_key_origin: &Cell<Option<CorrectionOrigin>>,
-    transform_hotkey_is_down: &Cell<bool>,
-    clipboard_insert_is_down: &Cell<bool>,
+    tracking: &HotkeyTracking,
 ) -> bool {
+    let HotkeyTracking {
+        press_time,
+        record_hotkey_action,
+        correction_key_origin,
+        transform_hotkey_is_down,
+        clipboard_insert_is_down,
+    } = tracking;
     let hotkey_config = current_hotkey_config(config_store);
 
     let open_settings = key == Key::Comma
@@ -373,12 +374,15 @@ fn handle_key_release(
     config_store: &LiveConfigStore,
     state: &AppState,
     controller: &TranscriptionController,
-    press_time: &Cell<Option<Instant>>,
-    record_hotkey_action: &Cell<Option<RecordHotkeyAction>>,
-    correction_key_origin: &Cell<Option<CorrectionOrigin>>,
-    transform_hotkey_is_down: &Cell<bool>,
-    clipboard_insert_is_down: &Cell<bool>,
+    tracking: &HotkeyTracking,
 ) -> bool {
+    let HotkeyTracking {
+        press_time,
+        record_hotkey_action,
+        correction_key_origin,
+        transform_hotkey_is_down,
+        clipboard_insert_is_down,
+    } = tracking;
     let hotkey_config = current_hotkey_config(config_store);
 
     if hotkey_config
@@ -717,7 +721,6 @@ mod tests {
     fn escape_on_an_error_dismisses_it_without_leaving_an_abort_behind() {
         use crate::key::Key;
         use crate::state::{AppState, STATE_IDLE};
-        use std::cell::Cell;
 
         let state = AppState::new();
         state.report_error(
@@ -737,11 +740,7 @@ mod tests {
             &config_store,
             &state,
             &controller,
-            &Cell::new(None),
-            &Cell::new(None),
-            &Cell::new(None),
-            &Cell::new(false),
-            &Cell::new(false),
+            &super::HotkeyTracking::default(),
         );
 
         assert!(handled);
@@ -756,7 +755,7 @@ mod tests {
     #[test]
     fn command_comma_discards_the_overlay_and_requests_settings() {
         use super::{
-            AppState, Cell, Instant, LiveConfigStore, TranscriptionController, STATE_BUFFER_READY,
+            AppState, Instant, LiveConfigStore, TranscriptionController, STATE_BUFFER_READY,
             STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
         };
         for (current_state, correcting) in [
@@ -780,12 +779,16 @@ mod tests {
                 std::path::PathBuf::from(".tmp/overlay-settings/config.toml"),
             );
             let controller = TranscriptionController::without_worker();
-            let pressed_at = Cell::new(Some(Instant::now()));
-            let record_action =
-                Cell::new(Some(super::RecordHotkeyAction::StopAndTransformAndPaste));
-            let correction_origin = Cell::new(Some(super::CorrectionOrigin::Dictation));
-            let transform_down = Cell::new(true);
-            let clipboard_down = Cell::new(true);
+            let tracking = super::HotkeyTracking::default();
+            tracking.press_time.set(Some(Instant::now()));
+            tracking
+                .record_hotkey_action
+                .set(Some(super::RecordHotkeyAction::StopAndTransformAndPaste));
+            tracking
+                .correction_key_origin
+                .set(Some(super::CorrectionOrigin::Dictation));
+            tracking.transform_hotkey_is_down.set(true);
+            tracking.clipboard_insert_is_down.set(true);
 
             assert!(super::handle_key_press(
                 Key::Comma,
@@ -796,11 +799,7 @@ mod tests {
                 &store,
                 &state,
                 &controller,
-                &pressed_at,
-                &record_action,
-                &correction_origin,
-                &transform_down,
-                &clipboard_down
+                &tracking,
             ));
 
             assert!(state.is_overlay_dismissed());
@@ -810,11 +809,11 @@ mod tests {
                 !state.take_settings_request(),
                 "present Settings once per request"
             );
-            assert!(pressed_at.get().is_none());
-            assert!(record_action.get().is_none());
-            assert!(correction_origin.get().is_none());
-            assert!(!transform_down.get());
-            assert!(!clipboard_down.get());
+            assert!(tracking.press_time.get().is_none());
+            assert!(tracking.record_hotkey_action.get().is_none());
+            assert!(tracking.correction_key_origin.get().is_none());
+            assert!(!tracking.transform_hotkey_is_down.get());
+            assert!(!tracking.clipboard_insert_is_down.get());
             assert_eq!(
                 state.is_abort_requested(),
                 !matches!(current_state, STATE_IDLE | STATE_ERROR)
@@ -829,11 +828,7 @@ mod tests {
                     &store,
                     &state,
                     &controller,
-                    &pressed_at,
-                    &record_action,
-                    &correction_origin,
-                    &transform_down,
-                    &clipboard_down,
+                    &tracking,
                 );
             }
             assert!(state.overlay_text().is_empty());
@@ -843,7 +838,7 @@ mod tests {
 
     #[test]
     fn command_comma_leaves_other_apps_and_other_comma_chords_alone() {
-        use super::{AppState, Cell, LiveConfigStore, TranscriptionController, STATE_RECORDING};
+        use super::{AppState, LiveConfigStore, TranscriptionController, STATE_RECORDING};
         let command = HotkeyModifiers {
             meta: true,
             ..HotkeyModifiers::default()
@@ -896,11 +891,7 @@ mod tests {
                 &store,
                 &state,
                 &TranscriptionController::without_worker(),
-                &Cell::new(None),
-                &Cell::new(None),
-                &Cell::new(None),
-                &Cell::new(false),
-                &Cell::new(false)
+                &super::HotkeyTracking::default(),
             ));
             assert_eq!(&*state.overlay_text(), "Keep this narration");
             assert!(!state.is_abort_requested());
@@ -910,7 +901,7 @@ mod tests {
 
     #[test]
     fn command_comma_discards_an_empty_worker_buffer_without_leaving_an_abort() {
-        use super::{AppState, Cell, Instant, LiveConfigStore, STATE_BUFFER_READY, STATE_IDLE};
+        use super::{AppState, Instant, LiveConfigStore, STATE_BUFFER_READY, STATE_IDLE};
         let state = AppState::new();
         state.set_state(STATE_BUFFER_READY);
         state.set_overlay_window_visible(true);
@@ -932,11 +923,7 @@ mod tests {
             &store,
             &state,
             &controller,
-            &Cell::new(None),
-            &Cell::new(None),
-            &Cell::new(None),
-            &Cell::new(false),
-            &Cell::new(false)
+            &super::HotkeyTracking::default(),
         ));
         let deadline = Instant::now() + std::time::Duration::from_secs(2);
         while state.get_state() != STATE_IDLE && Instant::now() < deadline {
@@ -1121,8 +1108,6 @@ mod tests {
 
     #[test]
     fn default_correction_requires_option_and_command() {
-        use std::cell::Cell;
-
         for (first, second) in [
             (Key::AltLeft, Key::MetaLeft),
             (Key::MetaRight, Key::AltRight),
@@ -1137,24 +1122,9 @@ mod tests {
                 ".tmp/correction-chord/config.toml".into(),
             );
             let controller = crate::transcription::TranscriptionController::without_worker();
-            let pressed_at = Cell::new(None);
-            let record_action = Cell::new(None);
-            let correction_down = Cell::new(None);
-            let transform_down = Cell::new(false);
-            let clipboard_down = Cell::new(false);
+            let tracking = super::HotkeyTracking::default();
             let press = |key, modifiers| {
-                super::handle_key_press(
-                    key,
-                    modifiers,
-                    &store,
-                    &state,
-                    &controller,
-                    &pressed_at,
-                    &record_action,
-                    &correction_down,
-                    &transform_down,
-                    &clipboard_down,
-                )
+                super::handle_key_press(key, modifiers, &store, &state, &controller, &tracking)
             };
 
             assert!(
@@ -1184,24 +1154,9 @@ mod tests {
             std::path::PathBuf::from(".tmp/correction/config.toml"),
         );
         let controller = crate::transcription::TranscriptionController::without_worker();
-        let pressed_at = std::cell::Cell::new(None);
-        let record_action = std::cell::Cell::new(None);
-        let correction_down = std::cell::Cell::new(None);
-        let transform_down = std::cell::Cell::new(false);
-        let clipboard_down = std::cell::Cell::new(false);
+        let tracking = super::HotkeyTracking::default();
         let press = |key, modifiers| {
-            super::handle_key_press(
-                key,
-                modifiers,
-                &store,
-                &state,
-                &controller,
-                &pressed_at,
-                &record_action,
-                &correction_down,
-                &transform_down,
-                &clipboard_down,
-            )
+            super::handle_key_press(key, modifiers, &store, &state, &controller, &tracking)
         };
         let release = |key| {
             super::handle_key_release(
@@ -1210,11 +1165,7 @@ mod tests {
                 &store,
                 &state,
                 &controller,
-                &pressed_at,
-                &record_action,
-                &correction_down,
-                &transform_down,
-                &clipboard_down,
+                &tracking,
             )
         };
         let command = HotkeyModifiers {
@@ -1226,7 +1177,7 @@ mod tests {
         assert!(!state.is_overlay_correction_active());
         assert!(!press(Key::KeyC, command));
         assert!(press(Key::KeyV, command));
-        assert!(clipboard_down.get());
+        assert!(tracking.clipboard_insert_is_down.get());
         assert!(release(Key::KeyV));
         assert!(!release(Key::MetaLeft));
         assert!(press(Key::AltLeft, HotkeyModifiers::default()));

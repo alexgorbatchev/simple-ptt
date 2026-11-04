@@ -350,7 +350,7 @@ fn apply_overlay_update(
     }
 }
 
-fn required_api_key<'a>(config: &'a TransformationRuntimeConfig) -> Result<&'a str, String> {
+fn required_api_key(config: &TransformationRuntimeConfig) -> Result<&str, String> {
     config
         .api_key
         .as_deref()

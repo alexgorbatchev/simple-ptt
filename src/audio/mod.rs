@@ -756,7 +756,7 @@ mod tests {
             ),
         ];
 
-        let selected = config_with_preferred_rate(ranges.clone(), 16_000).unwrap();
+        let selected = config_with_preferred_rate(ranges, 16_000).unwrap();
         assert_eq!(selected.sample_rate(), 16_000);
         assert_eq!(selected.channels(), 2);
         assert_eq!(selected.sample_format(), SampleFormat::F32);

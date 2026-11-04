@@ -37,7 +37,7 @@ use crate::hotkey_capture::{
     HotkeyCaptureTarget,
 };
 use crate::icon::{make_application_icon, make_status_bar_active_icon, make_status_bar_icon};
-use crate::overlay::{OverlayStyle, OverlayWindow};
+use crate::overlay::{OverlayContent, OverlayStyle, OverlayWindow};
 use crate::permissions::{self, GlobalHotkeyPermissions};
 use crate::permissions_dialog::PermissionsDialog;
 use crate::settings::LiveConfigStore;
@@ -568,20 +568,34 @@ define_class!(
     }
 );
 
+/// Everything `main` prepares before the app delegate exists.
+pub struct AppDelegateSetup {
+    pub overlay_style: OverlayStyle,
+    pub config_store: LiveConfigStore,
+    pub startup_hotkey_permissions: GlobalHotkeyPermissions,
+    pub initial_audio_error: Option<String>,
+    pub startup_config_problems: Vec<ConfigProblem>,
+    pub hotkey_capture_controller: HotkeyCaptureController,
+    pub transformation_models_controller: TransformationModelsController,
+    pub deepgram_connection_controller: DeepgramConnectionController,
+    pub audio_controller: AudioController,
+    pub state: Arc<AppState>,
+}
+
 impl AppDelegate {
-    pub fn new(
-        mtm: MainThreadMarker,
-        overlay_style: OverlayStyle,
-        config_store: LiveConfigStore,
-        startup_hotkey_permissions: GlobalHotkeyPermissions,
-        initial_audio_error: Option<String>,
-        startup_config_problems: Vec<ConfigProblem>,
-        hotkey_capture_controller: HotkeyCaptureController,
-        transformation_models_controller: TransformationModelsController,
-        deepgram_connection_controller: DeepgramConnectionController,
-        audio_controller: AudioController,
-        state: Arc<AppState>,
-    ) -> Retained<Self> {
+    pub fn new(mtm: MainThreadMarker, setup: AppDelegateSetup) -> Retained<Self> {
+        let AppDelegateSetup {
+            overlay_style,
+            config_store,
+            startup_hotkey_permissions,
+            initial_audio_error,
+            startup_config_problems,
+            hotkey_capture_controller,
+            transformation_models_controller,
+            deepgram_connection_controller,
+            audio_controller,
+            state,
+        } = setup;
         let this = Self::alloc(mtm).set_ivars(Ivars {
             app_updater: OnceCell::new(),
             audio_controller,
@@ -1395,15 +1409,17 @@ impl AppDelegate {
 
         self.update_ui(
             mtm,
-            snapshot.state,
-            snapshot.overlay_dismissed,
-            &snapshot.overlay_text,
-            &snapshot.overlay_error_text,
-            &snapshot.overlay_correction_text,
-            snapshot.overlay_correction_active,
-            snapshot.overlay_text_opacity,
-            snapshot.mic_meter,
-            snapshot.capturing_audio,
+            OverlayContent {
+                state: snapshot.state,
+                dismissed: snapshot.overlay_dismissed,
+                text: &snapshot.overlay_text,
+                error_text: &snapshot.overlay_error_text,
+                correction_text: &snapshot.overlay_correction_text,
+                correction_active: snapshot.overlay_correction_active,
+                text_opacity: snapshot.overlay_text_opacity,
+                mic_meter: snapshot.mic_meter,
+                capturing_audio: snapshot.capturing_audio,
+            },
         );
         if settings_requested {
             self.ivars()
@@ -1413,45 +1429,21 @@ impl AppDelegate {
         }
     }
 
-    pub fn update_ui(
-        &self,
-        mtm: MainThreadMarker,
-        state: u8,
-        overlay_dismissed: bool,
-        overlay_text: &OverlayText,
-        overlay_error_text: &str,
-        overlay_correction_text: &OverlayText,
-        overlay_correction_active: bool,
-        overlay_text_opacity: f64,
-        mic_meter: MicMeterSnapshot,
-        capturing_audio: bool,
-    ) {
+    pub fn update_ui(&self, mtm: MainThreadMarker, content: OverlayContent<'_>) {
         self.handle_pending_hotkey_capture_preview();
         self.handle_pending_hotkey_capture();
         self.handle_pending_transformation_model_updates();
         self.handle_pending_deepgram_check_updates();
         self.ivars().audio_controller.apply_pending_if_idle();
-        update_status_item(self, mtm, state);
+        update_status_item(self, mtm, content.state);
 
         if self.ivars().state.is_settings_window_visible() {
             if let Some(settings_window) = self.ivars().settings_window.get() {
-                settings_window.update_meter(Some(mic_meter));
+                settings_window.update_meter(Some(content.mic_meter));
             }
         }
 
-        update_overlay_window(
-            self,
-            mtm,
-            state,
-            overlay_dismissed,
-            overlay_text,
-            overlay_error_text,
-            overlay_correction_text,
-            overlay_correction_active,
-            overlay_text_opacity,
-            mic_meter,
-            capturing_audio,
-        );
+        update_overlay_window(self, mtm, content);
     }
 }
 
@@ -1798,29 +1790,10 @@ fn update_status_item(delegate: &AppDelegate, mtm: MainThreadMarker, state: u8) 
 fn update_overlay_window(
     delegate: &AppDelegate,
     mtm: MainThreadMarker,
-    state: u8,
-    overlay_dismissed: bool,
-    overlay_text: &OverlayText,
-    overlay_error_text: &str,
-    overlay_correction_text: &OverlayText,
-    overlay_correction_active: bool,
-    overlay_text_opacity: f64,
-    mic_meter: MicMeterSnapshot,
-    capturing_audio: bool,
+    content: OverlayContent<'_>,
 ) {
     if let Some(overlay_window) = delegate.ivars().overlay_window.get() {
-        overlay_window.update(
-            mtm,
-            state,
-            overlay_dismissed,
-            overlay_text,
-            overlay_error_text,
-            overlay_correction_text,
-            overlay_correction_active,
-            overlay_text_opacity,
-            mic_meter,
-            capturing_audio,
-        );
+        overlay_window.update(mtm, content);
     }
 }
 
@@ -1931,7 +1904,9 @@ impl StatusPollState {
         let should_animate_meter = current.capturing_audio;
         let should_animate_overlay = matches!(current.state, STATE_PROCESSING | STATE_TRANSFORMING)
             && !current.overlay_dismissed;
-        let background_refresh_due = self.frame_count % STATUS_POLL_BACKGROUND_REFRESH_TICKS == 0;
+        let background_refresh_due = self
+            .frame_count
+            .is_multiple_of(STATUS_POLL_BACKGROUND_REFRESH_TICKS);
 
         if !ui_changed
             && !mic_meter_changed
@@ -1967,6 +1942,45 @@ fn show_modal_alert(message_text: &str, informative_text: &str) {
 
 pub fn show_startup_error_dialog(message_text: &str, informative_text: &str) {
     show_modal_alert(message_text, informative_text);
+}
+
+fn status_poll_selector() -> objc2::runtime::Sel {
+    sel!(pollStatus:)
+}
+
+fn settings_presentation_turn_selector() -> objc2::runtime::Sel {
+    sel!(runSettingsPresentationTurn)
+}
+
+/// Schedules the repeating status poll on the main run loop.
+///
+/// Every tick runs on the main thread, so it reaches the main-thread-only
+/// `AppDelegate` (and the `!Send` `AudioController` it owns) through a normal
+/// `&AppDelegate`. The timer is added in `NSRunLoopCommonModes`, the modes in
+/// which the main run loop also drains the main dispatch queue, so it keeps
+/// firing while menus are tracked or modal alerts run.
+pub fn setup_status_polling(delegate: &AppDelegate) {
+    // SAFETY: `delegate` is an `AppDelegate`, which implements
+    // `status_poll_selector()` taking the firing `NSTimer`; `userInfo` is nil.
+    // The timer retains its target until invalidated and the run loop retains
+    // the timer, so the delegate outlives every tick.
+    let timer = unsafe {
+        NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
+            STATUS_POLL_INTERVAL_SECONDS,
+            delegate,
+            status_poll_selector(),
+            None,
+            true,
+        )
+    };
+    timer.setTolerance(STATUS_POLL_TOLERANCE_SECONDS);
+    // SAFETY: `NSRunLoop` is not thread-safe; this runs on the main thread (a
+    // `&AppDelegate` only exists there), which owns the main run loop.
+    // `NSRunLoopCommonModes` is an immutable Foundation constant, and the timer
+    // is freshly created and not yet scheduled on any run loop.
+    unsafe {
+        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
+    }
 }
 
 #[cfg(test)]
@@ -2412,44 +2426,5 @@ mod tests {
             poll_state.advance(&snapshot, true),
             StatusPollOutcome::Refresh { ui_changed: false }
         );
-    }
-}
-
-fn status_poll_selector() -> objc2::runtime::Sel {
-    sel!(pollStatus:)
-}
-
-fn settings_presentation_turn_selector() -> objc2::runtime::Sel {
-    sel!(runSettingsPresentationTurn)
-}
-
-/// Schedules the repeating status poll on the main run loop.
-///
-/// Every tick runs on the main thread, so it reaches the main-thread-only
-/// `AppDelegate` (and the `!Send` `AudioController` it owns) through a normal
-/// `&AppDelegate`. The timer is added in `NSRunLoopCommonModes`, the modes in
-/// which the main run loop also drains the main dispatch queue, so it keeps
-/// firing while menus are tracked or modal alerts run.
-pub fn setup_status_polling(delegate: &AppDelegate) {
-    // SAFETY: `delegate` is an `AppDelegate`, which implements
-    // `status_poll_selector()` taking the firing `NSTimer`; `userInfo` is nil.
-    // The timer retains its target until invalidated and the run loop retains
-    // the timer, so the delegate outlives every tick.
-    let timer = unsafe {
-        NSTimer::timerWithTimeInterval_target_selector_userInfo_repeats(
-            STATUS_POLL_INTERVAL_SECONDS,
-            delegate,
-            status_poll_selector(),
-            None,
-            true,
-        )
-    };
-    timer.setTolerance(STATUS_POLL_TOLERANCE_SECONDS);
-    // SAFETY: `NSRunLoop` is not thread-safe; this runs on the main thread (a
-    // `&AppDelegate` only exists there), which owns the main run loop.
-    // `NSRunLoopCommonModes` is an immutable Foundation constant, and the timer
-    // is freshly created and not yet scheduled on any run loop.
-    unsafe {
-        NSRunLoop::mainRunLoop().addTimer_forMode(&timer, NSRunLoopCommonModes);
     }
 }

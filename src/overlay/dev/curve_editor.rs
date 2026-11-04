@@ -103,13 +103,16 @@ fn moved(curve: HaloCurve, handle: Handle, x: f64, y: f64, y_max: f64) -> HaloCu
     curve
 }
 
+/// Called with the curve after each edit.
+type CurveChangeHandler = Box<dyn Fn(HaloCurve)>;
+
 pub struct CurveIvars {
     curve: Cell<HaloCurve>,
     dragging: Cell<Option<Handle>>,
     enabled: Cell<bool>,
     /// Blur strength at the top of the plot.
     y_max: Cell<f64>,
-    on_change: RefCell<Option<Box<dyn Fn(HaloCurve)>>>,
+    on_change: RefCell<Option<CurveChangeHandler>>,
 }
 
 define_class!(

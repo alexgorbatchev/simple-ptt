@@ -18,7 +18,7 @@ use objc2_quartz_core::CAGradientLayer;
 
 use crate::app::overlay_style_from_config;
 use crate::config::Config;
-use crate::overlay::OverlayWindow;
+use crate::overlay::{OverlayContent, OverlayWindow};
 use crate::state::{
     AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_PROCESSING,
     STATE_RECORDING, STATE_TRANSFORMING,
@@ -207,15 +207,17 @@ pub fn run(dir: &str) {
                       mic: MicMeterSnapshot| {
             overlay.update(
                 mtm,
-                state_value,
-                false,
-                main,
-                error,
-                correction,
-                correction_active,
-                1.0,
-                mic,
-                state_value == STATE_RECORDING,
+                OverlayContent {
+                    state: state_value,
+                    dismissed: false,
+                    text: main,
+                    error_text: error,
+                    correction_text: correction,
+                    correction_active,
+                    text_opacity: 1.0,
+                    mic_meter: mic,
+                    capturing_audio: state_value == STATE_RECORDING,
+                },
             );
         };
         // Like the status poll: one update, then ~75 ms of run loop, and a

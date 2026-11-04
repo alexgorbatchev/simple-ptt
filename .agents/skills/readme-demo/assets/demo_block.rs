@@ -143,15 +143,17 @@
                     let app_state = if applying { STATE_TRANSFORMING } else { STATE_RECORDING };
                     demo.overlay.update(
                         mtm,
-                        app_state,
-                        false,
-                        &texts.overlay_text_snapshot(),
-                        "",
-                        &texts.overlay_correction_text_snapshot(),
-                        correction_held,
-                        1.0,
-                        mic,
-                        true,
+                        crate::overlay::OverlayContent {
+                            state: app_state,
+                            dismissed: false,
+                            text: &texts.overlay_text_snapshot(),
+                            error_text: "",
+                            correction_text: &texts.overlay_correction_text_snapshot(),
+                            correction_active: correction_held,
+                            text_opacity: 1.0,
+                            mic_meter: mic,
+                            capturing_audio: true,
+                        },
                     );
                 }
             }

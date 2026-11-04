@@ -415,7 +415,6 @@ mod tests {
         use crate::settings::LiveConfigStore;
         use crate::state::{AppState, STATE_BUFFER_READY, STATE_PROCESSING, STATE_RECORDING};
         use crate::transcription::TranscriptionController;
-        use std::cell::Cell;
 
         let options = [
             (
@@ -443,11 +442,7 @@ mod tests {
                                 ".tmp/correction-chord/config.toml".into(),
                             );
                             let controller = TranscriptionController::without_worker();
-                            let pressed_at = Cell::new(None);
-                            let record_action = Cell::new(None);
-                            let correction_down = Cell::new(None);
-                            let transform_down = Cell::new(false);
-                            let clipboard_down = Cell::new(false);
+                            let tracking = crate::hotkey::HotkeyTracking::default();
                             let dispatch = |kind, code, flags| match hotkey_event(kind, code, flags)
                                 .unwrap()
                             {
@@ -458,11 +453,7 @@ mod tests {
                                         &store,
                                         &state,
                                         &controller,
-                                        &pressed_at,
-                                        &record_action,
-                                        &correction_down,
-                                        &transform_down,
-                                        &clipboard_down,
+                                        &tracking,
                                     )
                                 }
                                 HotkeyEvent::KeyRelease(key, modifiers) => {
@@ -472,11 +463,7 @@ mod tests {
                                         &store,
                                         &state,
                                         &controller,
-                                        &pressed_at,
-                                        &record_action,
-                                        &correction_down,
-                                        &transform_down,
-                                        &clipboard_down,
+                                        &tracking,
                                     )
                                 }
                             };

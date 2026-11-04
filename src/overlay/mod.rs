@@ -71,6 +71,20 @@ pub struct OverlayStyle {
     pub shortcut_hint: Option<String>,
 }
 
+/// What the overlay shows for one application state.
+#[derive(Clone, Copy)]
+pub struct OverlayContent<'a> {
+    pub state: u8,
+    pub dismissed: bool,
+    pub text: &'a OverlayText,
+    pub error_text: &'a str,
+    pub correction_text: &'a OverlayText,
+    pub correction_active: bool,
+    pub text_opacity: f64,
+    pub mic_meter: MicMeterSnapshot,
+    pub capturing_audio: bool,
+}
+
 #[derive(Debug)]
 pub struct OverlayWindow {
     glass: Rc<OverlayGlass>,
@@ -225,19 +239,18 @@ impl OverlayWindow {
         overlay_window
     }
 
-    pub fn update(
-        &self,
-        mtm: MainThreadMarker,
-        state: u8,
-        overlay_dismissed: bool,
-        overlay_text: &OverlayText,
-        overlay_error_text: &str,
-        overlay_correction_text: &OverlayText,
-        overlay_correction_active: bool,
-        overlay_text_opacity: f64,
-        mic_meter: MicMeterSnapshot,
-        capturing_audio: bool,
-    ) {
+    pub fn update(&self, mtm: MainThreadMarker, content: OverlayContent<'_>) {
+        let OverlayContent {
+            state,
+            dismissed: overlay_dismissed,
+            text: overlay_text,
+            error_text: overlay_error_text,
+            correction_text: overlay_correction_text,
+            correction_active: overlay_correction_active,
+            text_opacity: overlay_text_opacity,
+            mic_meter,
+            capturing_audio,
+        } = content;
         let should_show = !overlay_dismissed
             && matches!(
                 state,
@@ -517,9 +530,11 @@ impl OverlayWindow {
         let meter_style = self.ui_meter_view.style();
         let reduce_motion = reduce_motion();
         let main_content_height = measured_text_height(&self.working_text_view);
-        let correction_content_height = correction_is_visible
-            .then(|| measured_text_height(&self.correction_text_view))
-            .unwrap_or(CORRECTION_OVERLAY_MIN_HEIGHT);
+        let correction_content_height = if correction_is_visible {
+            measured_text_height(&self.correction_text_view)
+        } else {
+            CORRECTION_OVERLAY_MIN_HEIGHT
+        };
         let pinned_top = self.pinned_top.get();
         let current_main_origin_y =
             (self.is_visible.get() && pinned_top.is_none()).then(|| self.glass.main_origin_y());

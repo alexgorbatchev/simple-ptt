@@ -77,7 +77,7 @@ impl SpectrumAnalyzer {
 
     /// Takes in 16-bit little-endian mono samples (the dictation audio).
     pub fn push_pcm16(&mut self, bytes: &[u8]) {
-        for pair in bytes.chunks_exact(2) {
+        for pair in bytes.as_chunks::<2>().0 {
             self.push(f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0);
         }
     }

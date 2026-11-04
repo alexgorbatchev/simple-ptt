@@ -585,7 +585,7 @@ fn resolve_transformation_api_key(
 
     provider
         .api_key_env_vars()
-        .into_iter()
+        .iter()
         .find_map(|variable_name| {
             std::env::var(variable_name)
                 .ok()

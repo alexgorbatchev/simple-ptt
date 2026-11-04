@@ -489,6 +489,9 @@ mod tests {
     };
     use crate::settings_window::defaulted::DefaultedRow;
 
+    /// The error a form edit should produce, and the edit.
+    type FormEditCase = (&'static str, fn(&mut SettingsForm));
+
     fn customized_config() -> Config {
         Config {
             ui: UiConfig {
@@ -757,7 +760,7 @@ mod tests {
 
     #[test]
     fn an_unselected_popup_is_rejected_with_its_field_name() {
-        let cases: [(&str, fn(&mut SettingsForm)); 2] = [
+        let cases: [FormEditCase; 2] = [
             ("General > Meter style: required", |form| {
                 form.general.meter_style_title = None
             }),
@@ -886,7 +889,7 @@ mod tests {
 
     #[test]
     fn integers_outside_the_config_type_range_are_rejected() {
-        let cases: [(&str, fn(&mut SettingsForm)); 3] = [
+        let cases: [FormEditCase; 3] = [
             (
                 "Microphone > Sample rate: must be an unsigned integer",
                 |form| form.microphone.sample_rate = Some(u64::from(u32::MAX) + 1),

@@ -53,7 +53,7 @@ const CURVE_PRESETS: [(&str, HaloCurve); 4] = [
     ("Ease out", HaloCurve::EASE_OUT),
     ("Ease in-out", HaloCurve::EASE_IN_OUT),
 ];
-use crate::overlay::OverlayWindow;
+use crate::overlay::{OverlayContent, OverlayWindow};
 use crate::state::{
     normalized_meter_value, AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY,
     STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_TRANSFORMING,
@@ -753,15 +753,17 @@ impl TunerState {
         let mtm = MainThreadMarker::new().expect("main thread");
         self.overlay.update(
             mtm,
-            state,
-            false,
-            main,
-            error,
-            correction,
-            correction_active,
-            1.0,
-            mic,
-            state == STATE_RECORDING,
+            OverlayContent {
+                state,
+                dismissed: false,
+                text: main,
+                error_text: error,
+                correction_text: correction,
+                correction_active,
+                text_opacity: 1.0,
+                mic_meter: mic,
+                capturing_audio: state == STATE_RECORDING,
+            },
         );
     }
 }

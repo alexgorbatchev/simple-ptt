@@ -105,7 +105,7 @@ fn run_graphical_application() -> Result<(), String> {
         Some(runtime_config.transformation.hotkey.as_str()),
         runtime_config.transformation.auto,
         runtime_config.transformation.provider,
-        &runtime_config.transformation.model,
+        runtime_config.transformation.model,
         runtime_config.transformation.api_key.as_deref().map(str::trim).map(|value| !value.is_empty()).unwrap_or(false),
         !runtime_config.transformation.system_prompt.trim().is_empty(),
         !runtime_config.transformation.correction_system_prompt.trim().is_empty(),
@@ -168,16 +168,18 @@ fn run_graphical_application() -> Result<(), String> {
     let ns_app = NSApplication::sharedApplication(mtm);
     let delegate = app::AppDelegate::new(
         mtm,
-        app::overlay_style_from_config(&runtime_config),
-        config_store,
-        startup_hotkey_permissions,
-        initial_audio_error,
-        config_problems,
-        hotkey_capture_controller,
-        transformation_models_controller,
-        deepgram_connection_controller,
-        audio_controller,
-        shared_state,
+        app::AppDelegateSetup {
+            overlay_style: app::overlay_style_from_config(&runtime_config),
+            config_store,
+            startup_hotkey_permissions,
+            initial_audio_error,
+            startup_config_problems: config_problems,
+            hotkey_capture_controller,
+            transformation_models_controller,
+            deepgram_connection_controller,
+            audio_controller,
+            state: shared_state,
+        },
     );
     ns_app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
 
