@@ -9,7 +9,10 @@ use objc2_core_foundation::CFRetained;
 use objc2_core_graphics::{CGEvent, CGEventFlags, CGEventTapLocation};
 use objc2_foundation::{MainThreadMarker, NSString};
 
-use crate::state::{AppState, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE};
+use super::{publish_or_hand_over, Publication};
+use crate::state::{
+    AppState, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE, STATE_PROCESSING,
+};
 
 const COMMAND_FLAGGED_V_KEYCODE: u16 = 9;
 const KEY_EVENT_DELAY_MS: u64 = 20;
@@ -54,62 +57,66 @@ pub fn describe_paste_diagnostics(diagnostics: &PasteDiagnostics) -> String {
     )
 }
 
-/// `generation` is the recording the buffered text belongs to.
-pub fn flush_buffered_text_or_paste(
+/// Pastes the text of the recording `generation`. The overlay is dismissed
+/// for the paste while the recording stays current, so no recording starts
+/// and the cancel shortcuts cancel nothing until the paste's outcome is
+/// known. A failed paste returns the text to the overlay as a ready buffer,
+/// so it is never lost. An abort requested before the paste discards the
+/// text, and a recording started before it continues the text.
+pub(super) fn paste_buffered_text(
     state: &AppState,
     generation: RecordingGeneration,
     buffered_text: &mut String,
-    paste: bool,
+    handed_over: &mut String,
 ) {
-    if state.consume_abort_request(generation) {
-        log::info!("discarding buffered text because abort was requested");
-        buffered_text.clear();
-        if let Some(_recording) = state.current_recording(generation) {
+    let publication =
+        publish_or_hand_over(state, generation, handed_over, buffered_text, |recording| {
+            recording.begin_paste();
+            // The paste waits for the overlay to hide before pasting.
+            state.dismiss_overlay();
             state.clear_overlay_text();
             state.clear_overlay_correction_text();
             state.set_overlay_correction_active(false);
             state.set_overlay_text_opacity(1.0);
-            state.set_state(STATE_IDLE);
+            state.set_state(STATE_PROCESSING);
+        });
+    if publication != Publication::Published {
+        if publication == Publication::Cancelled {
+            log::info!("discarding buffered text because abort was requested");
         }
+        buffered_text.clear();
         return;
     }
 
-    if !paste {
-        log::info!("buffering transcript for manual paste");
-        state.set_overlay_text(buffered_text.clone());
-        state.clear_overlay_correction_text();
-        state.set_overlay_correction_active(false);
-        state.set_overlay_text_opacity(1.0);
-        state.set_state(STATE_BUFFER_READY);
-        return;
-    }
-
-    state.clear_overlay_text();
-    state.clear_overlay_correction_text();
-    state.set_overlay_correction_active(false);
-    state.set_overlay_text_opacity(1.0);
-    state.set_state(STATE_IDLE);
-
-    match run_paste_sequence(state, buffered_text.as_str()) {
+    let result = run_paste_sequence(state, buffered_text.as_str());
+    let _recording = state.end_paste();
+    match result {
         Ok(()) => {
             buffered_text.clear();
-            // An abort requested while the paste ran has nothing left to cancel.
-            state.consume_abort_request(generation);
+            state.set_state(STATE_IDLE);
             log::info!("buffer pasted successfully");
         }
         Err(error) => {
-            if state.consume_abort_request(generation) {
-                log::info!("discarding buffered text because abort was requested during paste");
-                buffered_text.clear();
-                return;
-            }
-
             log::error!("failed to copy/paste buffered text: {}", error);
             state.set_overlay_text(buffered_text.clone());
             state.set_overlay_text_opacity(1.0);
+            state.restore_overlay();
             state.set_state(STATE_BUFFER_READY);
         }
     }
+}
+
+/// Runs `work` during the next paste sequence on this thread, as if it
+/// happened while the paste waited for the overlay to hide.
+#[cfg(test)]
+pub(super) fn during_next_paste(work: impl FnOnce() + 'static) {
+    DURING_PASTE.with(|during_paste| *during_paste.borrow_mut() = Some(Box::new(work)));
+}
+
+#[cfg(test)]
+thread_local! {
+    static DURING_PASTE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 pub fn run_paste_sequence(state: &AppState, text: &str) -> Result<(), String> {
@@ -117,7 +124,12 @@ pub fn run_paste_sequence(state: &AppState, text: &str) -> Result<(), String> {
     // they count the attempt and see it fail.
     if cfg!(test) {
         #[cfg(test)]
-        state.record_paste_attempt();
+        {
+            state.record_paste_attempt();
+            if let Some(work) = DURING_PASTE.with(|during_paste| during_paste.borrow_mut().take()) {
+                work();
+            }
+        }
         return Err("paste is disabled in tests".to_owned());
     }
 

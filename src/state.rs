@@ -117,10 +117,28 @@ pub struct RecordingStart {
     pub prefix: String,
 }
 
-/// Holds the current recording while a cancelled one is settled, so a
-/// recording cannot start until the settlement's writes are done.
+/// The recording the overlay and state belong to.
+#[derive(Debug)]
+struct RecordingSlot {
+    generation: RecordingGeneration,
+    /// The recording's text is being pasted. No recording starts, and the
+    /// cancel shortcuts have nothing to cancel, until the paste ends.
+    pasting: bool,
+}
+
+/// Holds the current recording while the worker publishes the outcome of its
+/// work, so a recording cannot start, nor an abort be requested, until the
+/// outcome's writes are done.
 pub struct CurrentRecording<'a> {
-    _recording: MutexGuard<'a, RecordingGeneration>,
+    slot: MutexGuard<'a, RecordingSlot>,
+}
+
+impl CurrentRecording<'_> {
+    /// Marks a paste of this recording's text as running, until
+    /// `AppState::end_paste`.
+    pub fn begin_paste(&mut self) {
+        self.slot.pasting = true;
+    }
 }
 
 #[derive(Debug)]
@@ -128,9 +146,10 @@ pub struct AppState {
     /// Paste sequences started; tests count them instead of pasting.
     #[cfg(test)]
     paste_attempts: AtomicU32,
-    /// The recording the overlay and state belong to. Starting a recording
-    /// and settling a cancelled one both hold this lock.
-    recording: Mutex<RecordingGeneration>,
+    /// The recording the overlay and state belong to. Starting a recording,
+    /// requesting an abort from a hotkey, and publishing the outcome of the
+    /// worker's work all hold this lock.
+    recording: Mutex<RecordingSlot>,
     /// The generation of the recording an abort was requested for, or 0 when
     /// none is pending.
     abort_requested: AtomicU64,
@@ -183,7 +202,10 @@ impl AppState {
         Arc::new(Self {
             #[cfg(test)]
             paste_attempts: AtomicU32::new(0),
-            recording: Mutex::new(RecordingGeneration::FIRST),
+            recording: Mutex::new(RecordingSlot {
+                generation: RecordingGeneration::FIRST,
+                pasting: false,
+            }),
             abort_requested: AtomicU64::new(0),
             abort_notification: tokio::sync::Notify::new(),
             deepgram_waiting: AtomicBool::new(false),
@@ -315,51 +337,96 @@ impl AppState {
     /// Starts a new recording: captures the editable annotation it continues,
     /// then publishes `STATE_RECORDING` under a new generation. The worker
     /// may receive the start command afterwards, so the annotation is read
-    /// first. A cancelled recording's settlement holds the same lock, so it
-    /// either finishes first or sees that this recording replaced it.
-    pub fn begin_recording(&self) -> RecordingStart {
+    /// first. The worker publishes a recording's outcome under the same lock,
+    /// so it either finishes first or sees that this recording replaced it.
+    /// `None` while the current recording's text is being pasted: its outcome
+    /// is not known yet, and a failed paste returns the text to the overlay.
+    pub fn begin_recording(&self) -> Option<RecordingStart> {
         let mut recording = self.lock_recording();
+        if recording.pasting {
+            return None;
+        }
         let prefix = if self.get_state() == STATE_BUFFER_READY {
             self.overlay_text().to_string()
         } else {
             String::new()
         };
-        *recording = recording.next();
+        recording.generation = recording.generation.next();
         self.set_state(STATE_RECORDING);
-        RecordingStart {
-            generation: *recording,
+        Some(RecordingStart {
+            generation: recording.generation,
             prefix,
-        }
+        })
     }
 
+    #[cfg(test)]
     pub fn recording_generation(&self) -> RecordingGeneration {
-        *self.lock_recording()
+        self.lock_recording().generation
     }
 
     /// Holds the recording while `generation` is still the current one, so
-    /// its settlement can write the state and overlay without overwriting a
-    /// recording started after it. `None` means a newer recording owns them.
-    /// Neither start a recording nor request an abort while holding it.
+    /// the worker can publish the outcome of its work without overwriting a
+    /// recording started after it, and so the cancel shortcuts see either the
+    /// state before the outcome or the outcome. `None` means a newer
+    /// recording owns the state and overlay. Neither start a recording nor
+    /// request an abort while holding it.
     pub fn current_recording(
         &self,
         generation: RecordingGeneration,
     ) -> Option<CurrentRecording<'_>> {
         let recording = self.lock_recording();
-        (*recording == generation).then_some(CurrentRecording {
-            _recording: recording,
-        })
+        (recording.generation == generation).then_some(CurrentRecording { slot: recording })
     }
 
-    fn lock_recording(&self) -> MutexGuard<'_, RecordingGeneration> {
+    /// Ends the paste `CurrentRecording::begin_paste` marked, holding the
+    /// recording for the writes of its outcome. No recording started while
+    /// the paste ran, so the pasted recording is still the current one.
+    pub fn end_paste(&self) -> CurrentRecording<'_> {
+        let mut recording = self.lock_recording();
+        recording.pasting = false;
+        CurrentRecording { slot: recording }
+    }
+
+    fn lock_recording(&self) -> MutexGuard<'_, RecordingSlot> {
         // The generation stays valid if a holder panicked.
         self.recording
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Cancels what the overlay shows, for Escape and the Settings shortcut,
+    /// and returns the state it cancelled. Idle and error have no work in
+    /// progress: they return to idle without an abort. Any other state gets
+    /// an abort of the current recording's work. Reading the state and
+    /// requesting the abort under the recording lock orders them against the
+    /// worker publishing that work's outcome (`current_recording`): either
+    /// the worker sees the abort and cancels the work, or it publishes first
+    /// and this returns the published state, for the hotkey to cancel with a
+    /// command. `None` while the recording's text is being pasted, which
+    /// these shortcuts leave alone.
+    pub fn cancel_work_in_progress(&self) -> Option<u8> {
+        let recording = self.lock_recording();
+        if recording.pasting {
+            return None;
+        }
+        let state = self.get_state();
+        if matches!(state, STATE_IDLE | STATE_ERROR) {
+            self.set_state(STATE_IDLE);
+            self.clear_overlay_error_text();
+        } else {
+            self.request_abort_of(recording.generation);
+        }
+        Some(state)
+    }
+
     /// Requests an abort of the current recording's work in progress.
+    #[cfg(test)]
     pub fn request_abort(&self) {
-        let generation = self.recording_generation();
+        let generation = self.lock_recording().generation;
+        self.request_abort_of(generation);
+    }
+
+    fn request_abort_of(&self, generation: RecordingGeneration) {
         self.abort_requested
             .fetch_max(generation.0.get(), Ordering::AcqRel);
         self.abort_notification.notify_waiters();
@@ -944,7 +1011,7 @@ mod tests {
     #[test]
     fn an_abort_cancels_the_recording_it_was_requested_for_once() {
         let state = AppState::new();
-        let recording = state.begin_recording().generation;
+        let recording = state.begin_recording().unwrap().generation;
         state.request_abort();
 
         assert!(state.consume_abort_request(recording));
@@ -955,9 +1022,9 @@ mod tests {
     #[test]
     fn an_unsettled_abort_of_an_earlier_recording_does_not_cancel_the_next() {
         let state = AppState::new();
-        let earlier = state.begin_recording().generation;
+        let earlier = state.begin_recording().unwrap().generation;
         state.request_abort();
-        let next = state.begin_recording().generation;
+        let next = state.begin_recording().unwrap().generation;
         assert!(next > earlier);
 
         assert!(!state.consume_abort_request(next));
@@ -967,8 +1034,8 @@ mod tests {
     #[test]
     fn an_abort_of_a_later_recording_cancels_earlier_work_and_waits_for_its_own() {
         let state = AppState::new();
-        let earlier = state.begin_recording().generation;
-        let later = state.begin_recording().generation;
+        let earlier = state.begin_recording().unwrap().generation;
+        let later = state.begin_recording().unwrap().generation;
         state.request_abort();
 
         assert!(state.consume_abort_request(earlier));
@@ -983,7 +1050,7 @@ mod tests {
         let earlier = state.recording_generation();
         assert!(state.current_recording(earlier).is_some());
 
-        let start = state.begin_recording();
+        let start = state.begin_recording().unwrap();
 
         assert_eq!(state.get_state(), STATE_RECORDING);
         assert!(state.current_recording(earlier).is_none());
@@ -991,14 +1058,31 @@ mod tests {
     }
 
     #[test]
+    fn no_recording_starts_and_nothing_is_cancelled_while_a_paste_runs() {
+        let state = AppState::new();
+        let pasted = state.begin_recording().unwrap().generation;
+        state.set_state(STATE_PROCESSING);
+        state.current_recording(pasted).unwrap().begin_paste();
+
+        assert!(state.begin_recording().is_none());
+        assert_eq!(state.cancel_work_in_progress(), None);
+        assert!(!state.is_abort_requested());
+
+        drop(state.end_paste());
+        assert_eq!(state.cancel_work_in_progress(), Some(STATE_PROCESSING));
+        assert!(state.is_abort_requested());
+        assert!(state.begin_recording().unwrap().generation > pasted);
+    }
+
+    #[test]
     fn starting_a_recording_resumes_only_a_ready_buffer() {
         let state = AppState::new();
         state.set_overlay_text("The ready buffer.");
         state.set_state(STATE_BUFFER_READY);
-        assert_eq!(state.begin_recording().prefix, "The ready buffer.");
+        assert_eq!(state.begin_recording().unwrap().prefix, "The ready buffer.");
 
         state.set_state(STATE_IDLE);
-        assert!(state.begin_recording().prefix.is_empty());
+        assert!(state.begin_recording().unwrap().prefix.is_empty());
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::state::{
     AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING,
     STATE_TRANSFORMING,
 };
-use crate::transcription::TranscriptionController;
+use crate::transcription::{StartSessionError, TranscriptionController};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecordHotkeyAction {
@@ -95,7 +95,7 @@ impl ActiveBindings {
 
 /// What the hotkey thread remembers between key events.
 #[derive(Default)]
-struct HotkeyTracking {
+pub(crate) struct HotkeyTracking {
     press_time: Cell<Option<Instant>>,
     record_hotkey_action: Cell<Option<RecordHotkeyAction>>,
     correction_key_origin: Cell<Option<CorrectionOrigin>>,
@@ -158,7 +158,7 @@ pub fn spawn_hotkey_thread(
         .expect("failed to spawn hotkey thread");
 }
 
-fn handle_key_press(
+pub(crate) fn handle_key_press(
     key: Key,
     current_modifiers: HotkeyModifiers,
     config_store: &LiveConfigStore,
@@ -188,10 +188,9 @@ fn handle_key_press(
             .map(|binding| binding.matches_press(Key::Escape, current_modifiers))
             .unwrap_or(false);
     if open_settings || escape_abort {
-        let current_state = state.get_state();
         if !open_settings
             && !matches!(
-                current_state,
+                state.get_state(),
                 STATE_RECORDING
                     | STATE_PROCESSING
                     | STATE_BUFFER_READY
@@ -202,16 +201,14 @@ fn handle_key_press(
             return false;
         }
 
-        if matches!(current_state, STATE_IDLE | STATE_ERROR) {
-            state.set_state(STATE_IDLE);
-            state.clear_overlay_error_text();
-        } else {
-            // The work in progress uses the request up: the recording's start
-            // or its paste, the buffer's discard, or the transformation. Idle
-            // and error have no work in progress to cancel, so they request
-            // no abort.
-            state.request_abort();
-        }
+        // The work in progress uses the abort up: the recording's start or
+        // its finish, the buffer's discard, or the transformation. Idle and
+        // error have no work in progress to cancel, so they request no abort,
+        // and a paste is left to finish, as the key goes to the app pasted
+        // into.
+        let Some(current_state) = state.cancel_work_in_progress() else {
+            return false;
+        };
         state.dismiss_overlay();
         state.clear_overlay_text();
         state.set_overlay_text_opacity(1.0);
@@ -409,7 +406,7 @@ fn handle_key_press(
     false
 }
 
-fn handle_key_release(
+pub(crate) fn handle_key_release(
     key: Key,
     current_modifiers: HotkeyModifiers,
     config_store: &LiveConfigStore,
@@ -652,6 +649,10 @@ fn start_recording(
             state.restore_overlay();
             log::info!("recording started");
             Some(RecordHotkeyAction::StartRecording)
+        }
+        Err(StartSessionError::PasteRunning) => {
+            log::info!("ignoring record hotkey while the previous recording is pasted");
+            None
         }
         Err(start_error) => {
             log::error!("failed to start recording: {}", start_error);

@@ -18,8 +18,8 @@ use tokio::runtime::Runtime;
 use crate::config::{Config, DeepgramConfig};
 use crate::settings::LiveConfigStore;
 use crate::state::{
-    AppState, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE, STATE_RECORDING,
-    STATE_TRANSFORMING,
+    AppState, CurrentRecording, RecordingGeneration, STATE_BUFFER_READY, STATE_IDLE,
+    STATE_RECORDING, STATE_TRANSFORMING,
 };
 use crate::transformation::{
     transform_text, TransformationPreviewMode, TransformationRuntimeConfig,
@@ -51,6 +51,24 @@ enum Command {
     QueueClipboardInsertion,
 }
 
+/// Why the record hotkey did not start a recording.
+#[derive(Debug, Eq, PartialEq)]
+pub enum StartSessionError {
+    /// The previous recording's text is being pasted. A failed paste returns
+    /// it to the overlay, so a recording waits for the paste's outcome.
+    PasteRunning,
+    WorkerStopped,
+}
+
+impl std::fmt::Display for StartSessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::PasteRunning => "the previous recording is still being pasted",
+            Self::WorkerStopped => "transcription worker thread is not running",
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct TranscriptionController {
     command_tx: Sender<Command>,
@@ -73,14 +91,16 @@ impl TranscriptionController {
         let _ = self.command_tx.send(Command::SetSampleRate(sample_rate));
     }
 
-    pub fn start_session(&self, state: &AppState) -> Result<(), String> {
-        let start = state.begin_recording();
+    pub fn start_session(&self, state: &AppState) -> Result<(), StartSessionError> {
+        let start = state
+            .begin_recording()
+            .ok_or(StartSessionError::PasteRunning)?;
         self.command_tx
             .send(Command::StartSession {
                 recording_prefix: start.prefix,
                 generation: start.generation,
             })
-            .map_err(|_| "transcription worker thread is not running".to_owned())
+            .map_err(|_| StartSessionError::WorkerStopped)
     }
 
     pub fn start_correction_session(&self) -> Result<(), String> {
@@ -180,6 +200,9 @@ fn spawn_worker(
         let mut transformation_history = TransformationHistory::default();
         // The recording the commands being handled belong to.
         let mut generation = RecordingGeneration::FIRST;
+        // Text of a recording that a newer one replaced before the worker
+        // could show it; the newer recording's start continues from it.
+        let mut handed_over = String::new();
 
         while let Ok(command) = command_rx.recv() {
             match command {
@@ -204,22 +227,12 @@ fn spawn_worker(
                     }
 
                     generation = requested_generation;
-                    recording_prefix = requested_prefix;
+                    recording_prefix = starting_prefix(&mut handed_over, requested_prefix);
                     transformation_history.begin_dictation(&recording_prefix);
 
-                    let current_config = config_store.current();
-                    let deepgram_config = match resolved_deepgram_config(&current_config) {
-                        Ok(deepgram_config) => deepgram_config,
-                        Err(error) => {
-                            log::error!("failed to resolve Deepgram config: {}", error);
-                            state.report_error(error);
-                            continue;
-                        }
-                    };
-
-                    let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
                     // Skipping the start uses the abort up; left set, it would
-                    // skip every later start too.
+                    // skip every later start too. Checked before anything can
+                    // fail, so a cancelled start reports no error.
                     if state.consume_abort_request(generation) {
                         log::info!(
                             "skipping dictation start because abort was requested before startup completed"
@@ -232,6 +245,23 @@ fn spawn_worker(
                         }
                         continue;
                     }
+
+                    let current_config = config_store.current();
+                    let deepgram_config = match resolved_deepgram_config(&current_config) {
+                        Ok(deepgram_config) => deepgram_config,
+                        Err(error) => {
+                            log::error!("failed to resolve Deepgram config: {}", error);
+                            publish_or_hand_over(
+                                &state,
+                                generation,
+                                &mut handed_over,
+                                &recording_prefix,
+                                |_| state.report_error(error),
+                            );
+                            continue;
+                        }
+                    };
+                    let current_sample_rate = thread_worker_sample_rate.load(Ordering::Relaxed);
 
                     // The hotkey owns this presentation's visibility. A
                     // queued start must not undo a later empty F5 dismissal.
@@ -258,10 +288,18 @@ fn spawn_worker(
                         }
                         Err(error) => {
                             log::error!("failed to start Deepgram session: {}", error);
+                            publish_or_hand_over(
+                                &state,
+                                generation,
+                                &mut handed_over,
+                                &recording_prefix,
+                                |_| {
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.report_error(error.to_string());
+                                },
+                            );
                             recording_prefix.clear();
-                            state.clear_overlay_text();
-                            state.set_overlay_text_opacity(1.0);
-                            state.report_error(error.to_string());
                         }
                     }
                 }
@@ -406,19 +444,21 @@ fn spawn_worker(
                             }
                             Ok(Some(text)) => {
                                 buffered_text = text;
-                                flush_buffered_text_or_paste(
+                                paste_buffered_text(
                                     &state,
                                     generation,
                                     &mut buffered_text,
-                                    true,
+                                    &mut handed_over,
                                 );
                             }
                             Err(error) => {
                                 log::error!("Deepgram session failed: {}", error);
                                 recording_prefix.clear();
-                                state.clear_overlay_text();
-                                state.set_overlay_text_opacity(1.0);
-                                state.report_error(error.to_string());
+                                publish_outcome(&state, generation, |_| {
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.report_error(error.to_string());
+                                });
                             }
                         }
                     }
@@ -552,11 +592,22 @@ fn spawn_worker(
                             Ok(Some(text)) => text,
                             Err(error) => {
                                 log::error!("correction Deepgram session failed: {}", error);
-                                state.set_overlay_correction_active(false);
-                                state.clear_overlay_correction_text();
-                                state.set_overlay_text(buffered_text.clone());
-                                state.set_overlay_text_opacity(1.0);
-                                state.report_error(error.to_string());
+                                let publication = publish_or_hand_over(
+                                    &state,
+                                    generation,
+                                    &mut handed_over,
+                                    &buffered_text,
+                                    |_| {
+                                        state.set_overlay_correction_active(false);
+                                        state.clear_overlay_correction_text();
+                                        state.set_overlay_text(buffered_text.clone());
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.report_error(error.to_string());
+                                    },
+                                );
+                                if publication != Publication::Published {
+                                    buffered_text.clear();
+                                }
                                 continue;
                             }
                         };
@@ -571,7 +622,7 @@ fn spawn_worker(
                             &correction_request,
                             should_resume_after_correction,
                         ) {
-                            Ok(Some(prefix)) => {
+                            Ok(CorrectionOutcome::Resume(prefix)) => {
                                 recording_prefix = prefix;
                                 let current_sample_rate =
                                     thread_worker_sample_rate.load(Ordering::Relaxed);
@@ -584,8 +635,20 @@ fn spawn_worker(
                                                 "failed to resolve Deepgram config for resume after correction: {}",
                                                 error
                                             );
-                                        state.set_state(STATE_BUFFER_READY);
-                                        state.report_error(error.to_string());
+                                        if publish_or_hand_over(
+                                            &state,
+                                            generation,
+                                            &mut handed_over,
+                                            &recording_prefix,
+                                            |_| {
+                                                state.set_state(STATE_BUFFER_READY);
+                                                state.report_error(error);
+                                            },
+                                        ) != Publication::Published
+                                        {
+                                            buffered_text.clear();
+                                            recording_prefix.clear();
+                                        }
                                         continue;
                                     }
                                 };
@@ -598,8 +661,16 @@ fn spawn_worker(
                                     recording_prefix.clone(),
                                 ) {
                                     Ok(session) => {
-                                        state.set_state(STATE_RECORDING);
-                                        active_session = Some(session);
+                                        active_session = publish_resumed_dictation(
+                                            &state,
+                                            generation,
+                                            session,
+                                            &mut recording_prefix,
+                                            &mut handed_over,
+                                        );
+                                        if active_session.is_none() {
+                                            buffered_text.clear();
+                                        }
                                     }
                                     Err(SessionError::Cancelled) => {
                                         complete_session_cancellation(
@@ -614,16 +685,34 @@ fn spawn_worker(
                                             "failed to resume session after correction: {}",
                                             error
                                         );
-                                        state.report_error(error.to_string());
+                                        if publish_or_hand_over(
+                                            &state,
+                                            generation,
+                                            &mut handed_over,
+                                            &recording_prefix,
+                                            |_| state.report_error(error.to_string()),
+                                        ) != Publication::Published
+                                        {
+                                            buffered_text.clear();
+                                            recording_prefix.clear();
+                                        }
                                     }
                                 }
                             }
-                            Ok(None) => {}
+                            Ok(CorrectionOutcome::Settled) => {}
+                            Ok(CorrectionOutcome::Superseded) => {
+                                hand_over(&mut handed_over, &buffered_text);
+                                buffered_text.clear();
+                            }
                             Err(error) => {
                                 log::error!("correction transformation failed: {}", error);
-                                state.set_overlay_text(buffered_text.clone());
-                                state.set_overlay_text_opacity(1.0);
-                                state.report_error(error.to_string());
+                                publish_error_with_text(
+                                    &state,
+                                    generation,
+                                    &mut handed_over,
+                                    &mut buffered_text,
+                                    &error,
+                                );
                             }
                         }
                     }
@@ -640,9 +729,11 @@ fn spawn_worker(
                             Ok(Some(text)) => {
                                 buffered_text = text;
                                 if buffered_text.trim().is_empty() {
-                                    state.clear_overlay_text();
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.set_state(STATE_IDLE);
+                                    publish_outcome(&state, generation, |_| {
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                    });
                                     continue;
                                 }
 
@@ -692,11 +783,11 @@ fn spawn_worker(
                                                 transformed_text.chars().count()
                                             );
                                             buffered_text = transformed_text;
-                                            flush_buffered_text_or_paste(
+                                            paste_buffered_text(
                                                 &state,
                                                 generation,
                                                 &mut buffered_text,
-                                                true,
+                                                &mut handed_over,
                                             );
                                         }
                                         Ok(None) => {
@@ -706,26 +797,31 @@ fn spawn_worker(
                                         }
                                         Err(error) => {
                                             log::error!("transformation failed: {}", error);
-                                            state.set_overlay_text(buffered_text.clone());
-                                            state.set_overlay_text_opacity(1.0);
-                                            state.report_error(error.to_string());
+                                            publish_error_with_text(
+                                                &state,
+                                                generation,
+                                                &mut handed_over,
+                                                &mut buffered_text,
+                                                &error,
+                                            );
                                         }
                                     }
                                 } else {
-                                    state.set_overlay_text_opacity(1.0);
-                                    flush_buffered_text_or_paste(
+                                    paste_buffered_text(
                                         &state,
                                         generation,
                                         &mut buffered_text,
-                                        true,
+                                        &mut handed_over,
                                     );
                                 }
                             }
                             Err(error) => {
                                 log::error!("Deepgram session failed: {}", error);
-                                state.clear_overlay_text();
-                                state.set_overlay_text_opacity(1.0);
-                                state.report_error(error.to_string());
+                                publish_outcome(&state, generation, |_| {
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.report_error(error.to_string());
+                                });
                             }
                         }
                     }
@@ -745,9 +841,11 @@ fn spawn_worker(
                             Ok(Some(text)) => {
                                 buffered_text = text;
                                 if buffered_text.trim().is_empty() {
-                                    state.clear_overlay_text();
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.set_state(STATE_IDLE);
+                                    publish_outcome(&state, generation, |_| {
+                                        state.clear_overlay_text();
+                                        state.set_overlay_text_opacity(1.0);
+                                        state.set_state(STATE_IDLE);
+                                    });
                                     continue;
                                 }
 
@@ -801,21 +899,19 @@ fn spawn_worker(
                                         }
                                         Err(error) => {
                                             log::error!("transformation failed: {}", error);
-                                            state.set_overlay_text(buffered_text.clone());
-                                            state.set_overlay_text_opacity(1.0);
-                                            state.report_error(error.to_string());
+                                            publish_error_with_text(
+                                                &state,
+                                                generation,
+                                                &mut handed_over,
+                                                &mut buffered_text,
+                                                &error,
+                                            );
                                             continue;
                                         }
                                     }
                                 }
 
-                                recording_prefix = buffered_text.clone();
-                                if !recording_prefix.is_empty()
-                                    && !recording_prefix.ends_with(|c: char| c.is_whitespace())
-                                {
-                                    recording_prefix.push(' ');
-                                }
-
+                                recording_prefix = resume_prefix(&buffered_text);
                                 state.set_overlay_text(recording_prefix.clone());
 
                                 let current_sample_rate =
@@ -828,8 +924,20 @@ fn spawn_worker(
                                                 "failed to resolve Deepgram config for resume: {}",
                                                 error
                                             );
-                                            state.set_state(STATE_BUFFER_READY);
-                                            state.report_error(error.to_string());
+                                            if publish_or_hand_over(
+                                                &state,
+                                                generation,
+                                                &mut handed_over,
+                                                &recording_prefix,
+                                                |_| {
+                                                    state.set_state(STATE_BUFFER_READY);
+                                                    state.report_error(error);
+                                                },
+                                            ) != Publication::Published
+                                            {
+                                                buffered_text.clear();
+                                                recording_prefix.clear();
+                                            }
                                             continue;
                                         }
                                     };
@@ -842,8 +950,16 @@ fn spawn_worker(
                                     recording_prefix.clone(),
                                 ) {
                                     Ok(session) => {
-                                        state.set_state(STATE_RECORDING);
-                                        active_session = Some(session);
+                                        active_session = publish_resumed_dictation(
+                                            &state,
+                                            generation,
+                                            session,
+                                            &mut recording_prefix,
+                                            &mut handed_over,
+                                        );
+                                        if active_session.is_none() {
+                                            buffered_text.clear();
+                                        }
                                     }
                                     Err(SessionError::Cancelled) => {
                                         complete_session_cancellation(
@@ -855,15 +971,27 @@ fn spawn_worker(
                                     }
                                     Err(error) => {
                                         log::error!("failed to resume session: {}", error);
-                                        state.report_error(error.to_string());
+                                        if publish_or_hand_over(
+                                            &state,
+                                            generation,
+                                            &mut handed_over,
+                                            &recording_prefix,
+                                            |_| state.report_error(error.to_string()),
+                                        ) != Publication::Published
+                                        {
+                                            buffered_text.clear();
+                                            recording_prefix.clear();
+                                        }
                                     }
                                 }
                             }
                             Err(error) => {
                                 log::error!("Deepgram session failed: {}", error);
-                                state.clear_overlay_text();
-                                state.set_overlay_text_opacity(1.0);
-                                state.report_error(error.to_string());
+                                publish_outcome(&state, generation, |_| {
+                                    state.clear_overlay_text();
+                                    state.set_overlay_text_opacity(1.0);
+                                    state.report_error(error.to_string());
+                                });
                             }
                         }
                     }
@@ -879,14 +1007,18 @@ fn spawn_worker(
                         Ok(config) => config,
                         Err(error) => {
                             log::error!("failed to resolve transformation config: {}", error);
-                            state.set_overlay_text(buffered_text.clone());
-                            state.set_overlay_text_opacity(1.0);
-                            state.report_error(error.to_string());
+                            publish_error_with_text(
+                                &state,
+                                generation,
+                                &mut handed_over,
+                                &mut buffered_text,
+                                &error,
+                            );
                             continue;
                         }
                     };
 
-                    match runtime.block_on(transformation_history.finish_manual(
+                    let result = runtime.block_on(transformation_history.finish_manual(
                         &state,
                         generation,
                         transform_text(
@@ -895,26 +1027,16 @@ fn spawn_worker(
                             &buffered_text,
                             TransformationPreviewMode::ReplaceOverlay,
                         ),
-                    )) {
-                        Ok(Some(transformed_text)) => {
-                            log::info!(
-                                "transformation completed: chars={}",
-                                transformed_text.chars().count()
-                            );
-                            buffered_text = transformed_text;
-                            state.set_overlay_text(buffered_text.clone());
-                            state.set_state(STATE_BUFFER_READY);
-                        }
-                        Ok(None) => {
-                            buffered_text.clear();
-                            recording_prefix.clear();
-                        }
-                        Err(error) => {
-                            log::error!("transformation failed: {}", error);
-                            state.set_overlay_text(buffered_text.clone());
-                            state.set_overlay_text_opacity(1.0);
-                            state.report_error(error.to_string());
-                        }
+                    ));
+                    if publish_buffer_transformation(
+                        &state,
+                        generation,
+                        result,
+                        &mut buffered_text,
+                        &mut handed_over,
+                    ) == Publication::Cancelled
+                    {
+                        recording_prefix.clear();
                     }
                 }
                 Command::DiscardBuffer => {
@@ -971,8 +1093,20 @@ fn prepare_buffer_transform(
     true
 }
 
+/// What applying a correction leaves the worker to do.
+#[derive(Debug, Eq, PartialEq)]
+enum CorrectionOutcome {
+    /// Resume dictation from this prefix.
+    Resume(String),
+    /// Nothing: the annotation is a ready buffer, or it was discarded.
+    Settled,
+    /// A newer recording replaced this one before the corrected annotation,
+    /// still in the worker's buffer, could be shown.
+    Superseded,
+}
+
 /// Apply spoken changes, if any, then prepare the original dictation to
-/// resume. `None` leaves the annotation buffered without starting a session.
+/// resume, or leave the annotation buffered without starting a session.
 fn apply_correction_request(
     runtime: &Runtime,
     state: &Arc<AppState>,
@@ -981,7 +1115,7 @@ fn apply_correction_request(
     buffered_text: &mut String,
     correction_request: &str,
     resume_dictation: bool,
-) -> Result<Option<String>, String> {
+) -> Result<CorrectionOutcome, String> {
     state.set_overlay_correction_active(false);
     state.clear_overlay_correction_text();
     if state.consume_abort_request(generation) {
@@ -990,7 +1124,7 @@ fn apply_correction_request(
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_BUFFER_READY);
         }
-        return Ok(None);
+        return Ok(CorrectionOutcome::Settled);
     }
 
     // Only the correction field received speech while the key was held.
@@ -1015,23 +1149,29 @@ fn apply_correction_request(
         ))?;
         let Some(transformed) = transformed else {
             buffered_text.clear();
-            return Ok(None);
+            return Ok(CorrectionOutcome::Settled);
         };
         *buffered_text = transformed;
     }
 
-    state.set_overlay_text(buffered_text.clone());
-    state.set_overlay_text_opacity(1.0);
     if resume_dictation {
-        let mut prefix = buffered_text.clone();
-        if !prefix.is_empty() && !prefix.ends_with(|c: char| c.is_whitespace()) {
-            prefix.push(' ');
-        }
+        let prefix = resume_prefix(buffered_text);
         state.set_overlay_text(prefix.clone());
-        Ok(Some(prefix))
-    } else {
+        state.set_overlay_text_opacity(1.0);
+        return Ok(CorrectionOutcome::Resume(prefix));
+    }
+    // An abort requested since the transformation settled cancels it here.
+    match publish_outcome(state, generation, |_| {
+        state.set_overlay_text(buffered_text.clone());
+        state.set_overlay_text_opacity(1.0);
         state.set_state(STATE_BUFFER_READY);
-        Ok(None)
+    }) {
+        Publication::Published => Ok(CorrectionOutcome::Settled),
+        Publication::Cancelled => {
+            buffered_text.clear();
+            Ok(CorrectionOutcome::Settled)
+        }
+        Publication::Superseded => Ok(CorrectionOutcome::Superseded),
     }
 }
 
@@ -1069,14 +1209,8 @@ fn settle_session_finish(
 ) -> Result<Option<String>, String> {
     // Also catch an abort that raced a normal completion or timeout.
     if state.consume_abort_request(generation) || matches!(result, Err(SessionError::Cancelled)) {
-        if let Some(_recording) = state.current_recording(generation) {
-            state.set_deepgram_waiting(false);
-            state.set_dictation_resuming(false);
-            state.set_overlay_correction_active(false);
-            state.clear_overlay_correction_text();
-            state.clear_overlay_text();
-            state.set_overlay_text_opacity(1.0);
-            state.set_state(STATE_IDLE);
+        if let Some(recording) = state.current_recording(generation) {
+            discard_presentation(state, &recording);
         }
         log::info!("discarded aborted transcription session");
         return Ok(None);
@@ -1086,6 +1220,185 @@ fn settle_session_finish(
         Err(SessionError::Failed(error)) => Err(error),
         Err(SessionError::Cancelled) => unreachable!("aborted sessions are settled above"),
     }
+}
+
+/// Clears what a discarded recording showed and returns to idle, while
+/// holding that recording.
+fn discard_presentation(state: &AppState, _recording: &CurrentRecording<'_>) {
+    state.set_deepgram_waiting(false);
+    state.set_dictation_resuming(false);
+    state.set_overlay_correction_active(false);
+    state.clear_overlay_correction_text();
+    state.clear_overlay_text();
+    state.set_overlay_text_opacity(1.0);
+    state.set_state(STATE_IDLE);
+}
+
+/// What became of the outcome of a recording's work.
+#[derive(Debug, Eq, PartialEq)]
+enum Publication {
+    /// The outcome is in the state and overlay.
+    Published,
+    /// An abort cancelled the work first, and the recording is discarded.
+    Cancelled,
+    /// A newer recording owns the state and overlay; nothing was written.
+    Superseded,
+}
+
+/// Publishes the outcome of the recording `generation`'s work with
+/// `publish`, unless an abort cancelled the work first. It holds the
+/// recording to check the abort and write the outcome, as the cancel
+/// shortcuts hold it to read the state and request the abort
+/// (`AppState::cancel_work_in_progress`). An abort requested before this
+/// cancels the work here; one requested after it finds the published state,
+/// which the hotkey cancels with a command. Either way none stays pending.
+fn publish_outcome(
+    state: &AppState,
+    generation: RecordingGeneration,
+    publish: impl FnOnce(&mut CurrentRecording<'_>),
+) -> Publication {
+    let recording = state.current_recording(generation);
+    if state.consume_abort_request(generation) {
+        if let Some(recording) = &recording {
+            discard_presentation(state, recording);
+        }
+        log::info!("discarded the outcome of cancelled work");
+        return Publication::Cancelled;
+    }
+    match recording {
+        Some(mut recording) => {
+            publish(&mut recording);
+            Publication::Published
+        }
+        None => Publication::Superseded,
+    }
+}
+
+/// Publishes as `publish_outcome` does. When a newer recording replaced this
+/// one, `text`, which the outcome would have shown, goes to that recording.
+fn publish_or_hand_over(
+    state: &AppState,
+    generation: RecordingGeneration,
+    handed_over: &mut String,
+    text: &str,
+    publish: impl FnOnce(&mut CurrentRecording<'_>),
+) -> Publication {
+    let publication = publish_outcome(state, generation, publish);
+    if publication == Publication::Superseded {
+        hand_over(handed_over, text);
+    }
+    publication
+}
+
+/// Keeps `text` of a recording that a newer one replaced before the worker
+/// could show it, for the newer recording's start to continue from.
+fn hand_over(handed_over: &mut String, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    log::warn!("a newer recording started before this one's text was shown; it continues the text");
+    append_text_segment(handed_over, text);
+}
+
+/// Shows `error` with the text that failed, keeping the text editable.
+/// Clears the worker's `text` when it is not shown.
+fn publish_error_with_text(
+    state: &AppState,
+    generation: RecordingGeneration,
+    handed_over: &mut String,
+    text: &mut String,
+    error: &str,
+) -> Publication {
+    let publication = publish_or_hand_over(state, generation, handed_over, text, |_| {
+        state.set_overlay_text(text.as_str());
+        state.set_overlay_text_opacity(1.0);
+        state.report_error(error);
+    });
+    if publication != Publication::Published {
+        text.clear();
+    }
+    publication
+}
+
+/// Publishes the dictation that resumes after a transformation or
+/// correction, once its session has connected. An abort requested while it
+/// connected cancels it instead, so no hidden recording keeps capturing.
+/// Returns the session to keep.
+fn publish_resumed_dictation<S>(
+    state: &AppState,
+    generation: RecordingGeneration,
+    session: S,
+    recording_prefix: &mut String,
+    handed_over: &mut String,
+) -> Option<S> {
+    let publication =
+        publish_or_hand_over(state, generation, handed_over, recording_prefix, |_| {
+            state.set_state(STATE_RECORDING)
+        });
+    if publication == Publication::Published {
+        return Some(session);
+    }
+    // Dropping the session aborts its task and releases its socket.
+    recording_prefix.clear();
+    None
+}
+
+/// Shows a ready buffer's transformation, or why it failed, unless an abort
+/// requested since the transformation settled cancels it.
+fn publish_buffer_transformation(
+    state: &AppState,
+    generation: RecordingGeneration,
+    result: Result<Option<String>, String>,
+    buffered_text: &mut String,
+    handed_over: &mut String,
+) -> Publication {
+    match result {
+        Ok(Some(transformed_text)) => {
+            log::info!(
+                "transformation completed: chars={}",
+                transformed_text.chars().count()
+            );
+            *buffered_text = transformed_text;
+            let publication =
+                publish_or_hand_over(state, generation, handed_over, buffered_text, |_| {
+                    state.set_overlay_text(buffered_text.clone());
+                    state.set_state(STATE_BUFFER_READY);
+                });
+            if publication != Publication::Published {
+                buffered_text.clear();
+            }
+            publication
+        }
+        Ok(None) => {
+            buffered_text.clear();
+            Publication::Cancelled
+        }
+        Err(error) => {
+            log::error!("transformation failed: {}", error);
+            publish_error_with_text(state, generation, handed_over, buffered_text, &error)
+        }
+    }
+}
+
+/// The text a dictation resumes from: `text` and a separator for the speech
+/// that follows it.
+fn resume_prefix(text: &str) -> String {
+    let mut prefix = text.to_owned();
+    if !prefix.is_empty() && !prefix.ends_with(char::is_whitespace) {
+        prefix.push(' ');
+    }
+    prefix
+}
+
+/// The prefix a recording starts from: text handed over from the recording
+/// it replaced, then the editable annotation it resumes.
+fn starting_prefix(handed_over: &mut String, requested_prefix: String) -> String {
+    if handed_over.is_empty() {
+        return requested_prefix;
+    }
+    let mut prefix = std::mem::take(handed_over);
+    append_text_segment(&mut prefix, &requested_prefix);
+    resume_prefix(&prefix)
 }
 
 /// Settles the cancelled work of the recording `generation`. Only the worker's
@@ -1241,9 +1554,11 @@ mod tests {
         let state = crate::state::AppState::new();
         let mut buffered_text = "The worker still holds the discarded annotation.".to_owned();
         state.set_overlay_text(buffered_text.clone());
-        state.request_abort();
-        state.dismiss_overlay();
-        state.clear_overlay_text();
+        state.set_state(crate::state::STATE_BUFFER_READY);
+        let (controller, _queue) = queued_controller();
+        let keyboard = Keyboard::with_transformation();
+        keyboard.tap(&state, &controller, crate::key::Key::F6);
+        assert!(keyboard.escape(&state, &controller));
 
         assert!(!super::prepare_buffer_transform(
             &state,
@@ -1419,7 +1734,10 @@ mod tests {
             )
             .unwrap();
 
-            assert_eq!(prefix, Some("Keep the entire narration. ".to_owned()));
+            assert_eq!(
+                prefix,
+                super::CorrectionOutcome::Resume("Keep the entire narration. ".to_owned())
+            );
             assert_eq!(&*state.overlay_text(), "Keep the entire narration. ");
             assert!(state.is_capturing_audio());
             assert!(!state.is_overlay_correction_active());
@@ -1448,7 +1766,7 @@ mod tests {
                 false,
             )
             .unwrap(),
-            None
+            super::CorrectionOutcome::Settled
         );
 
         assert_eq!(state.get_state(), crate::state::STATE_BUFFER_READY);
@@ -1475,7 +1793,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(prefix, Some("The edited narration. ".to_owned()));
+        assert_eq!(
+            prefix,
+            super::CorrectionOutcome::Resume("The edited narration. ".to_owned())
+        );
         assert_eq!(annotation, "The edited narration.");
         assert_eq!(&*state.overlay_text(), "The edited narration. ");
     }
@@ -1636,18 +1957,22 @@ mod tests {
     /// Hands `commands` to a worker, in order, and returns once it has
     /// handled every one of them.
     fn run_worker(state: &std::sync::Arc<crate::state::AppState>, commands: Vec<super::Command>) {
+        run_worker_with_config(state, config_with_deepgram_key(), commands);
+    }
+
+    fn run_worker_with_config(
+        state: &std::sync::Arc<crate::state::AppState>,
+        config: crate::config::Config,
+        commands: Vec<super::Command>,
+    ) {
         let (command_tx, command_rx) = std::sync::mpsc::channel();
         for command in commands {
             command_tx.send(command).unwrap();
         }
         drop(command_tx);
-        super::spawn_worker(
-            state.clone(),
-            config_store(config_with_deepgram_key()),
-            command_rx,
-        )
-        .join()
-        .unwrap();
+        super::spawn_worker(state.clone(), config_store(config), command_rx)
+            .join()
+            .unwrap();
     }
 
     /// The queued commands, split before the last dictation start: the
@@ -1670,31 +1995,83 @@ mod tests {
         (commands, recording_prefix, generation)
     }
 
-    /// What the hotkey does for Escape during a dictation.
-    fn escape_dictation(
-        state: &crate::state::AppState,
-        controller: &super::TranscriptionController,
-    ) {
-        state.request_abort();
-        state.dismiss_overlay();
-        state.clear_overlay_text();
-        controller.abort_session().unwrap();
-        state.set_state(crate::state::STATE_IDLE);
+    /// Presses keys through the hotkey thread's own handlers, with the
+    /// default bindings: F5 records, F6 transforms, and Escape cancels. A tap
+    /// never lasts long enough to count as holding F5.
+    struct Keyboard {
+        store: crate::settings::LiveConfigStore,
+        tracking: crate::hotkey::HotkeyTracking,
     }
 
-    /// What the record hotkey does to start a dictation, with words then
-    /// typed into its overlay.
-    fn start_dictation_with_typed_words(
-        state: &crate::state::AppState,
-        controller: &super::TranscriptionController,
-    ) {
-        state.restore_overlay();
-        state.clear_overlay_error_text();
-        if state.get_state() != crate::state::STATE_BUFFER_READY {
-            state.clear_overlay_text();
+    impl Keyboard {
+        fn new() -> Self {
+            Self::with_config(crate::config::Config::default())
         }
-        controller.start_session(state).unwrap();
-        state.set_overlay_text("Words typed into the new recording.");
+
+        /// With a transformation provider, so F6 transforms and F5 transforms
+        /// before pasting.
+        fn with_transformation() -> Self {
+            let mut config = crate::config::Config::default();
+            config.transformation.provider = Some("openai".to_owned());
+            config.transformation.api_key = Some("test-key".to_owned());
+            Self::with_config(config)
+        }
+
+        fn with_config(mut config: crate::config::Config) -> Self {
+            config.mic.hold_ms = u64::MAX;
+            Self {
+                store: config_store(config),
+                tracking: crate::hotkey::HotkeyTracking::default(),
+            }
+        }
+
+        /// Presses and releases `key`, returning whether the press was
+        /// handled rather than left to the frontmost app.
+        fn tap(
+            &self,
+            state: &crate::state::AppState,
+            controller: &super::TranscriptionController,
+            key: crate::key::Key,
+        ) -> bool {
+            let modifiers = crate::hotkey_binding::HotkeyModifiers::default();
+            let handled = crate::hotkey::handle_key_press(
+                key,
+                modifiers,
+                &self.store,
+                state,
+                controller,
+                &self.tracking,
+            );
+            crate::hotkey::handle_key_release(
+                key,
+                modifiers,
+                &self.store,
+                state,
+                controller,
+                &self.tracking,
+            );
+            handled
+        }
+
+        fn escape(
+            &self,
+            state: &crate::state::AppState,
+            controller: &super::TranscriptionController,
+        ) -> bool {
+            self.tap(state, controller, crate::key::Key::Escape)
+        }
+
+        /// Taps the record key to start a dictation, then types words into
+        /// its overlay.
+        fn start_dictation_with_typed_words(
+            &self,
+            state: &crate::state::AppState,
+            controller: &super::TranscriptionController,
+        ) {
+            self.tap(state, controller, crate::key::Key::F5);
+            assert_eq!(state.get_state(), crate::state::STATE_RECORDING);
+            state.set_overlay_text("Words typed into the new recording.");
+        }
     }
 
     fn assert_new_recording_intact(state: &crate::state::AppState) {
@@ -1713,9 +2090,10 @@ mod tests {
     fn an_aborted_dictation_settled_after_the_next_start_leaves_that_recording_alone() {
         let state = crate::state::AppState::new();
         let (controller, queue) = queued_controller();
-        controller.start_session(&state).unwrap();
-        escape_dictation(&state, &controller);
-        start_dictation_with_typed_words(&state, &controller);
+        let keyboard = Keyboard::new();
+        keyboard.tap(&state, &controller, crate::key::Key::F5);
+        assert!(keyboard.escape(&state, &controller));
+        keyboard.start_dictation_with_typed_words(&state, &controller);
         let new_recording = state.recording_generation();
 
         // The first start, skipped for its abort, and the abort itself.
@@ -1736,15 +2114,14 @@ mod tests {
         state.set_overlay_text("A buffer to discard.");
         state.set_state(STATE_BUFFER_READY);
         let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
         // Escape on the ready buffer leaves its state to the worker.
-        state.request_abort();
-        state.dismiss_overlay();
-        state.clear_overlay_text();
-        controller.discard_buffer().unwrap();
+        assert!(keyboard.escape(&state, &controller));
         assert_eq!(state.get_state(), STATE_BUFFER_READY);
-        start_dictation_with_typed_words(&state, &controller);
+        keyboard.start_dictation_with_typed_words(&state, &controller);
 
         let (earlier, prefix, generation) = split_before_last_start(&queue);
+        assert_eq!(earlier.len(), 1, "the discard");
         run_worker(&state, earlier);
 
         assert_new_recording_intact(&state);
@@ -1764,17 +2141,17 @@ mod tests {
         }
         use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR, STATE_TRANSFORMING};
 
-        // Escape during a transformation lands after the worker's last abort
-        // check, so the worker publishes the result and leaves the abort set.
+        // Escape during background work that then ends without settling the
+        // abort, leaving the text it published.
         let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
         state.set_state(STATE_TRANSFORMING);
-        state.request_abort();
-        state.dismiss_overlay();
-        state.clear_overlay_text();
+        assert!(keyboard.escape(&state, &controller));
+        assert!(state.is_abort_requested());
         state.set_overlay_text("The transformed text.");
         state.set_state(STATE_BUFFER_READY);
-        let (controller, queue) = queued_controller();
-        start_dictation_with_typed_words(&state, &controller);
+        keyboard.start_dictation_with_typed_words(&state, &controller);
 
         let commands: Vec<_> = queue.try_iter().collect();
         assert_eq!(commands.len(), 1);
@@ -1803,11 +2180,10 @@ mod tests {
             state.set_overlay_text("The cancelled recording's annotation.");
             state.set_state(STATE_BUFFER_READY);
             let cancelled = state.recording_generation();
-            state.request_abort();
-            state.dismiss_overlay();
-            state.clear_overlay_text();
             let (controller, _queue) = queued_controller();
-            start_dictation_with_typed_words(&state, &controller);
+            let keyboard = Keyboard::new();
+            assert!(keyboard.escape(&state, &controller));
+            keyboard.start_dictation_with_typed_words(&state, &controller);
 
             let mut buffered_text = "The cancelled recording's annotation.".to_owned();
             super::complete_session_cancellation(&state, cancelled, &mut buffered_text, kind);
@@ -1829,10 +2205,12 @@ mod tests {
             Ok("Late words".to_owned()),
         ] {
             let state = AppState::new();
-            let cancelled = state.recording_generation();
-            state.request_abort();
             let (controller, _queue) = queued_controller();
-            start_dictation_with_typed_words(&state, &controller);
+            let keyboard = Keyboard::new();
+            keyboard.tap(&state, &controller, crate::key::Key::F5);
+            let cancelled = state.recording_generation();
+            assert!(keyboard.escape(&state, &controller));
+            keyboard.start_dictation_with_typed_words(&state, &controller);
 
             assert_eq!(
                 super::settle_session_finish(result, &state, cancelled),
@@ -1840,6 +2218,236 @@ mod tests {
             );
             assert_new_recording_intact(&state);
         }
+    }
+
+    /// The dictation start the record key queued last, if any.
+    fn last_start(
+        queue: &std::sync::mpsc::Receiver<super::Command>,
+    ) -> Option<(String, crate::state::RecordingGeneration)> {
+        queue.try_iter().fold(None, |last, command| match command {
+            super::Command::StartSession {
+                recording_prefix,
+                generation,
+            } => Some((recording_prefix, generation)),
+            _ => last,
+        })
+    }
+
+    #[test]
+    fn escape_while_a_resumed_dictation_connects_leaves_no_hidden_recording() {
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_IDLE, STATE_PROCESSING, STATE_RECORDING};
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::with_transformation();
+        keyboard.tap(&state, &controller, Key::F5);
+        state.set_overlay_text("Words before the transformation.");
+        keyboard.tap(&state, &controller, Key::F6);
+        assert_eq!(state.get_state(), STATE_PROCESSING);
+        assert!(state.is_capturing_audio());
+        let generation = state.recording_generation();
+        let (_, started) = last_start(&queue).unwrap();
+        assert_eq!(started, generation);
+
+        // The worker transformed the text and reconnected; Escape lands
+        // before it publishes the resumed dictation.
+        assert!(keyboard.escape(&state, &controller));
+        let mut recording_prefix = "The transformed words. ".to_owned();
+        let mut handed_over = String::new();
+        let session = super::publish_resumed_dictation(
+            &state,
+            generation,
+            "the connected session",
+            &mut recording_prefix,
+            &mut handed_over,
+        );
+
+        assert_eq!(session, None, "the connected session is dropped");
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(!state.is_capturing_audio());
+        assert!(!state.is_abort_requested());
+        assert!(recording_prefix.is_empty());
+        assert!(handed_over.is_empty());
+
+        // The record key starts a new recording instead of stopping a
+        // hidden one.
+        keyboard.tap(&state, &controller, Key::F5);
+        assert_eq!(state.get_state(), STATE_RECORDING);
+        let (prefix, started) = last_start(&queue).expect("a new dictation start");
+        assert!(started > generation);
+        assert!(prefix.is_empty());
+    }
+
+    #[test]
+    fn a_record_press_during_a_failed_paste_waits_for_the_text_to_return_to_the_overlay() {
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_PROCESSING, STATE_RECORDING};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Rc::new(Keyboard::new());
+        keyboard.tap(&state, &controller, Key::F5);
+        state.set_overlay_text("Dictated words to paste.");
+        // The second tap stops the recording, to paste it.
+        keyboard.tap(&state, &controller, Key::F5);
+        assert_eq!(state.get_state(), STATE_PROCESSING);
+        let generation = state.recording_generation();
+        assert!(last_start(&queue).is_some());
+
+        let pressed_during_paste = Rc::new(Cell::new(None));
+        {
+            let state = state.clone();
+            let controller = controller.clone();
+            let keyboard = keyboard.clone();
+            let pressed = pressed_during_paste.clone();
+            super::clipboard::during_next_paste(move || {
+                let record_handled = keyboard.tap(&state, &controller, Key::F5);
+                let escape_handled = keyboard.escape(&state, &controller);
+                pressed.set(Some((
+                    record_handled,
+                    escape_handled,
+                    state.get_state(),
+                    state.recording_generation(),
+                    state.is_overlay_dismissed(),
+                    state.is_abort_requested(),
+                )));
+            });
+        }
+        let mut buffered_text = "Dictated words to paste. ".to_owned();
+        let mut handed_over = String::new();
+        super::clipboard::paste_buffered_text(
+            &state,
+            generation,
+            &mut buffered_text,
+            &mut handed_over,
+        );
+
+        assert_eq!(state.paste_attempts(), 1);
+        // While the paste ran, the record key started nothing and Escape
+        // went to the app being pasted into.
+        assert_eq!(
+            pressed_during_paste.get(),
+            Some((true, false, STATE_PROCESSING, generation, true, false))
+        );
+        assert!(last_start(&queue).is_none());
+        // The failed paste returned the text to the overlay.
+        assert_eq!(state.get_state(), STATE_BUFFER_READY);
+        assert_eq!(&*state.overlay_text(), "Dictated words to paste. ");
+        assert!(!state.is_overlay_dismissed());
+        assert!(!state.is_abort_requested());
+        assert!(handed_over.is_empty());
+
+        // The next recording continues it.
+        keyboard.tap(&state, &controller, Key::F5);
+        assert_eq!(state.get_state(), STATE_RECORDING);
+        let (prefix, started) = last_start(&queue).expect("a dictation start");
+        assert!(started > generation);
+        assert_eq!(prefix, "Dictated words to paste. ");
+    }
+
+    #[test]
+    fn text_a_newer_recording_replaced_before_its_paste_continues_in_that_recording() {
+        use crate::state::{AppState, STATE_ERROR, STATE_RECORDING};
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
+        keyboard.tap(&state, &controller, crate::key::Key::F5);
+        let pasted = state.recording_generation();
+        // The microphone failed while the worker finished the transcript,
+        // and the record key then started a new recording.
+        state.report_error("Audio capture stopped.");
+        assert_eq!(state.get_state(), STATE_ERROR);
+        keyboard.tap(&state, &controller, crate::key::Key::F5);
+        let (requested_prefix, newer) = last_start(&queue).unwrap();
+        assert!(newer > pasted);
+
+        let mut buffered_text = "Words of the replaced recording.".to_owned();
+        let mut handed_over = String::new();
+        super::clipboard::paste_buffered_text(&state, pasted, &mut buffered_text, &mut handed_over);
+
+        assert_eq!(state.paste_attempts(), 0);
+        assert_eq!(state.get_state(), STATE_RECORDING);
+        assert!(buffered_text.is_empty());
+        assert_eq!(
+            super::starting_prefix(&mut handed_over, requested_prefix),
+            "Words of the replaced recording. "
+        );
+        assert!(handed_over.is_empty());
+    }
+
+    #[test]
+    fn a_start_cancelled_before_its_config_failed_leaves_the_next_recording_alone() {
+        if run_without_deepgram_key(
+            "a_start_cancelled_before_its_config_failed_leaves_the_next_recording_alone",
+        ) {
+            return;
+        }
+        let state = crate::state::AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
+        keyboard.tap(&state, &controller, crate::key::Key::F5);
+        assert!(keyboard.escape(&state, &controller));
+        keyboard.start_dictation_with_typed_words(&state, &controller);
+
+        // The cancelled start, whose config has no Deepgram key, and its
+        // abort.
+        let (earlier, _, _) = split_before_last_start(&queue);
+        assert_eq!(earlier.len(), 2);
+        run_worker_with_config(&state, crate::config::Config::default(), earlier);
+
+        assert_new_recording_intact(&state);
+        assert!(state.overlay_error_text().is_empty());
+    }
+
+    #[test]
+    fn escape_after_a_buffer_transformation_settled_cancels_it_and_leaves_nothing_pending() {
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_IDLE, STATE_TRANSFORMING};
+
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::with_transformation();
+        state.set_overlay_text("The buffer to transform.");
+        state.set_state(STATE_BUFFER_READY);
+        keyboard.tap(&state, &controller, Key::F6);
+        assert_eq!(state.get_state(), STATE_TRANSFORMING);
+        let generation = state.recording_generation();
+
+        let result = runtime.block_on(super::finish_transformation(&state, generation, async {
+            Ok("The transformed buffer.".to_owned())
+        }));
+        assert_eq!(result, Ok(Some("The transformed buffer.".to_owned())));
+        // Escape lands after the transformation settled, before its result
+        // is published.
+        assert!(keyboard.escape(&state, &controller));
+        let mut buffered_text = "The buffer to transform.".to_owned();
+        let mut handed_over = String::new();
+        assert_eq!(
+            super::publish_buffer_transformation(
+                &state,
+                generation,
+                result,
+                &mut buffered_text,
+                &mut handed_over,
+            ),
+            super::Publication::Cancelled
+        );
+
+        assert_eq!(state.get_state(), STATE_IDLE);
+        assert!(state.overlay_text().is_empty());
+        assert!(!state.is_abort_requested());
+        assert!(buffered_text.is_empty());
+        assert!(handed_over.is_empty());
+        // The cancelled result does not come back as the next prefix.
+        keyboard.tap(&state, &controller, Key::F5);
+        let (prefix, started) = last_start(&queue).expect("a dictation start");
+        assert!(started > generation);
+        assert!(prefix.is_empty());
     }
 
     /// Waits up to 2 s for `state` to reach `expected`.
@@ -1895,9 +2503,13 @@ mod tests {
         // The record key was pressed, then Escape before the session started.
         let state = AppState::new();
         let (controller, queue) = queued_controller();
-        controller.start_session(&state).unwrap();
-        state.request_abort();
-        run_worker(&state, queue.try_iter().collect());
+        let keyboard = Keyboard::new();
+        keyboard.tap(&state, &controller, crate::key::Key::F5);
+        assert!(keyboard.escape(&state, &controller));
+        // Only the start, without the abort command Escape queued after it.
+        let start = queue.try_iter().next().unwrap();
+        assert!(matches!(start, super::Command::StartSession { .. }));
+        run_worker(&state, vec![start]);
 
         assert_eq!(state.get_state(), STATE_IDLE);
         assert!(state.overlay_text().is_empty());
