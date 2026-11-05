@@ -154,19 +154,20 @@ impl AppUpdater {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::TestDirectory;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    struct TestBundle(PathBuf);
+    /// A minimal packaged `.app` bundle without `SUFeedURL` or frameworks,
+    /// inside a `TestDirectory` that removes it on drop.
+    struct TestBundle {
+        path: PathBuf,
+        _directory: TestDirectory,
+    }
 
     impl TestBundle {
         fn new() -> Self {
-            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "simple-ptt-updater-{}-{}.app",
-                std::process::id(),
-                NEXT_ID.fetch_add(1, Ordering::Relaxed)
-            ));
+            let directory = TestDirectory::new();
+            let path = directory.path().join("simple-ptt-updater.app");
             std::fs::create_dir_all(path.join("Contents")).unwrap();
             std::fs::write(
                 path.join("Contents/Info.plist"),
@@ -181,20 +182,14 @@ mod tests {
                 ),
             )
             .unwrap();
-            Self(path)
+            Self {
+                path,
+                _directory: directory,
+            }
         }
 
-        fn bundle(&self) -> Retained<objc2_foundation::NSBundle> {
-            objc2_foundation::NSBundle::bundleWithPath(&objc2_foundation::NSString::from_str(
-                self.0.to_str().unwrap(),
-            ))
-            .unwrap()
-        }
-    }
-
-    impl Drop for TestBundle {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+        fn bundle(&self) -> Retained<NSBundle> {
+            NSBundle::bundleWithPath(&NSString::from_str(self.path.to_str().unwrap())).unwrap()
         }
     }
 
@@ -215,14 +210,28 @@ mod tests {
         ));
     }
 
+    /// Foundation standardizes `bundlePath`, so a fixture under
+    /// `/private/tmp` comes back as `/tmp`. The expected path is built from
+    /// the bundle's own path, which must name the fixture on disk.
     #[test]
     fn missing_packaged_framework_reports_its_path() {
         let fixture = TestBundle::new();
-        let expected_path = fixture.0.join("Contents/Frameworks/Sparkle.framework");
-        let error = load_sparkle_framework(&fixture.bundle()).unwrap_err();
-        assert!(matches!(
-            error,
-            UpdaterInitError::FrameworkLoad { path, .. } if path == expected_path
-        ));
+        let bundle = fixture.bundle();
+        let bundle_path = PathBuf::from(bundle.bundlePath().to_string());
+        assert_eq!(
+            std::fs::canonicalize(&bundle_path).unwrap(),
+            std::fs::canonicalize(&fixture.path).unwrap()
+        );
+        let expected_path = bundle_path.join("Contents/Frameworks/Sparkle.framework");
+
+        let error = load_sparkle_framework(&bundle).unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                UpdaterInitError::FrameworkLoad { path, .. } if *path == expected_path
+            ),
+            "{error:?}"
+        );
     }
 }

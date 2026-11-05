@@ -1,5 +1,5 @@
-use super::test_support::TestDirectory;
 use super::{save_config, Config, DefaultResets};
+use crate::test_support::TestDirectory;
 
 fn save_inline_section(section: &str, fields: &str) {
     let contents = format!(

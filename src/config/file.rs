@@ -155,8 +155,9 @@ impl ConfigFileSnapshot {
 #[cfg(test)]
 mod tests {
     use super::ConfigFileSnapshot;
-    use crate::config::test_support::{TestDirectory, EXAMPLE_CONFIG};
+    use crate::config::test_support::EXAMPLE_CONFIG;
     use crate::config::{save_config, Config, DefaultResets};
+    use crate::test_support::TestDirectory;
     use std::os::unix::fs::{symlink, PermissionsExt};
     use std::path::Path;
 

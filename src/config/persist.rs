@@ -301,9 +301,8 @@ mod tests {
         default_transformation_correction_system_prompt, default_transformation_system_prompt,
         save_config, Config, DefaultResets, UiMeterStyle,
     };
-    use crate::config::test_support::{
-        assert_example_config_values, TestDirectory, EXAMPLE_CONFIG,
-    };
+    use crate::config::test_support::{assert_example_config_values, EXAMPLE_CONFIG};
+    use crate::test_support::TestDirectory;
 
     #[test]
     fn pills_meter_style_is_saved_and_read_as_pills() {

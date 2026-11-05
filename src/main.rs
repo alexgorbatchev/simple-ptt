@@ -16,6 +16,8 @@ mod permissions_dialog;
 mod settings;
 mod settings_window;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod text_edit;
 mod transcription;
 mod transformation;

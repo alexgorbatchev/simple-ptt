@@ -1995,6 +1995,7 @@ mod tests {
         AppState, MicMeterSnapshot, OverlayText, STATE_BUFFER_READY, STATE_ERROR, STATE_IDLE,
         STATE_PROCESSING, STATE_RECORDING, STATE_TRANSFORMING,
     };
+    use crate::test_support::TestDirectory;
 
     #[test]
     fn missing_config_alert_names_the_save_button_as_titled() {
@@ -2032,18 +2033,13 @@ mod tests {
 
     #[test]
     fn config_file_is_missing_only_reports_not_found_paths() {
-        let path = std::env::temp_dir().join(format!(
-            "simple-ptt-missing-config-{}-{}.toml",
-            std::process::id(),
-            std::thread::current().name().unwrap_or("test")
-        ));
+        let directory = TestDirectory::new();
+        let path = directory.config();
 
-        let _ = std::fs::remove_file(&path);
         assert!(config_file_is_missing(&path));
 
         std::fs::write(&path, "[ui]\nhotkey = \"F5\"\n").unwrap();
         assert!(!config_file_is_missing(&path));
-        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]
