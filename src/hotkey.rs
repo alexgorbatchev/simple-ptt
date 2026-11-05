@@ -59,6 +59,9 @@ pub struct ActiveBindings {
     pub record_hotkey: Option<HotkeyBinding>,
     pub correction_key: Option<CorrectionBinding>,
     pub transform_hotkey: Option<HotkeyBinding>,
+    /// Whether the transformation config resolved, independent of whether
+    /// its hotkey is on.
+    pub transformation_resolved: bool,
 }
 
 impl ActiveBindings {
@@ -72,12 +75,12 @@ impl ActiveBindings {
         let configured_correction_key = parse_correction_key(config.ui.correction_key.as_str());
         let correction_key = configured_correction_key
             .filter(|key| !record_hotkey.is_some_and(|record_hotkey| key.overlaps(record_hotkey)));
-        let transform_hotkey = config
-            .resolve_transformation_config()
+        let transformation_resolved = config.resolve_transformation_config().is_ok();
+        let transform_hotkey = parse_hotkey_binding(&config.transformation.hotkey)
             .ok()
-            .and_then(|_| parse_hotkey_binding(&config.transformation.hotkey).ok())
             .filter(|transform_hotkey| {
-                Some(*transform_hotkey) != record_hotkey
+                transformation_resolved
+                    && Some(*transform_hotkey) != record_hotkey
                     && !configured_correction_key.is_some_and(|key| key.overlaps(*transform_hotkey))
             });
 
@@ -85,6 +88,7 @@ impl ActiveBindings {
             record_hotkey,
             correction_key,
             transform_hotkey,
+            transformation_resolved,
         }
     }
 }
@@ -539,11 +543,11 @@ fn current_hotkey_config(config_store: &LiveConfigStore) -> CurrentHotkeyConfig 
         record_hotkey,
         correction_key,
         transform_hotkey,
+        transformation_resolved,
     } = ActiveBindings::from_config(&config);
 
     CurrentHotkeyConfig {
-        auto_transform_enabled: config.transformation.auto
-            && config.resolve_transformation_config().is_ok(),
+        auto_transform_enabled: config.transformation.auto && transformation_resolved,
         hold_ms: config.mic.hold_ms,
         mic_gain_problem: crate::config::mic_gain_problem(config.mic.gain).map(|problem| {
             format!(
@@ -1008,6 +1012,23 @@ mod tests {
 
         assert!(hotkey_config.record_hotkey.is_some());
         assert_eq!(hotkey_config.correction_key, None);
+    }
+
+    #[test]
+    fn auto_transform_follows_transformation_resolution_not_the_transform_hotkey() {
+        let mut config = crate::config::Config::default();
+        config.transformation.auto = true;
+        assert!(!hotkey_config_for(config.clone()).auto_transform_enabled);
+
+        config.transformation.provider = Some("openai".to_owned());
+        config.transformation.api_key = Some("test-key".to_owned());
+        config.transformation.hotkey = config.ui.hotkey.clone();
+        let hotkey_config = hotkey_config_for(config.clone());
+        assert_eq!(hotkey_config.transform_hotkey, None);
+        assert!(hotkey_config.auto_transform_enabled);
+
+        config.transformation.auto = false;
+        assert!(!hotkey_config_for(config).auto_transform_enabled);
     }
 
     #[test]

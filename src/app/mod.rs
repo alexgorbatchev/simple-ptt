@@ -33,6 +33,7 @@ use crate::deepgram_connection::{
     DeepgramCheckRequest, DeepgramCheckUpdate, DeepgramConnectionController,
 };
 use crate::hotkey::ActiveBindings;
+use crate::hotkey_binding::format_hotkey_binding;
 use crate::hotkey_capture::{
     capture_outcome_message, HotkeyCaptureController, HotkeyCaptureOutcome, HotkeyCapturePreview,
     HotkeyCaptureTarget,
@@ -1598,10 +1599,15 @@ pub fn overlay_style_from_config(config: &Config) -> OverlayStyle {
     if let Some(correction_key) = bindings.correction_key {
         shortcuts.push(format!("<Hold {}> correction", correction_key.hint_label()));
     }
-    if bindings.transform_hotkey.is_some() {
-        shortcuts.push(format!("<{}> transform", config.transformation.hotkey));
+    if let Some(transform_hotkey) = bindings.transform_hotkey {
+        shortcuts.push(format!(
+            "<{}> transform",
+            format_hotkey_binding(transform_hotkey)
+        ));
     }
-    shortcuts.push(format!("<{}> paste", config.ui.hotkey));
+    if let Some(record_hotkey) = bindings.record_hotkey {
+        shortcuts.push(format!("<{}> paste", format_hotkey_binding(record_hotkey)));
+    }
     shortcuts.push("<Cmd+V> insert".to_owned());
     shortcuts.push("<ESC> cancel".to_owned());
     let shortcut_hint = Some(shortcuts.join(" "));
@@ -2177,6 +2183,36 @@ mod tests {
         assert_eq!(
             style.shortcut_hint.as_deref(),
             Some("<Hold F6> correction <F5> paste <Cmd+V> insert <ESC> cancel")
+        );
+    }
+
+    #[test]
+    fn overlay_style_shows_hand_edited_hotkeys_in_canonical_form() {
+        let mut config = transformation_configured_config();
+        config.ui.hotkey = " command + f7 ".to_owned();
+        config.ui.correction_key = "option+command".to_owned();
+        config.transformation.hotkey = "shift+f9".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some(
+                "<Hold Alt+Cmd> correction <Shift+F9> transform <Cmd+F7> paste <Cmd+V> insert <ESC> cancel"
+            )
+        );
+    }
+
+    #[test]
+    fn overlay_style_omits_paste_when_the_record_hotkey_does_not_parse() {
+        let mut config = transformation_configured_config();
+        config.ui.hotkey = "Hyper+F5".to_owned();
+
+        let style = overlay_style_from_config(&config);
+
+        assert_eq!(
+            style.shortcut_hint.as_deref(),
+            Some("<Hold Alt+Cmd> correction <F6> transform <Cmd+V> insert <ESC> cancel")
         );
     }
 
