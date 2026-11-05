@@ -2,32 +2,30 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::MainThreadOnly;
 use objc2_app_kit::{
-    NSApplication, NSAutoresizingMaskOptions, NSBackingStoreType, NSButton, NSColor,
-    NSEventModifierFlags, NSFont, NSTextAlignment, NSTextField, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSBackingStoreType, NSButton, NSColor, NSEventModifierFlags, NSFont,
+    NSLayoutAttribute, NSLayoutConstraint, NSLayoutConstraintOrientation,
+    NSLayoutPriorityDefaultHigh, NSStackView, NSStackViewDistribution, NSTextAlignment,
+    NSTextField, NSUserInterfaceLayoutOrientation, NSView, NSWindow, NSWindowStyleMask,
 };
-use objc2_foundation::{ns_string, MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{ns_string, MainThreadMarker, NSArray, NSEdgeInsets, NSRect, NSString};
 
 use crate::app::actions::ApplicationAction;
 use crate::permissions::{GlobalHotkeyPermissionFlow, GlobalHotkeyPermissionState};
 use crate::settings_window::style_button_bezel_and_text;
 
-const WINDOW_HEIGHT: f64 = 280.0;
-const WINDOW_WIDTH: f64 = 570.0;
+/// Width of the title, the summary, and the button rows. The summary wraps at
+/// this width, and the window is as tall as the wrapped summary needs.
+const CONTENT_WIDTH: f64 = 530.0;
 const HORIZONTAL_PADDING: f64 = 20.0;
-const BUTTON_HEIGHT: f64 = 30.0;
+const TOP_PADDING: f64 = 36.0;
+const BOTTOM_PADDING: f64 = 20.0;
+const TITLE_TO_SUMMARY_SPACING: f64 = 12.0;
+const SUMMARY_TO_BUTTONS_SPACING: f64 = 24.0;
+const BUTTON_ROW_SPACING: f64 = 12.0;
 const BUTTON_GAP: f64 = 10.0;
-const TOP_BUTTON_ROW_Y: f64 = 54.0;
-const BOTTOM_BUTTON_ROW_Y: f64 = 18.0;
-const LABEL_WIDTH: f64 = WINDOW_WIDTH - (HORIZONTAL_PADDING * 2.0);
-const TWO_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - BUTTON_GAP) / 2.0;
-const THREE_BUTTON_ROW_WIDTH: f64 = (LABEL_WIDTH - (BUTTON_GAP * 2.0)) / 3.0;
 const TITLE_FONT_SIZE: f64 = 15.0;
 const TITLE_FONT_WEIGHT: f64 = 0.0;
 const BODY_FONT_SIZE: f64 = 12.0;
-/// Fits the longest summary, the one shown while grants are requested,
-/// which wraps to seven lines of `BODY_FONT_SIZE` at `LABEL_WIDTH`.
-const SUMMARY_HEIGHT: f64 = 108.0;
 const BUTTON_FONT_SIZE: f64 = 12.0;
 const BUTTON_FONT_WEIGHT: f64 = 0.0;
 const RESET_BUTTON_TITLE: &str = "Reset and Relaunch";
@@ -49,13 +47,12 @@ pub struct PermissionsDialog {
 
 impl PermissionsDialog {
     pub fn new(target: &AnyObject, mtm: MainThreadMarker) -> Self {
+        // The content view's constraints size the window: its width from
+        // `CONTENT_WIDTH`, its height from the wrapped summary.
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
-                NSRect::new(
-                    NSPoint::new(0.0, 0.0),
-                    NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
-                ),
+                NSRect::ZERO,
                 NSWindowStyleMask::Titled,
                 NSBackingStoreType::Buffered,
                 false,
@@ -63,19 +60,6 @@ impl PermissionsDialog {
         };
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(ns_string!("Application Permissions"));
-        window.center();
-
-        let root_view = NSView::initWithFrame(
-            NSView::alloc(mtm),
-            NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(WINDOW_WIDTH, WINDOW_HEIGHT),
-            ),
-        );
-        root_view.setAutoresizingMask(
-            NSAutoresizingMaskOptions::ViewWidthSizable
-                | NSAutoresizingMaskOptions::ViewHeightSizable,
-        );
 
         let title_text_field = NSTextField::labelWithString(
             ns_string!("simple-ptt needs permissions for global shortcuts"),
@@ -85,119 +69,87 @@ impl PermissionsDialog {
             TITLE_FONT_SIZE,
             TITLE_FONT_WEIGHT,
         )));
-        set_view_frame(
-            &title_text_field,
-            HORIZONTAL_PADDING,
-            222.0,
-            LABEL_WIDTH,
-            22.0,
-        );
-        root_view.addSubview(&title_text_field);
 
         let summary_text_field = NSTextField::wrappingLabelWithString(&NSString::from_str(""), mtm);
         configure_wrapping_label(&summary_text_field, BODY_FONT_SIZE);
-        set_view_frame(
-            &summary_text_field,
-            HORIZONTAL_PADDING,
-            104.0,
-            LABEL_WIDTH,
-            SUMMARY_HEIGHT,
-        );
-        root_view.addSubview(&summary_text_field);
+        // An explicit wrapping width gives the label its wrapped height before
+        // the first layout pass, so the window fits the summary when it opens.
+        summary_text_field.setPreferredMaxLayoutWidth(CONTENT_WIDTH);
 
-        let accessibility_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Request Accessibility"),
-                Some(target),
-                Some(ApplicationAction::RequestAccessibility.selector()),
-                mtm,
-            )
-        };
-        accessibility_button.setFont(Some(&permissions_dialog_font()));
-        set_view_frame(
-            &accessibility_button,
-            HORIZONTAL_PADDING,
-            TOP_BUTTON_ROW_Y,
-            TWO_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
+        let accessibility_button = permissions_dialog_button(
+            mtm,
+            target,
+            "Request Accessibility",
+            ApplicationAction::RequestAccessibility,
         );
-        root_view.addSubview(&accessibility_button);
-
-        let microphone_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Request Microphone"),
-                Some(target),
-                Some(ApplicationAction::RequestMicrophone.selector()),
-                mtm,
-            )
-        };
-        microphone_button.setFont(Some(&permissions_dialog_font()));
-        set_view_frame(
-            &microphone_button,
-            HORIZONTAL_PADDING + TWO_BUTTON_ROW_WIDTH + BUTTON_GAP,
-            TOP_BUTTON_ROW_Y,
-            TWO_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
+        let microphone_button = permissions_dialog_button(
+            mtm,
+            target,
+            "Request Microphone",
+            ApplicationAction::RequestMicrophone,
         );
-        root_view.addSubview(&microphone_button);
-
-        let reset_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str(RESET_BUTTON_TITLE),
-                Some(target),
-                Some(ApplicationAction::ResetPermissions.selector()),
-                mtm,
-            )
-        };
-        reset_button.setFont(Some(&permissions_dialog_font()));
-        set_view_frame(
-            &reset_button,
-            HORIZONTAL_PADDING,
-            BOTTOM_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
+        let reset_button = permissions_dialog_button(
+            mtm,
+            target,
+            RESET_BUTTON_TITLE,
+            ApplicationAction::ResetPermissions,
         );
-        root_view.addSubview(&reset_button);
-
-        let recheck_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                &NSString::from_str(RECHECK_BUTTON_TITLE),
-                Some(target),
-                Some(ApplicationAction::RecheckPermissions.selector()),
-                mtm,
-            )
-        };
-        recheck_button.setFont(Some(&permissions_dialog_font()));
-        set_view_frame(
-            &recheck_button,
-            HORIZONTAL_PADDING + THREE_BUTTON_ROW_WIDTH + BUTTON_GAP,
-            BOTTOM_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
+        let recheck_button = permissions_dialog_button(
+            mtm,
+            target,
+            RECHECK_BUTTON_TITLE,
+            ApplicationAction::RecheckPermissions,
         );
-        root_view.addSubview(&recheck_button);
-
-        let quit_button = unsafe {
-            NSButton::buttonWithTitle_target_action(
-                ns_string!("Quit"),
-                Some(target),
-                Some(ApplicationAction::CompletePermissions.selector()),
-                mtm,
-            )
-        };
-        quit_button.setFont(Some(&permissions_dialog_font()));
+        let quit_button =
+            permissions_dialog_button(mtm, target, "Quit", ApplicationAction::CompletePermissions);
         quit_button.setKeyEquivalent(ns_string!("q"));
         quit_button.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
-        set_view_frame(
-            &quit_button,
-            HORIZONTAL_PADDING + (THREE_BUTTON_ROW_WIDTH * 2.0) + (BUTTON_GAP * 2.0),
-            BOTTOM_BUTTON_ROW_Y,
-            THREE_BUTTON_ROW_WIDTH,
-            BUTTON_HEIGHT,
-        );
-        root_view.addSubview(&quit_button);
 
-        window.setContentView(Some(&root_view));
+        let permission_buttons = button_row(mtm, &[&accessibility_button, &microphone_button]);
+        let completion_buttons = button_row(mtm, &[&reset_button, &recheck_button, &quit_button]);
+
+        let content_view = NSStackView::new(mtm);
+        content_view.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+        content_view.setAlignment(NSLayoutAttribute::Leading);
+        content_view.setEdgeInsets(NSEdgeInsets {
+            top: TOP_PADDING,
+            left: HORIZONTAL_PADDING,
+            bottom: BOTTOM_PADDING,
+            right: HORIZONTAL_PADDING,
+        });
+        // Hugging above `NSLayoutPriorityWindowSizeStayPut` lets the content
+        // shrink the window as well as grow it when the summary changes.
+        for orientation in [
+            NSLayoutConstraintOrientation::Horizontal,
+            NSLayoutConstraintOrientation::Vertical,
+        ] {
+            content_view
+                .setHuggingPriority_forOrientation(NSLayoutPriorityDefaultHigh, orientation);
+        }
+        for view in [
+            &title_text_field as &NSView,
+            &summary_text_field,
+            &permission_buttons,
+            &completion_buttons,
+        ] {
+            content_view.addArrangedSubview(view);
+        }
+        content_view.setCustomSpacing_afterView(TITLE_TO_SUMMARY_SPACING, &title_text_field);
+        content_view.setCustomSpacing_afterView(SUMMARY_TO_BUTTONS_SPACING, &summary_text_field);
+        content_view.setCustomSpacing_afterView(BUTTON_ROW_SPACING, &permission_buttons);
+        NSLayoutConstraint::activateConstraints(&NSArray::from_retained_slice(&[
+            summary_text_field
+                .widthAnchor()
+                .constraintEqualToConstant(CONTENT_WIDTH),
+            permission_buttons
+                .widthAnchor()
+                .constraintEqualToAnchor(&summary_text_field.widthAnchor()),
+            completion_buttons
+                .widthAnchor()
+                .constraintEqualToAnchor(&summary_text_field.widthAnchor()),
+        ]));
+
+        window.setContentView(Some(&content_view));
 
         let dialog = Self {
             window,
@@ -213,14 +165,26 @@ impl PermissionsDialog {
     pub fn show(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
         app.activate();
+        self.center_if_hidden();
         self.window.makeKeyAndOrderFront(None);
     }
 
     pub fn show_startup(&self, mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
         app.activate();
+        self.center_if_hidden();
         self.window.makeKeyAndOrderFront(None);
         self.window.orderFrontRegardless();
+    }
+
+    /// Centers the window at the size its current summary needs, so a long
+    /// summary does not grow it below the centre. A window already on screen
+    /// keeps its position.
+    fn center_if_hidden(&self) {
+        if !self.window.isVisible() {
+            self.window.layoutIfNeeded();
+            self.window.center();
+        }
     }
 
     pub fn hide(&self) {
@@ -372,8 +336,40 @@ fn configure_wrapping_label(text_field: &NSTextField, font_size: f64) {
     text_field.setTextColor(Some(&NSColor::secondaryLabelColor()));
 }
 
-fn set_view_frame(view: &NSView, x: f64, y: f64, width: f64, height: f64) {
-    view.setFrame(NSRect::new(NSPoint::new(x, y), NSSize::new(width, height)));
+fn permissions_dialog_button(
+    mtm: MainThreadMarker,
+    target: &AnyObject,
+    title: &str,
+    action: ApplicationAction,
+) -> Retained<NSButton> {
+    let button = unsafe {
+        NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(title),
+            Some(target),
+            Some(action.selector()),
+            mtm,
+        )
+    };
+    button.setFont(Some(&permissions_dialog_font()));
+    button
+}
+
+/// A row of buttons that share its width equally.
+fn button_row(mtm: MainThreadMarker, buttons: &[&NSButton]) -> Retained<NSStackView> {
+    let row = NSStackView::new(mtm);
+    row.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    row.setDistribution(NSStackViewDistribution::FillEqually);
+    row.setSpacing(BUTTON_GAP);
+    // A row as tall as its buttons leaves no slack that would keep the window
+    // from shrinking to a shorter summary.
+    row.setHuggingPriority_forOrientation(
+        NSLayoutPriorityDefaultHigh,
+        NSLayoutConstraintOrientation::Vertical,
+    );
+    for button in buttons {
+        row.addArrangedSubview(button);
+    }
+    row
 }
 
 #[cfg(test)]
