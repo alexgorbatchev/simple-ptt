@@ -168,6 +168,9 @@ pub struct AppState {
     settings_requested: AtomicBool,
     overlay_text: Mutex<OverlayText>,
     overlay_error_text: Mutex<Arc<str>>,
+    /// The error on display keeps the overlay text for the next recording
+    /// to continue (`report_error_keeping_text`).
+    error_keeps_text: AtomicBool,
     overlay_text_opacity: AtomicU8,
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
@@ -221,6 +224,7 @@ impl AppState {
             settings_requested: AtomicBool::new(false),
             overlay_text: Mutex::new(OverlayText::default()),
             overlay_error_text: Mutex::new(Arc::from("")),
+            error_keeps_text: AtomicBool::new(false),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
@@ -335,28 +339,45 @@ impl AppState {
     }
 
     /// Starts a new recording: captures the editable annotation it continues,
-    /// then publishes `STATE_RECORDING` under a new generation. The worker
+    /// then publishes `STATE_RECORDING` under a new generation. A recording
+    /// continues a ready buffer, and the text an error kept
+    /// (`report_error_keeping_text`); otherwise it starts empty. The worker
     /// may receive the start command afterwards, so the annotation is read
     /// first. The worker publishes a recording's outcome under the same lock,
     /// so it either finishes first or sees that this recording replaced it.
-    /// `None` while the current recording's text is being pasted: its outcome
-    /// is not known yet, and a failed paste returns the text to the overlay.
+    /// `None`, changing nothing, while the current recording's text is being
+    /// pasted: its outcome is not known yet, and a failed paste returns the
+    /// text to the overlay.
     pub fn begin_recording(&self) -> Option<RecordingStart> {
         let mut recording = self.lock_recording();
         if recording.pasting {
             return None;
         }
-        let prefix = if self.get_state() == STATE_BUFFER_READY {
+        let continues_text = match self.get_state() {
+            STATE_BUFFER_READY => true,
+            STATE_ERROR => self.error_keeps_text.load(Ordering::Relaxed),
+            _ => false,
+        };
+        let prefix = if continues_text {
             self.overlay_text().to_string()
         } else {
+            self.clear_overlay_text();
             String::new()
         };
+        self.restore_overlay();
+        self.clear_overlay_error_text();
+        self.set_overlay_text_opacity(1.0);
         recording.generation = recording.generation.next();
         self.set_state(STATE_RECORDING);
         Some(RecordingStart {
             generation: recording.generation,
             prefix,
         })
+    }
+
+    /// Whether the current recording's text is being pasted.
+    pub fn is_pasting(&self) -> bool {
+        self.lock_recording().pasting
     }
 
     #[cfg(test)]
@@ -599,6 +620,20 @@ impl AppState {
     }
 
     pub fn report_error(&self, message: impl Into<String>) {
+        self.show_error(message, false);
+    }
+
+    /// Reports an error with `text` kept in the overlay: the next recording
+    /// continues it, as it does a ready buffer, and the cancel shortcuts
+    /// discard it.
+    pub fn report_error_keeping_text(&self, text: impl Into<String>, message: impl Into<String>) {
+        self.set_overlay_text(text);
+        self.set_overlay_text_opacity(1.0);
+        self.show_error(message, true);
+    }
+
+    fn show_error(&self, message: impl Into<String>, keeps_text: bool) {
+        self.error_keeps_text.store(keeps_text, Ordering::Relaxed);
         self.restore_overlay();
         self.set_overlay_error_text(message);
         self.set_state(STATE_ERROR);

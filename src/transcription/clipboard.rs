@@ -69,9 +69,14 @@ pub(super) fn paste_buffered_text(
     buffered_text: &mut String,
     handed_over: &mut String,
 ) {
+    let mut paste = None;
     let publication =
         publish_or_hand_over(state, generation, handed_over, buffered_text, |recording| {
             recording.begin_paste();
+            paste = Some(RunningPaste {
+                state,
+                unpasted: Some(buffered_text.clone()),
+            });
             // The paste waits for the overlay to hide before pasting.
             state.dismiss_overlay();
             state.clear_overlay_text();
@@ -80,28 +85,46 @@ pub(super) fn paste_buffered_text(
             state.set_overlay_text_opacity(1.0);
             state.set_state(STATE_PROCESSING);
         });
-    if publication != Publication::Published {
+    let Some(mut paste) = paste else {
         if publication == Publication::Cancelled {
             log::info!("discarding buffered text because abort was requested");
         }
         buffered_text.clear();
         return;
-    }
+    };
 
-    let result = run_paste_sequence(state, buffered_text.as_str());
-    let _recording = state.end_paste();
-    match result {
-        Ok(()) => {
-            buffered_text.clear();
-            state.set_state(STATE_IDLE);
-            log::info!("buffer pasted successfully");
-        }
-        Err(error) => {
-            log::error!("failed to copy/paste buffered text: {}", error);
-            state.set_overlay_text(buffered_text.clone());
-            state.set_overlay_text_opacity(1.0);
-            state.restore_overlay();
-            state.set_state(STATE_BUFFER_READY);
+    if let Err(error) = run_paste_sequence(state, buffered_text.as_str()) {
+        log::error!("failed to copy/paste buffered text: {}", error);
+        return;
+    }
+    paste.unpasted = None;
+    buffered_text.clear();
+    log::info!("buffer pasted successfully");
+}
+
+/// A paste `CurrentRecording::begin_paste` marked. Dropping it ends the
+/// paste and writes its outcome while holding the recording: idle once the
+/// text is pasted, or else the text back in the overlay as a ready buffer.
+/// A paste that panics therefore counts as failed instead of leaving the app
+/// processing with every record press ignored.
+struct RunningPaste<'a> {
+    state: &'a AppState,
+    /// The text, until it is pasted.
+    unpasted: Option<String>,
+}
+
+impl Drop for RunningPaste<'_> {
+    fn drop(&mut self) {
+        let state = self.state;
+        let _recording = state.end_paste();
+        match self.unpasted.take() {
+            None => state.set_state(STATE_IDLE),
+            Some(text) => {
+                state.set_overlay_text(text);
+                state.set_overlay_text_opacity(1.0);
+                state.restore_overlay();
+                state.set_state(STATE_BUFFER_READY);
+            }
         }
     }
 }

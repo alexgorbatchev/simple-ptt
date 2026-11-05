@@ -256,7 +256,9 @@ fn spawn_worker(
                                 generation,
                                 &mut handed_over,
                                 &recording_prefix,
-                                |_| state.report_error(error),
+                                |_| {
+                                    state.report_error_keeping_text(recording_prefix.clone(), error)
+                                },
                             );
                             continue;
                         }
@@ -265,8 +267,20 @@ fn spawn_worker(
 
                     // The hotkey owns this presentation's visibility. A
                     // queued start must not undo a later empty F5 dismissal.
-                    state.set_overlay_text(recording_prefix.clone());
-                    state.set_overlay_text_opacity(1.0);
+                    if publish_or_hand_over(
+                        &state,
+                        generation,
+                        &mut handed_over,
+                        &recording_prefix,
+                        |_| {
+                            state.set_overlay_text(recording_prefix.clone());
+                            state.set_overlay_text_opacity(1.0);
+                        },
+                    ) != Publication::Published
+                    {
+                        recording_prefix.clear();
+                        continue;
+                    }
 
                     match start_session(
                         state.clone(),
@@ -294,9 +308,10 @@ fn spawn_worker(
                                 &mut handed_over,
                                 &recording_prefix,
                                 |_| {
-                                    state.clear_overlay_text();
-                                    state.set_overlay_text_opacity(1.0);
-                                    state.report_error(error.to_string());
+                                    state.report_error_keeping_text(
+                                        recording_prefix.clone(),
+                                        error.to_string(),
+                                    )
                                 },
                             );
                             recording_prefix.clear();
@@ -378,7 +393,10 @@ fn spawn_worker(
                                 error
                             );
                             state.set_overlay_correction_active(false);
-                            state.report_error(error.to_string());
+                            state.report_error_keeping_text(
+                                buffered_text.clone(),
+                                error.to_string(),
+                            );
                             continue;
                         }
                     };
@@ -404,7 +422,10 @@ fn spawn_worker(
                         Err(error) => {
                             log::error!("failed to start correction Deepgram session: {}", error);
                             state.set_overlay_correction_active(false);
-                            state.report_error(error.to_string());
+                            state.report_error_keeping_text(
+                                buffered_text.clone(),
+                                error.to_string(),
+                            );
                         }
                     }
                 }
@@ -600,9 +621,10 @@ fn spawn_worker(
                                     |_| {
                                         state.set_overlay_correction_active(false);
                                         state.clear_overlay_correction_text();
-                                        state.set_overlay_text(buffered_text.clone());
-                                        state.set_overlay_text_opacity(1.0);
-                                        state.report_error(error.to_string());
+                                        state.report_error_keeping_text(
+                                            buffered_text.clone(),
+                                            error.to_string(),
+                                        );
                                     },
                                 );
                                 if publication != Publication::Published {
@@ -641,8 +663,10 @@ fn spawn_worker(
                                             &mut handed_over,
                                             &recording_prefix,
                                             |_| {
-                                                state.set_state(STATE_BUFFER_READY);
-                                                state.report_error(error);
+                                                state.report_error_keeping_text(
+                                                    recording_prefix.clone(),
+                                                    error,
+                                                )
                                             },
                                         ) != Publication::Published
                                         {
@@ -690,7 +714,12 @@ fn spawn_worker(
                                             generation,
                                             &mut handed_over,
                                             &recording_prefix,
-                                            |_| state.report_error(error.to_string()),
+                                            |_| {
+                                                state.report_error_keeping_text(
+                                                    recording_prefix.clone(),
+                                                    error.to_string(),
+                                                )
+                                            },
                                         ) != Publication::Published
                                         {
                                             buffered_text.clear();
@@ -930,8 +959,10 @@ fn spawn_worker(
                                                 &mut handed_over,
                                                 &recording_prefix,
                                                 |_| {
-                                                    state.set_state(STATE_BUFFER_READY);
-                                                    state.report_error(error);
+                                                    state.report_error_keeping_text(
+                                                        recording_prefix.clone(),
+                                                        error,
+                                                    )
                                                 },
                                             ) != Publication::Published
                                             {
@@ -976,7 +1007,12 @@ fn spawn_worker(
                                             generation,
                                             &mut handed_over,
                                             &recording_prefix,
-                                            |_| state.report_error(error.to_string()),
+                                            |_| {
+                                                state.report_error_keeping_text(
+                                                    recording_prefix.clone(),
+                                                    error.to_string(),
+                                                )
+                                            },
                                         ) != Publication::Published
                                         {
                                             buffered_text.clear();
@@ -1300,8 +1336,8 @@ fn hand_over(handed_over: &mut String, text: &str) {
     append_text_segment(handed_over, text);
 }
 
-/// Shows `error` with the text that failed, keeping the text editable.
-/// Clears the worker's `text` when it is not shown.
+/// Shows `error` and keeps the text that failed for the next recording to
+/// continue. Clears the worker's `text` when it is not kept.
 fn publish_error_with_text(
     state: &AppState,
     generation: RecordingGeneration,
@@ -1310,9 +1346,7 @@ fn publish_error_with_text(
     error: &str,
 ) -> Publication {
     let publication = publish_or_hand_over(state, generation, handed_over, text, |_| {
-        state.set_overlay_text(text.as_str());
-        state.set_overlay_text_opacity(1.0);
-        state.report_error(error);
+        state.report_error_keeping_text(text.as_str(), error)
     });
     if publication != Publication::Published {
         text.clear();
@@ -2401,6 +2435,215 @@ mod tests {
 
         assert_new_recording_intact(&state);
         assert!(state.overlay_error_text().is_empty());
+    }
+
+    /// Taps the record key to stop the dictation in progress and pastes it,
+    /// which fails in tests, so its text returns to the overlay.
+    fn stop_and_fail_to_paste(
+        state: &std::sync::Arc<crate::state::AppState>,
+        controller: &super::TranscriptionController,
+        keyboard: &Keyboard,
+        text: &str,
+    ) {
+        state.set_overlay_text(text);
+        keyboard.tap(state, controller, crate::key::Key::F5);
+        let mut buffered_text = text.to_owned();
+        super::clipboard::paste_buffered_text(
+            state,
+            state.recording_generation(),
+            &mut buffered_text,
+            &mut String::new(),
+        );
+        assert_eq!(state.get_state(), crate::state::STATE_BUFFER_READY);
+    }
+
+    #[test]
+    fn a_failed_connection_keeps_the_text_a_recording_continued() {
+        if run_in_child(
+            "a_failed_connection_keeps_the_text_a_recording_continued",
+            |child| {
+                child.env("SIMPLE_PTT_SIMULATE_ERROR", "connection failed");
+            },
+        ) {
+            return;
+        }
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_ERROR, STATE_IDLE};
+
+        for discard in [false, true] {
+            let state = AppState::new();
+            let (controller, queue) = queued_controller();
+            let keyboard = Keyboard::new();
+            keyboard.tap(&state, &controller, Key::F5);
+            stop_and_fail_to_paste(&state, &controller, &keyboard, "Words a paste returned. ");
+            // The next recording continues the returned text, then fails to
+            // connect.
+            keyboard.tap(&state, &controller, Key::F5);
+            run_worker(&state, queue.try_iter().collect());
+
+            assert_eq!(state.get_state(), STATE_ERROR);
+            assert!(state.overlay_error_text().contains("connection failed"));
+            assert_eq!(&*state.overlay_text(), "Words a paste returned. ");
+            if discard {
+                assert!(keyboard.escape(&state, &controller));
+                assert_eq!(state.get_state(), STATE_IDLE);
+            }
+            keyboard.tap(&state, &controller, Key::F5);
+            let (prefix, _) = last_start(&queue).expect("a dictation start");
+            let expected = if discard {
+                ""
+            } else {
+                "Words a paste returned. "
+            };
+            assert_eq!(prefix, expected, "discard={discard}");
+        }
+    }
+
+    #[test]
+    fn a_failed_connection_keeps_text_handed_over_from_a_replaced_recording() {
+        if run_in_child(
+            "a_failed_connection_keeps_text_handed_over_from_a_replaced_recording",
+            |child| {
+                child.env("SIMPLE_PTT_SIMULATE_ERROR", "connection failed");
+            },
+        ) {
+            return;
+        }
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
+        state.set_overlay_text("Text of the replaced recording.");
+        state.set_state(STATE_BUFFER_READY);
+        keyboard.tap(&state, &controller, Key::F5);
+        // The microphone failed before the worker started that recording,
+        // and the record key then started another.
+        state.report_error("Audio capture stopped.");
+        keyboard.tap(&state, &controller, Key::F5);
+        run_worker(&state, queue.try_iter().collect());
+
+        assert_eq!(state.get_state(), STATE_ERROR);
+        assert!(state.overlay_error_text().contains("connection failed"));
+        assert_eq!(&*state.overlay_text(), "Text of the replaced recording. ");
+        keyboard.tap(&state, &controller, Key::F5);
+        let (prefix, _) = last_start(&queue).expect("a dictation start");
+        assert_eq!(prefix, "Text of the replaced recording. ");
+    }
+
+    #[test]
+    fn a_configuration_error_keeps_the_text_a_recording_continued() {
+        if run_without_deepgram_key("a_configuration_error_keeps_the_text_a_recording_continued") {
+            return;
+        }
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_ERROR};
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
+        state.set_overlay_text("A draft to keep.");
+        state.set_state(STATE_BUFFER_READY);
+        keyboard.tap(&state, &controller, Key::F5);
+        run_worker_with_config(
+            &state,
+            crate::config::Config::default(),
+            queue.try_iter().collect(),
+        );
+
+        assert_eq!(state.get_state(), STATE_ERROR);
+        assert!(state.overlay_error_text().contains("Settings > Deepgram"));
+        assert_eq!(&*state.overlay_text(), "A draft to keep.");
+        keyboard.tap(&state, &controller, Key::F5);
+        let (prefix, _) = last_start(&queue).expect("a dictation start");
+        assert_eq!(prefix, "A draft to keep.");
+    }
+
+    #[test]
+    fn a_paste_that_panics_returns_the_text_like_a_failed_one() {
+        use crate::key::Key;
+        use crate::state::{AppState, STATE_BUFFER_READY, STATE_RECORDING};
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Keyboard::new();
+        keyboard.tap(&state, &controller, Key::F5);
+        state.set_overlay_text("Words to paste.");
+        keyboard.tap(&state, &controller, Key::F5);
+        let generation = state.recording_generation();
+        super::clipboard::during_next_paste(|| panic!("the paste panicked"));
+        let mut buffered_text = "Words to paste.".to_owned();
+        let pasted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::clipboard::paste_buffered_text(
+                &state,
+                generation,
+                &mut buffered_text,
+                &mut String::new(),
+            )
+        }));
+
+        assert!(pasted.is_err());
+        assert!(!state.is_pasting());
+        assert_eq!(state.get_state(), STATE_BUFFER_READY);
+        assert_eq!(&*state.overlay_text(), "Words to paste.");
+        assert!(!state.is_overlay_dismissed());
+        keyboard.tap(&state, &controller, Key::F5);
+        assert_eq!(state.get_state(), STATE_RECORDING);
+        let (prefix, started) = last_start(&queue).expect("a dictation start");
+        assert!(started > generation);
+        assert_eq!(prefix, "Words to paste.");
+    }
+
+    #[test]
+    fn a_record_press_refused_during_a_paste_changes_nothing() {
+        use crate::key::Key;
+        use crate::state::AppState;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let state = AppState::new();
+        let (controller, queue) = queued_controller();
+        let keyboard = Rc::new(Keyboard::new());
+        keyboard.tap(&state, &controller, Key::F5);
+        state.set_overlay_text("Words to paste.");
+        keyboard.tap(&state, &controller, Key::F5);
+        let generation = state.recording_generation();
+        assert!(last_start(&queue).is_some());
+
+        let unchanged = Rc::new(Cell::new(None));
+        {
+            let state = state.clone();
+            let controller = controller.clone();
+            let keyboard = keyboard.clone();
+            let unchanged = unchanged.clone();
+            super::clipboard::during_next_paste(move || {
+                // An audio error lands while the paste waits.
+                state.report_error("Audio capture stopped.");
+                state.dismiss_overlay();
+                let observe = || {
+                    (
+                        state.get_state(),
+                        state.recording_generation(),
+                        state.overlay_error_text().to_string(),
+                        state.is_overlay_dismissed(),
+                        state.overlay_text().to_string(),
+                    )
+                };
+                let before = observe();
+                assert!(keyboard.tap(&state, &controller, Key::F5));
+                unchanged.set(Some(before == observe()));
+            });
+        }
+        super::clipboard::paste_buffered_text(
+            &state,
+            generation,
+            &mut "Words to paste.".to_owned(),
+            &mut String::new(),
+        );
+
+        assert_eq!(unchanged.get(), Some(true));
+        assert!(last_start(&queue).is_none());
     }
 
     #[test]

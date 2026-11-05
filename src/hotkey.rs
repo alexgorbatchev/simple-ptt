@@ -321,15 +321,16 @@ pub(crate) fn handle_key_press(
             log::info!("ignoring record hotkey while background work is still running");
             return true;
         }
+        // A paste normally keeps the state processing; an error reported
+        // during it must not let a press change anything before the paste's
+        // outcome is known.
+        if state.is_pasting() {
+            log::info!("ignoring record hotkey while the previous recording is pasted");
+            return true;
+        }
 
         let action = match current_state {
             STATE_IDLE | STATE_ERROR | STATE_BUFFER_READY => {
-                state.restore_overlay();
-                state.clear_overlay_error_text();
-                if current_state != STATE_BUFFER_READY {
-                    state.clear_overlay_text();
-                }
-                state.set_overlay_text_opacity(1.0);
                 match start_recording(
                     state,
                     controller,
@@ -644,9 +645,10 @@ fn start_recording(
         state.report_error(NO_MICROPHONE_MESSAGE);
         return None;
     }
+    // Starting the recording also restores the overlay and clears what the
+    // new recording does not continue.
     match controller.start_session(state) {
         Ok(()) => {
-            state.restore_overlay();
             log::info!("recording started");
             Some(RecordHotkeyAction::StartRecording)
         }
