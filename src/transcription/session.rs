@@ -200,20 +200,14 @@ pub fn start_session(
     let task_progress = progress.clone();
     let task = runtime.spawn(async move {
         let mut stream = transcription_stream;
-        let result = run_transcription_stream(
+        transcribe_and_report(
             &mut stream,
-            state.clone(),
+            state,
             session_kind,
             recording_prefix,
             task_progress,
         )
-        .await;
-        if let Err(SessionError::Failed(error)) = &result {
-            if !state.is_abort_requested() {
-                state.report_error(error.clone());
-            }
-        }
-        result
+        .await
     });
 
     Ok(ActiveSession {
@@ -260,6 +254,35 @@ fn configure_stream_request<'a>(
         .interim_results(true)
         .vad_events(true)
         .keep_alive()
+}
+
+/// Runs the session's transcription and reports a failure the moment it
+/// happens, unless an abort explains it. The overlay keeps what was dictated
+/// so far for the next recording to continue.
+pub(super) async fn transcribe_and_report<S>(
+    stream: &mut S,
+    state: Arc<AppState>,
+    session_kind: SessionKind,
+    recording_prefix: String,
+    progress: Arc<SessionProgress>,
+) -> Result<String, SessionError>
+where
+    S: tokio_stream::Stream<Item = Result<StreamResponse, deepgram::DeepgramError>> + Unpin,
+{
+    let result = run_transcription_stream(
+        stream,
+        state.clone(),
+        session_kind,
+        recording_prefix,
+        progress,
+    )
+    .await;
+    if let Err(SessionError::Failed(error)) = &result {
+        if !state.is_abort_requested() {
+            state.report_error(error.clone());
+        }
+    }
+    result
 }
 
 pub async fn run_transcription_stream<S>(
@@ -463,7 +486,7 @@ pub fn format_deepgram_error(error: impl std::fmt::Display) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     #[test]
@@ -508,7 +531,7 @@ mod tests {
         );
     }
 
-    fn transcript_response(
+    pub(in crate::transcription) fn transcript_response(
         text: &str,
         is_final: bool,
         start: f64,

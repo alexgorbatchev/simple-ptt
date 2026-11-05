@@ -113,8 +113,12 @@ impl RecordingGeneration {
 pub struct RecordingStart {
     pub generation: RecordingGeneration,
     /// The editable annotation the recording continues; empty unless it
-    /// resumes a ready buffer.
+    /// continues a ready buffer or an error's text.
     pub prefix: String,
+    /// The recording continues the previous one's text: it started from a
+    /// ready buffer or an error, not from idle, where that text was
+    /// discarded or never existed.
+    pub continues: bool,
 }
 
 /// The recording the overlay and state belong to.
@@ -168,9 +172,6 @@ pub struct AppState {
     settings_requested: AtomicBool,
     overlay_text: Mutex<OverlayText>,
     overlay_error_text: Mutex<Arc<str>>,
-    /// The error on display keeps the overlay text for the next recording
-    /// to continue (`report_error_keeping_text`).
-    error_keeps_text: AtomicBool,
     overlay_text_opacity: AtomicU8,
     preview_mic_gain: AtomicU32,
     state: AtomicU8,
@@ -224,7 +225,6 @@ impl AppState {
             settings_requested: AtomicBool::new(false),
             overlay_text: Mutex::new(OverlayText::default()),
             overlay_error_text: Mutex::new(Arc::from("")),
-            error_keeps_text: AtomicBool::new(false),
             overlay_text_opacity: AtomicU8::new(u8::MAX),
             preview_mic_gain: AtomicU32::new(f32::to_bits(f32::NAN)),
             state: AtomicU8::new(STATE_IDLE),
@@ -340,25 +340,21 @@ impl AppState {
 
     /// Starts a new recording: captures the editable annotation it continues,
     /// then publishes `STATE_RECORDING` under a new generation. A recording
-    /// continues a ready buffer, and the text an error kept
-    /// (`report_error_keeping_text`); otherwise it starts empty. The worker
-    /// may receive the start command afterwards, so the annotation is read
-    /// first. The worker publishes a recording's outcome under the same lock,
-    /// so it either finishes first or sees that this recording replaced it.
-    /// `None`, changing nothing, while the current recording's text is being
-    /// pasted: its outcome is not known yet, and a failed paste returns the
-    /// text to the overlay.
+    /// continues the overlay text of a ready buffer or an error, which keeps
+    /// what was dictated until Escape or a cancellation discards it; from
+    /// idle it starts empty. The worker may receive the start command
+    /// afterwards, so the annotation is read first. The worker publishes a
+    /// recording's outcome under the same lock, so it either finishes first
+    /// or sees that this recording replaced it. `None`, changing nothing,
+    /// while the current recording's text is being pasted: its outcome is not
+    /// known yet, and a failed paste returns the text to the overlay.
     pub fn begin_recording(&self) -> Option<RecordingStart> {
         let mut recording = self.lock_recording();
         if recording.pasting {
             return None;
         }
-        let continues_text = match self.get_state() {
-            STATE_BUFFER_READY => true,
-            STATE_ERROR => self.error_keeps_text.load(Ordering::Relaxed),
-            _ => false,
-        };
-        let prefix = if continues_text {
+        let continues = matches!(self.get_state(), STATE_BUFFER_READY | STATE_ERROR);
+        let prefix = if continues {
             self.overlay_text().to_string()
         } else {
             self.clear_overlay_text();
@@ -372,6 +368,7 @@ impl AppState {
         Some(RecordingStart {
             generation: recording.generation,
             prefix,
+            continues,
         })
     }
 
@@ -416,9 +413,13 @@ impl AppState {
     }
 
     /// Cancels what the overlay shows, for Escape and the Settings shortcut,
-    /// and returns the state it cancelled. Idle and error have no work in
-    /// progress: they return to idle without an abort. Any other state gets
-    /// an abort of the current recording's work. Reading the state and
+    /// and returns the state it cancelled. Idle has no work in progress and
+    /// gets no abort. An error returns to idle and, like any other state,
+    /// gets an abort of the current recording's work: an error can interrupt
+    /// a recording whose finish, transformation, or paste is still running,
+    /// and that work must not publish after the cancel. An abort that no work
+    /// uses up is dropped when the next recording starts
+    /// (`consume_abort_request`), so it never skips that start. Reading the state and
     /// requesting the abort under the recording lock orders them against the
     /// worker publishing that work's outcome (`current_recording`): either
     /// the worker sees the abort and cancels the work, or it publishes first
@@ -431,11 +432,12 @@ impl AppState {
             return None;
         }
         let state = self.get_state();
+        if state != STATE_IDLE {
+            self.request_abort_of(recording.generation);
+        }
         if matches!(state, STATE_IDLE | STATE_ERROR) {
             self.set_state(STATE_IDLE);
             self.clear_overlay_error_text();
-        } else {
-            self.request_abort_of(recording.generation);
         }
         Some(state)
     }
@@ -619,24 +621,21 @@ impl AppState {
         self.set_overlay_error_text(String::new());
     }
 
+    /// Shows an error. The overlay text, what was dictated so far, stays:
+    /// the next recording continues it, and only Escape or a cancellation
+    /// discards it.
     pub fn report_error(&self, message: impl Into<String>) {
-        self.show_error(message, false);
-    }
-
-    /// Reports an error with `text` kept in the overlay: the next recording
-    /// continues it, as it does a ready buffer, and the cancel shortcuts
-    /// discard it.
-    pub fn report_error_keeping_text(&self, text: impl Into<String>, message: impl Into<String>) {
-        self.set_overlay_text(text);
-        self.set_overlay_text_opacity(1.0);
-        self.show_error(message, true);
-    }
-
-    fn show_error(&self, message: impl Into<String>, keeps_text: bool) {
-        self.error_keeps_text.store(keeps_text, Ordering::Relaxed);
         self.restore_overlay();
         self.set_overlay_error_text(message);
         self.set_state(STATE_ERROR);
+    }
+
+    /// Shows an error with `text`, which the worker holds rather than the
+    /// overlay, as the text the next recording continues.
+    pub fn report_error_with_text(&self, text: impl Into<String>, message: impl Into<String>) {
+        self.set_overlay_text(text);
+        self.set_overlay_text_opacity(1.0);
+        self.report_error(message);
     }
 
     pub fn set_overlay_correction_text(&self, overlay_correction_text: impl Into<String>) {

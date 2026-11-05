@@ -202,10 +202,10 @@ pub(crate) fn handle_key_press(
         }
 
         // The work in progress uses the abort up: the recording's start or
-        // its finish, the buffer's discard, or the transformation. Idle and
-        // error have no work in progress to cancel, so they request no abort,
-        // and a paste is left to finish, as the key goes to the app pasted
-        // into.
+        // its finish, the buffer's discard, or the transformation, including
+        // work an error interrupted, which must not publish or paste after
+        // Escape. Idle has no work, so it requests no abort, and a paste is
+        // left to finish, as the key goes to the app pasted into.
         let Some(current_state) = state.cancel_work_in_progress() else {
             return false;
         };
@@ -749,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_on_an_error_dismisses_it_without_leaving_an_abort_behind() {
+    fn escape_on_an_error_dismisses_it_and_aborts_the_work_it_interrupted() {
         use crate::key::Key;
         use crate::state::{AppState, STATE_IDLE};
 
@@ -778,8 +778,9 @@ mod tests {
         assert_eq!(state.get_state(), STATE_IDLE);
         assert!(state.is_overlay_dismissed());
         assert!(state.overlay_error_text().is_empty());
-        // An error has no work in progress for an abort to cancel.
-        assert!(!state.is_abort_requested());
+        // Work the error interrupted may still be running; the abort stops it
+        // from publishing, and the next start drops it if nothing used it.
+        assert!(state.is_abort_requested());
     }
 
     #[test]
@@ -844,10 +845,7 @@ mod tests {
             assert!(tracking.correction_key_origin.get().is_none());
             assert!(!tracking.transform_hotkey_is_down.get());
             assert!(!tracking.clipboard_insert_is_down.get());
-            assert_eq!(
-                state.is_abort_requested(),
-                !matches!(current_state, STATE_IDLE | STATE_ERROR)
-            );
+            assert_eq!(state.is_abort_requested(), current_state != STATE_IDLE);
 
             // Releasing held record, transform, or correction keys after the
             // shortcut must not trigger another operation.
